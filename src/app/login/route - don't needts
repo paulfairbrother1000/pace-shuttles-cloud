@@ -1,0 +1,70 @@
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+export const dynamic = "force-dynamic";
+
+type Body =
+  | { mode: "email"; email?: string; password?: string }
+  | { mode: "mobile"; country_code?: number; mobile?: string; password?: string };
+
+function bad(error: string, status = 400) {
+  return NextResponse.json({ error }, { status });
+}
+
+export async function POST(req: Request) {
+  const body = (await req.json()) as Body;
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    // Use a SERVER key here so the query isn’t blocked by RLS.
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  // Basic validation
+  if (!body?.password?.trim()) return bad("Password required");
+  let userQuery;
+
+  if (body.mode === "email") {
+    if (!body.email?.trim()) return bad("Email required");
+    userQuery = supabase
+      .from("users")
+      .select("id,first_name,last_name,email,mobile,country_code,password", { count: "exact", head: false })
+      .eq("email", body.email.trim())
+      .limit(1)
+      .single();
+  } else if (body.mode === "mobile") {
+    if (!body.mobile?.trim() || typeof body.country_code !== "number") return bad("Mobile and dial code required");
+    const numericMobile = body.mobile.replace(/\D+/g, "");
+    userQuery = supabase
+      .from("users")
+      .select("id,first_name,last_name,email,mobile,country_code,password", { count: "exact", head: false })
+      .eq("country_code", body.country_code)
+      .eq("mobile", Number(numericMobile))
+      .limit(1)
+      .single();
+  } else {
+    return bad("Invalid mode");
+  }
+
+  const { data: user, error } = await userQuery;
+  if (error) return bad(error.message, 401);
+  if (!user) return bad("Invalid credentials", 401);
+
+  // ⚠️ Plain-text compare to match your current schema (switch to hash later)
+  if ((user.password ?? "") !== body.password) {
+    return bad("Invalid credentials", 401);
+  }
+
+  // You can mint your own session/token here if needed.
+  return NextResponse.json({
+    ok: true,
+    user: {
+      id: user.id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      email: user.email,
+      mobile: user.mobile,
+      country_code: user.country_code,
+    },
+  });
+}

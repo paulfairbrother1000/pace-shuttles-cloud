@@ -1,0 +1,195 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import supabaseClient from "@/lib/supabaseClient";
+
+type PsUser = {
+  id: string;
+  email?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  site_admin?: boolean;
+  operator_admin?: boolean;
+  operator_id?: string | null;
+};
+
+function getCookie(name: string) {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp("(^|; )" + name.replace(/([.*+?^${}()|[\]\\])/g, "\\$1") + "=([^;]*)"));
+  return m ? decodeURIComponent(m[2]) : null;
+}
+
+export default function DebugLogin() {
+  const [email, setEmail] = useState("paul@paul.com");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [session, setSession] = useState<any>(null);
+  const [me, setMe] = useState<any>(null);
+  const [psLocal, setPsLocal] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function refreshAuth() {
+    const { data: u } = await supabaseClient.auth.getUser();
+    const { data: s } = await supabaseClient.auth.getSession();
+    setAuthUser(u?.user ?? null);
+    setSession(s?.session ?? null);
+  }
+  function refreshPsLocal() {
+    try {
+      const raw = localStorage.getItem("ps_user");
+      setPsLocal(raw ? JSON.parse(raw) : null);
+    } catch { setPsLocal(null); }
+  }
+
+  useEffect(() => {
+    refreshAuth();
+    refreshPsLocal();
+  }, []);
+
+  async function doLogin() {
+    setErr(null); setBusy(true);
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await refreshAuth();
+  }
+
+  async function whoami() {
+    setErr(null); setBusy(true);
+    await refreshAuth();
+    setBusy(false);
+  }
+
+  async function signOut() {
+    setErr(null); setBusy(true);
+    const { error } = await supabaseClient.auth.signOut();
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setAuthUser(null);
+    setSession(null);
+    setMe(null);
+    try { localStorage.removeItem("ps_user"); } catch {}
+    refreshPsLocal();
+  }
+
+  /** Call your existing /api/me POST route to fetch flags/ids and store ps_user */
+  async function syncRoles() {
+    try {
+      setErr(null); setBusy(true);
+      if (!authUser?.id) { setErr("No Supabase auth user. Log in first."); return; }
+      const res = await fetch("/api/me", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: authUser.id }),
+        cache: "no-store",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(`POST /api/me failed: ${res.status} ${body?.error || ""}`.trim());
+        setMe(null);
+        return;
+      }
+      setMe(body);
+
+      // Write ps_user exactly as SiteHeader expects
+      const next: PsUser = {
+        id: body.id,
+        email: body.email ?? null,
+        first_name: body.first_name ?? null,
+        last_name: body.last_name ?? null,
+        site_admin: !!body.site_admin,
+        operator_admin: !!body.operator_admin,
+        operator_id: body.operator_id ?? null,
+      };
+      try { localStorage.setItem("ps_user", JSON.stringify(next)); } catch {}
+      refreshPsLocal();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const cookies = {
+    ps_email: getCookie("ps_email"),
+    ps_site_admin: getCookie("ps_site_admin"),
+    ps_operator_admin: getCookie("ps_operator_admin"),
+    ps_operator_id: getCookie("ps_operator_id"),
+  };
+
+  const statusLine = (() => {
+    const uid = psLocal?.id || authUser?.id || "—";
+    const sa = String(!!psLocal?.site_admin);
+    const oa = String(!!psLocal?.operator_admin);
+    const op = psLocal?.operator_id ?? "—";
+    return `userId:${uid} | site_admin:${sa} | operator_admin:${oa} | operator_id:${op}`;
+  })();
+
+  return (
+    <div className="max-w-3xl mx-auto p-6 space-y-4">
+      <h1 className="text-2xl font-semibold">Auth / Roles Debug</h1>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="rounded-2xl border p-4 bg-white space-y-2">
+          <label className="block text-sm">Email</label>
+          <input className="w-full border p-2 rounded" value={email} onChange={e=>setEmail(e.target.value)} />
+          <label className="block text-sm mt-2">Password</label>
+          <input className="w-full border p-2 rounded" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
+          <div className="flex flex-wrap gap-2 pt-3">
+            <button className="border px-3 py-2 rounded" onClick={doLogin} disabled={busy}>Login</button>
+            <button className="border px-3 py-2 rounded" onClick={whoami} disabled={busy}>Who am I?</button>
+            <button className="border px-3 py-2 rounded" onClick={syncRoles} disabled={busy}>Sync roles (write ps_user)</button>
+            <button className="border px-3 py-2 rounded" onClick={signOut} disabled={busy}>Sign out</button>
+          </div>
+          {err && <div className="text-red-600 text-sm mt-2">{err}</div>}
+          <div className="pt-2">
+            <a className="underline text-blue-600" href="/account">Go to Account</a>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border p-4 bg-white space-y-2">
+          <div className="text-sm text-neutral-600">Status</div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">{statusLine}</pre>
+
+          <div className="text-sm text-neutral-600 mt-2">localStorage.ps_user</div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">
+            {JSON.stringify(psLocal, null, 2)}
+          </pre>
+
+          <div className="text-sm text-neutral-600 mt-2">Cookies</div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">
+            {JSON.stringify(cookies, null, 2)}
+          </pre>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="rounded-2xl border p-4 bg-white">
+          <div className="text-sm text-neutral-600">Supabase Auth: getUser()</div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">
+            {JSON.stringify(authUser, null, 2)}
+          </pre>
+        </div>
+
+        <div className="rounded-2xl border p-4 bg-white">
+          <div className="text-sm text-neutral-600">Supabase Auth: getSession()</div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">
+            {JSON.stringify(session, null, 2)}
+          </pre>
+        </div>
+
+        <div className="rounded-2xl border p-4 bg-white md:col-span-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-neutral-600">/api/me (POST)</div>
+            <button className="text-xs px-2 py-1 rounded border" onClick={syncRoles} disabled={busy}>
+              Refresh
+            </button>
+          </div>
+          <pre className="text-[11px] bg-neutral-50 p-2 rounded border overflow-auto">
+            {JSON.stringify(me, null, 2)}
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+}
