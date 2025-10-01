@@ -45,3 +45,5 @@ backups/
 *.sql
 .env*
 envlocal.*
+
+backups/
