@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     return new NextResponse("Order not found or token mismatch", { status: 404 });
   }
 
-  const £ = (cents?: number | null) =>
+  const GBP = (cents?: number | null) =>
     cents == null
       ? "—"
       : new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(
