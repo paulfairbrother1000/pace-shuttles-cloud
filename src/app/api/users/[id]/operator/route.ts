@@ -1,17 +1,27 @@
+// src/app/api/users/[id]/operator/route.ts
 import { NextRequest, NextResponse } from "next/server";
+
+const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
 type Params = { id: string };
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<Params> }) {
-  const { id } = await ctx.params;
-  // ...your existing lookup...(user/operator)...
-  // return NextResponse.json({ user, operator });
-}
+  if (!URL || !SERVICE_KEY) {
+    return NextResponse.json(
+      { error: "Server env not configured" },
+      { status: 500 }
+    );
+  }
 
+  const { id } = await ctx.params;
 
   try {
     // 1) fetch user (service key bypasses RLS)
     const uRes = await fetch(
-      `${URL}/rest/v1/users?select=id,email,first_name,last_name,mobile,country_code,site_admin,operator_admin,operator_id&id=eq.${id}&limit=1`,
+      `${URL}/rest/v1/users?select=id,email,first_name,last_name,mobile,country_code,site_admin,operator_admin,operator_id&id=eq.${encodeURIComponent(
+        id
+      )}&limit=1`,
       {
         headers: {
           apikey: SERVICE_KEY,
@@ -33,11 +43,22 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<Params> }) {
 
     const users = (await uRes.json()) as any[];
     const userRow = users[0];
-    if (!userRow) return NextResponse.json({ error: "user not found" }, { status: 404 });
-    if (!userRow.operator_admin)
-      return NextResponse.json({ error: "not an operator admin" }, { status: 403 });
-    if (!userRow.operator_id)
-      return NextResponse.json({ user: userRow, operator: null }, { status: 200 });
+
+    if (!userRow) {
+      return NextResponse.json({ error: "user not found" }, { status: 404 });
+    }
+    if (!userRow.operator_admin) {
+      return NextResponse.json(
+        { error: "not an operator admin" },
+        { status: 403 }
+      );
+    }
+    if (!userRow.operator_id) {
+      return NextResponse.json(
+        { user: userRow, operator: null },
+        { status: 200 }
+      );
+    }
 
     // 2) fetch operator WITH logo_url
     const oRes = await fetch(
