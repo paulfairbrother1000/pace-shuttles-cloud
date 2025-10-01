@@ -51,3 +51,9 @@ backups/
 backups/
 
 backups/
+backups/
+supabase/.temp/
+supabase/.branches/
+*.pgcustom
+*.sql
+
