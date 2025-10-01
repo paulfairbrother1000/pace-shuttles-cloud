@@ -25,7 +25,9 @@ export async function GET(req: Request) {
 
   const { data: order } = await sb
     .from("orders")
-    .select("id, qty, journey_date, unit_price_cents, base_cents, tax_cents, fees_cents, total_cents, success_token")
+    .select(
+      "id, qty, journey_date, unit_price_cents, base_cents, tax_cents, fees_cents, total_cents, success_token"
+    )
     .eq("id", orderId)
     .maybeSingle();
 
@@ -37,7 +39,7 @@ export async function GET(req: Request) {
     cents == null
       ? "—"
       : new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(
-          cents / 100
+          (cents ?? 0) / 100
         );
 
   const html = `<!doctype html>
@@ -58,18 +60,20 @@ export async function GET(req: Request) {
     <div>Travel date: ${order.journey_date ?? "—"}</div>
     <hr/>
     <div class="row"><div>Seats</div><div>${order.qty ?? 1}</div></div>
-    <div class="row"><div>Per seat (incl. tax & fees)</div><div>${£(order.unit_price_cents)}</div></div>
+    <div class="row"><div>Per seat (incl. tax & fees)</div><div>${GBP(order.unit_price_cents)}</div></div>
     <hr/>
-    <div class="row"><div>Base (total)</div><div>${£(order.base_cents)}</div></div>
-    <div class="row"><div>Tax (total)</div><div>${£(order.tax_cents)}</div></div>
-    <div class="row"><div>Fees (total)</div><div>${£(order.fees_cents)}</div></div>
+    <div class="row"><div>Base (total)</div><div>${GBP(order.base_cents)}</div></div>
+    <div class="row"><div>Tax (total)</div><div>${GBP(order.tax_cents)}</div></div>
+    <div class="row"><div>Fees (total)</div><div>${GBP(order.fees_cents)}</div></div>
     <hr/>
-    <div class="row total"><div>Total</div><div>${£(order.total_cents)}</div></div>
+    <div class="row total"><div>Total</div><div>${GBP(order.total_cents)}</div></div>
   </body>
 </html>`;
 
   return new NextResponse(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
   });
 }
-
