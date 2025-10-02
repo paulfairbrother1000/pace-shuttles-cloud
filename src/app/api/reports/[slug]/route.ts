@@ -1,17 +1,23 @@
+cat > 'src/app/api/reports/[slug]/route.ts' <<'TS'
 import { NextResponse } from 'next/server';
 
-/** Route signature (what Next's checker reads) */
-export function GET(
-  _req: Request,
-  context: { params: { slug: string } }
-): Promise<Response>;
+export async function GET(req: Request) {
+  // Extract the last path segment as the slug: /api/reports/<slug>
+  const { pathname } = new URL(req.url);
+  const parts = pathname.split('/').filter(Boolean);
+  const slug = parts[parts.length - 1] ?? '';
 
-/** Implementation (kept broad so it compiles everywhere) */
-export async function GET(_req: Request, context: any) {
+  // minimal handler (replace with your real logic once build is green)
   return NextResponse.json(
-    { ok: true, slug: context?.params?.slug },
+    { ok: true, slug },
     { headers: { 'Cache-Control': 'no-store' } }
   );
 }
 
 export {};
+TS
+
+git add 'src/app/api/reports/[slug]/route.ts'
+git commit -m "fix(api): Next 15 route—use single-arg GET(req) and parse slug from URL"
+git push origin main
+CI=1 npx next build
