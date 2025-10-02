@@ -1,6 +1,7 @@
 // src/app/page.tsx
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
@@ -44,28 +45,23 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-// --- build a public URL for transport type images only
-function typeImgSrc(t: { id: string; picture_url?: string | null }) {
-  const p = t.picture_url?.trim();
+/* ---------- Helpers to normalize image URLs to public Supabase paths ---------- */
+function buildPublicImageUrl(input?: string | null): string | undefined {
+  const p = input?.trim();
   if (!p) return undefined;
-
   // If absolute URL or app-relative path, use as-is
   if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("/")) return p;
-
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   if (!base) return undefined;
-
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET?.trim() || "images").replace(/^\/+|\/+$/g, "");
-  // If someone stored a nested path, respect it; otherwise use the canonical folder layout.
-  const path = p.includes("/") ? p.replace(/^\/+/, "") : `transport-types/${t.id}/${p}`;
-
-  // Encode each segment but keep slashes
-  const encodedPath = path
-    .split("/")
-    .map(encodeURIComponent)
-    .join("/");
-
+  const path = p.replace(/^\/+/, "");
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
   return `${base.replace(/\/+$/, "")}/storage/v1/object/public/${bucket}/${encodedPath}`;
+}
+
+// --- legacy helper kept for transport types (now uses generic builder)
+function typeImgSrc(t: { id: string; picture_url?: string | null }) {
+  return buildPublicImageUrl(t.picture_url);
 }
 
 /* ---------- Types ---------- */
@@ -1006,11 +1002,18 @@ export default function HomePage() {
 
         {/* Hero image */}
         <section>
-          <img
-            src={HERO_IMG_URL}
-            alt="Pace Shuttle — luxury transfers"
-            className="w-full rounded-2xl object-cover border"
-          />
+          <div className="relative w-full overflow-hidden rounded-2xl border">
+            <div className="aspect-[16/10] sm:aspect-[21/9]">
+              <Image
+                src={HERO_IMG_URL}
+                alt="Pace Shuttle — luxury transfers"
+                fill
+                priority
+                className="object-cover"
+                sizes="100vw"
+              />
+            </div>
+          </div>
         </section>
 
         {/* Heading above country tiles */}
@@ -1021,39 +1024,62 @@ export default function HomePage() {
 
         {/* Country tiles */}
         <section className="mx-auto max-w-5xl">
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-4">
-            {countries.map((c) => (
-              <button
-                key={c.id}
-                className="text-left rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hover:shadow-md transition p-4"
-                onClick={() => {
-                  setCountryId(c.id);
-                  setActivePane("date");
-                  setFilterDateISO(null);
-                  setFilterDestinationId(null);
-                  setFilterPickupId(null);
-                  setFilterTypeName(null);
-                  setCalCursor(startOfMonth(new Date()));
-                }}
-              >
-                {c.picture_url ? (
-                  <img src={c.picture_url} alt={c.name} className="mb-3 h-40 w-full object-cover rounded-xl" />
-                ) : (<div className="mb-3 h-40 w-full rounded-xl bg-neutral-100" />)}
-                <div className="font-medium">{c.name}</div>
-                {c.description && <div className="mt-1 text-sm text-neutral-600 line-clamp-3">{c.description}</div>}
-              </button>
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {countries.map((c) => {
+              const imgUrl = buildPublicImageUrl(c.picture_url);
+              return (
+                <button
+                  key={c.id}
+                  className="text-left rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hover:shadow-md transition"
+                  onClick={() => {
+                    setCountryId(c.id);
+                    setActivePane("date");
+                    setFilterDateISO(null);
+                    setFilterDestinationId(null);
+                    setFilterPickupId(null);
+                    setFilterTypeName(null);
+                    setCalCursor(startOfMonth(new Date()));
+                  }}
+                >
+                  <div className="relative w-full">
+                    <div className="aspect-[4/3]">
+                      {imgUrl ? (
+                        <Image
+                          src={imgUrl}
+                          alt={c.name}
+                          fill
+                          className="object-cover"
+                          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                        />
+                      ) : (
+                        <div className="h-full w-full bg-neutral-100" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="p-4">
+                    <div className="font-medium">{c.name}</div>
+                    {c.description && <div className="mt-1 text-sm text-neutral-600 line-clamp-3">{c.description}</div>}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </section>
 
         {/* Footer CTA image linking to /partners */}
         <section className="pt-10">
           <a href="/partners" aria-label="Partner with Pace Shuttles">
-            <img
-              src={FOOTER_CTA_IMG_URL}
-              alt="Partner with Pace Shuttles"
-              className="w-full rounded-2xl object-cover border"
-            />
+            <div className="relative w-full overflow-hidden rounded-2xl border">
+              <div className="aspect-[21/9]">
+                <Image
+                  src={FOOTER_CTA_IMG_URL}
+                  alt="Partner with Pace Shuttles"
+                  fill
+                  className="object-cover"
+                  sizes="100vw"
+                />
+              </div>
+            </div>
           </a>
         </section>
       </div>
@@ -1150,7 +1176,7 @@ export default function HomePage() {
           <TilePicker
             title="Choose a destination"
             items={destinations.map((d) => ({
-              id: d.id, name: d.name, description: d.description ?? "", image: d.picture_url ?? undefined
+              id: d.id, name: d.name, description: d.description ?? "", image: buildPublicImageUrl(d.picture_url)
             }))}
             onChoose={setFilterDestinationId}
             selectedId={filterDestinationId}
@@ -1165,7 +1191,7 @@ export default function HomePage() {
               id: p.id,
               name: p.name,
               description: p.description ?? "",
-              image: p.picture_url ?? undefined,
+              image: buildPublicImageUrl(p.picture_url),
             }))}
             onChoose={setFilterPickupId}
             selectedId={filterPickupId}
@@ -1239,13 +1265,29 @@ export default function HomePage() {
                   <tr key={r.key} data-rowkey={r.key} ref={(el) => { rowRefs.current[r.key] = el }} className="border-t align-top">
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        {pu?.picture_url ? (<img src={pu.picture_url} alt={pu.name} className="h-10 w-16 object-cover rounded border" />) : (<div className="h-10 w-16 rounded border bg-neutral-100" />)}
+                        <div className="relative h-10 w-16 overflow-hidden rounded border">
+                          <Image
+                            src={buildPublicImageUrl(pu?.picture_url) || "/placeholder.png"}
+                            alt={pu?.name || "Pick-up"}
+                            fill
+                            className="object-cover"
+                            sizes="64px"
+                          />
+                        </div>
                         <span>{pu?.name ?? "—"}</span>
                       </div>
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        {de?.picture_url ? (<img src={de.picture_url} alt={de?.name ?? "Destination"} className="h-10 w-16 object-cover rounded border" />) : (<div className="h-10 w-16 rounded border bg-neutral-100" />)}
+                        <div className="relative h-10 w-16 overflow-hidden rounded border">
+                          <Image
+                            src={buildPublicImageUrl(de?.picture_url) || "/placeholder.png"}
+                            alt={de?.name || "Destination"}
+                            fill
+                            className="object-cover"
+                            sizes="64px"
+                          />
+                        </div>
                         <span>{de?.name ?? "—"}</span>
                       </div>
                     </td>
@@ -1375,11 +1417,21 @@ function TilePicker({
             className={`text-left rounded-2xl border bg-white overflow-hidden p-0 hover:shadow-sm transition ${selectedId === it.id ? "ring-2 ring-blue-600" : ""}`}
             onClick={() => onChoose(it.id)}
           >
-            {it.image ? (
-              <img src={it.image} alt={it.name} className="h-28 w-full object-cover" />
-            ) : (
-              <div className="h-28 w-full bg-neutral-100" />
-            )}
+            <div className="relative w-full">
+              <div className="aspect-[4/3]">
+                {it.image ? (
+                  <Image
+                    src={it.image}
+                    alt={it.name}
+                    fill
+                    className="object-cover"
+                    sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                  />
+                ) : (
+                  <div className="h-full w-full bg-neutral-100" />
+                )}
+              </div>
+            </div>
             <div className="p-3">
               <div className="font-medium">{it.name}</div>
               {it.description && (
