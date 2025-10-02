@@ -15,6 +15,9 @@ const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const QUOTE_SECRET = process.env.QUOTE_SIGNING_SECRET!;
 const CREATE_BOOKING_IMMEDIATELY = process.env.CREATE_BOOKING_IMMEDIATELY === "true";
+const SECRET = process.env.QUOTE_SIGNING_SECRET; // not NEXT_PUBLIC_*
+
+
 
 /* ---------- Helpers ---------- */
 function sbAdmin() {
