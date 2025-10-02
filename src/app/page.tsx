@@ -1067,21 +1067,20 @@ export default function HomePage() {
                     setCalCursor(startOfMonth(new Date()));
                   }}
                 >
-                  <div className="relative w-full">
-                    <div className="aspect-[4/3]">
-                      {imgUrl ? (
-                        <Image
-                          src={imgUrl}
-                          alt={c.name}
-                          fill
-                          className="object-cover"
-                          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-                        />
-                      ) : (
-                        <div className="h-full w-full bg-neutral-100" />
-                      )}
-                    </div>
-                  </div>
+                 <div className="relative w-full aspect-[4/3]">
+  {imgUrl ? (
+    <Image
+      src={imgUrl}
+      alt={c.name}
+      fill
+      className="object-cover"
+      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+    />
+  ) : (
+    <div className="h-full w-full bg-neutral-100" />
+  )}
+</div>
+
                   <div className="p-4">
                     <div className="font-medium">{c.name}</div>
                     {c.description && <div className="mt-1 text-sm text-neutral-600 line-clamp-3">{c.description}</div>}
