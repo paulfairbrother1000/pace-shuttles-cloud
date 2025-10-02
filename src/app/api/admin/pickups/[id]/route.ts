@@ -13,3 +13,5 @@ export async function POST(req: NextRequest, ctx: { params: Promise<Params> }) {
   // ...existing logic...
   return NextResponse.json({ ok: true, id });
 }
+
+export {};

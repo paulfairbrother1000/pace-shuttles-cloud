@@ -78,3 +78,5 @@ export async function POST(req: Request) {
     operator, // may be null if user has no operator_id
   });
 }
+
+export {};

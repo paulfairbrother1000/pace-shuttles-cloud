@@ -70,3 +70,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: e?.message || "Internal error" }, { status: 500 });
   }
 }
+
+export {};

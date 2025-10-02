@@ -46,3 +46,5 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   return new Response("decline route alive");
 }
+
+export {};

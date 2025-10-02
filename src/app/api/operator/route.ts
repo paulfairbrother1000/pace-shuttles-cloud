@@ -44,3 +44,5 @@ export async function GET() {
 
   return NextResponse.json({ journeys: out });
 }
+
+export {};

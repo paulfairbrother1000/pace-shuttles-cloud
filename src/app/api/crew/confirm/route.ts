@@ -49,3 +49,5 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   return new Response("confirm route alive");
 }
+
+export {};

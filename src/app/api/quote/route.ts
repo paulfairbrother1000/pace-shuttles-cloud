@@ -476,3 +476,5 @@ async function handleQuote(req: NextRequest) {
 
 export async function GET(req: NextRequest)  { return handleQuote(req); }
 export async function POST(req: NextRequest) { return handleQuote(req); }
+
+export {};

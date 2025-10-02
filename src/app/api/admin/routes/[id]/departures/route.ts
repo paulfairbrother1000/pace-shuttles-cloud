@@ -175,3 +175,5 @@ async function generateDepartures(req: NextRequest, routeId: string, doWrite: bo
 
   return NextResponse.json({ ok: true, created_or_existing: out.length });
 }
+
+export {};

@@ -393,3 +393,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: e?.message || "Internal Server Error" }, { status: 500 });
   }
 }
+
+export {};

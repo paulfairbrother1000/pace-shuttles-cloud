@@ -87,3 +87,5 @@ export async function DELETE(_req: NextRequest, context: { params: Promise<{ id:
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }
+
+export {};

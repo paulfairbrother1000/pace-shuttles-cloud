@@ -75,3 +75,5 @@ export async function POST(req: Request) {
     return json({ error: "Internal error" }, 500);
   }
 }
+
+export {};

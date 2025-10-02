@@ -35,3 +35,5 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, journey_id: a.journey_id });
 }
+
+export {};

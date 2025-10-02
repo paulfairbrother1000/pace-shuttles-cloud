@@ -95,3 +95,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: e?.message || "Server error" }, { status: 500 });
   }
 }
+
+export {};

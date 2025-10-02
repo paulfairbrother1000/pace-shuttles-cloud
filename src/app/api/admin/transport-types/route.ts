@@ -48,3 +48,5 @@ export async function POST(req: NextRequest, _ctx: { params: Promise<{}> }) {
 
   return NextResponse.json({ ok: true, id: data?.id });
 }
+
+export {};

@@ -80,3 +80,5 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<Params> }
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   return NextResponse.json({ ok: true });
 }
+
+export {};
