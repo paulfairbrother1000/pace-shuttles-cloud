@@ -1,9 +1,8 @@
 // src/app/layout.tsx
 import "./globals.css";
-import SiteHeader from "@/components/SiteHeader"; // adjust path if needed
 import type { Metadata } from "next";
-import AdminHeader from "@/components/AdminHeader"; // ← must match this path
-
+import { Suspense } from "react";
+import SiteHeader from "@/components/SiteHeader";
 
 export const metadata: Metadata = {
   title: "Pace Shuttles",
@@ -18,8 +17,15 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <SiteHeader />
-        <main>{children}</main>
+        {/* Header might be a Client Component; wrapping avoids any CSR-bailout warnings */}
+        <Suspense fallback={null}>
+          <SiteHeader />
+        </Suspense>
+
+        {/* Children can include client subtrees that read search params */}
+        <main>
+          <Suspense fallback={null}>{children}</Suspense>
+        </main>
       </body>
     </html>
   );
