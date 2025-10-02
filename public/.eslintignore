@@ -1,0 +1,9 @@
+# .eslintignore
+node_modules
+.next
+out
+
+# scratch files and duplicates
+**/* copy*.*        # e.g. page copy.tsx, page copy 3.tsx
+**/*copy*.*         # e.g. page copy99.tsx
+**/_debug/**
