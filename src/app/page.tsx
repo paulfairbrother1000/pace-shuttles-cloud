@@ -45,23 +45,59 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- Helpers to normalize image URLs to public Supabase paths ---------- */
-function buildPublicImageUrl(input?: string | null): string | undefined {
-  const p = input?.trim();
-  if (!p) return undefined;
-  // If absolute URL or app-relative path, use as-is
-  if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("/")) return p;
-  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!base) return undefined;
-  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET?.trim() || "images").replace(/^\/+|\/+$/g, "");
-  const path = p.replace(/^\/+/, "");
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  return `${base.replace(/\/+$/, "")}/storage/v1/object/public/${bucket}/${encodedPath}`;
+/* ---------- Image URL normalizer (fixes HTTP emulator links on iOS) ---------- */
+/**
+ * Accepts:
+ *  - bare object keys like "countries/uk.jpg"
+ *  - absolute URLs (emulator/local or production)
+ *  - app-relative paths ("/foo/bar.jpg")
+ * Returns an HTTPS public URL on your real Supabase host for anything storage-related.
+ */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+
+  // Pass through app-relative (public/) assets
+  if (raw.startsWith("/")) return raw;
+
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+
+  // If absolute URL, rewrite emulator/foreign-host storage URLs to our real host
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+
+      if (m && supaHost) {
+        // If it's local/emulator or a different host, rebuild on our HTTPS Supabase host
+        if (isLocal || u.hostname !== supaHost) {
+          return `https://${supaHost}/storage/v1/object/public/${m[1]}`;
+        }
+        // Already correct host and path
+        return raw;
+      }
+
+      // Not a Supabase-storage path; leave as-is
+      return raw;
+    } catch {
+      // Malformed absolute URL; fall through to treat as key
+    }
+  }
+
+  // Treat as object key in the public bucket
+  if (supaHost) {
+    const key = raw.replace(/^\/+/, "");
+    return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
+  }
+  return undefined;
 }
 
-// --- legacy helper kept for transport types (now uses generic builder)
+// --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
-  return buildPublicImageUrl(t.picture_url);
+  return publicImage(t.picture_url);
 }
 
 /* ---------- Types ---------- */
@@ -181,7 +217,6 @@ function makeDepartureISO(dateISO: string, pickup_time: string | null | undefine
 function soldKey(routeId: string, ymd: string) {
   return `${String(routeId).trim()}_${String(ymd).slice(0, 10)}`;
 }
-
 
 /* ========================================================================================= */
 /* ===== Quotes: one request per row, with diag in dev and AbortController ===== */
@@ -690,9 +725,7 @@ export default function HomePage() {
     orders.length > 0;
 
   const [seatSelections, setSeatSelections] = useState<Record<string, number>>({});
-  // remember last good visible price (keeps the UI stable)
   const [lastGoodPriceByRow, setLastGoodPriceByRow] = useState<Record<string, number>>({});
-  // LOCK: first visible per-seat price for a row; do NOT change when qty changes
   const [lockedPriceByRow, setLockedPriceByRow] = useState<Record<string, number>>({});
 
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
@@ -777,7 +810,6 @@ export default function HomePage() {
                 max_qty_at_price: json.max_qty_at_price ?? null,
               },
             }));
-            // Cache last good price and, if not previously locked, lock it now
             setLastGoodPriceByRow((p) => ({ ...p, [r.key]: toShow }));
             setLockedPriceByRow((p) => (locked != null ? p : { ...p, [r.key]: toShow }));
           } catch (e: any) {
@@ -790,7 +822,6 @@ export default function HomePage() {
 
     run();
     return () => ac.abort();
-    // DO NOT include quotesByRow in deps to avoid loops
   }, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading]);
 
   const handleSeatChange = async (rowKey: string, n: number) => {
@@ -798,7 +829,6 @@ export default function HomePage() {
     const row = rows.find((r) => r.key === rowKey);
     if (!row) return;
 
-    // If pre-sold-out, ignore changes (UI is disabled anyway)
     const preSoldOut = isSoldOut(row.route.id, row.dateISO);
     if (preSoldOut) return;
 
@@ -862,7 +892,6 @@ export default function HomePage() {
     const q   = quotesByRow[rowKey];
     if (!row) { alert("Missing row data."); return; }
 
-    // If pre-sold-out, block immediately
     const preSoldOut = isSoldOut(routeId, row.dateISO);
     if (preSoldOut) {
       alert("Sorry, this departure is sold out.");
@@ -872,7 +901,6 @@ export default function HomePage() {
     const seats = seatSelections[rowKey] ?? DEFAULT_SEATS;
     const departure_ts = makeDepartureISO(row.dateISO, row.route.pickup_time);
 
-    // Re-confirm price/availability and get a FRESH single-use token
     let confirm: QuoteOk;
     try {
       const result = await fetchQuoteOnce(routeId, row.dateISO, seats, undefined, q?.vehicle_id ?? null);
@@ -899,8 +927,8 @@ export default function HomePage() {
         .from("quote_intents")
         .insert({
           route_id: routeId,
-          date_iso: row.dateISO, // "YYYY-MM-DD"
-          departure_ts,          // optional helper for checkout
+          date_iso: row.dateISO,
+          departure_ts,
           seats,
           per_seat_all_in:
             (lockedPriceByRow[rowKey] ??
@@ -908,7 +936,6 @@ export default function HomePage() {
              lastGoodPriceByRow[rowKey] ??
              null),
           currency: q?.currency ?? "GBP",
-          // IMPORTANT: store the fresh token from confirm
           quote_token: confirm.token,
         })
         .select("id")
@@ -929,7 +956,6 @@ export default function HomePage() {
         return;
       }
 
-      // Navigate to existing Review & Pay page
       window.location.href = nextUrl;
     } catch (e: any) {
       console.error("quote_intents insert exception:", e);
@@ -1026,7 +1052,7 @@ export default function HomePage() {
         <section className="mx-auto max-w-5xl">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {countries.map((c) => {
-              const imgUrl = buildPublicImageUrl(c.picture_url);
+              const imgUrl = publicImage(c.picture_url);
               return (
                 <button
                   key={c.id}
@@ -1176,7 +1202,7 @@ export default function HomePage() {
           <TilePicker
             title="Choose a destination"
             items={destinations.map((d) => ({
-              id: d.id, name: d.name, description: d.description ?? "", image: buildPublicImageUrl(d.picture_url)
+              id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url)
             }))}
             onChoose={setFilterDestinationId}
             selectedId={filterDestinationId}
@@ -1191,7 +1217,7 @@ export default function HomePage() {
               id: p.id,
               name: p.name,
               description: p.description ?? "",
-              image: buildPublicImageUrl(p.picture_url),
+              image: publicImage(p.picture_url),
             }))}
             onChoose={setFilterPickupId}
             selectedId={filterPickupId}
@@ -1208,7 +1234,7 @@ export default function HomePage() {
                 id: t.name,
                 name: t.name,
                 description: t.description ?? "",
-                image: typeImgSrc(t),
+                image: typeImgSrc(t), // already calls publicImage inside
               }))}
             onChoose={setFilterTypeName}
             selectedId={filterTypeName}
@@ -1249,7 +1275,6 @@ export default function HomePage() {
                 const hasLivePrice = !!q?.token;
                 const rowSoldOut = preSoldOut || q?.availability === "sold_out";
 
-                // LOCKED visible price: never falls back to £0
                 const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
                 const selected = seatSelections[r.key] ?? DEFAULT_SEATS;
                 const err = quoteErrByRow[r.key];
@@ -1259,7 +1284,7 @@ export default function HomePage() {
                 const overByCapacity = !rowSoldOut && selected > remaining;
 
                 const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
-                const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5; // <= 5 ONLY
+                const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
 
                 return (
                   <tr key={r.key} data-rowkey={r.key} ref={(el) => { rowRefs.current[r.key] = el }} className="border-t align-top">
@@ -1267,7 +1292,7 @@ export default function HomePage() {
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
                           <Image
-                            src={buildPublicImageUrl(pu?.picture_url) || "/placeholder.png"}
+                            src={publicImage(pu?.picture_url) || "/placeholder.png"}
                             alt={pu?.name || "Pick-up"}
                             fill
                             className="object-cover"
@@ -1281,7 +1306,7 @@ export default function HomePage() {
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
                           <Image
-                            src={buildPublicImageUrl(de?.picture_url) || "/placeholder.png"}
+                            src={publicImage(de?.picture_url) || "/placeholder.png"}
                             alt={de?.name || "Destination"}
                             fill
                             className="object-cover"
@@ -1315,14 +1340,12 @@ export default function HomePage() {
                               : (err ? `Quote error: ${err}` : "Awaiting live price")}
                         </span>
 
-                        {/* Low-seats hint (<= 5 only) */}
                         {showLowSeats && !rowSoldOut && (
                           <div className="text-[11px] text-amber-700 mt-0.5">
                             Only {remaining} seat{remaining === 1 ? "" : "s"} left
                           </div>
                         )}
 
-                        {/* Soft guards */}
                         {!rowSoldOut && overByCapacity && (
                           <div className="text-[11px] text-amber-700 mt-0.5">
                             Only {remaining} seat{remaining === 1 ? "" : "s"} left.
