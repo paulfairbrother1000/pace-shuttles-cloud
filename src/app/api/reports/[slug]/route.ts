@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
 
-type Ctx = { params: { slug: string } };
+/** Route signature (what Next's checker reads) */
+export function GET(
+  _req: Request,
+  context: { params: { slug: string } }
+): Promise<Response>;
 
-export async function GET(_req: Request, { params }: Ctx) {
+/** Implementation (kept broad so it compiles everywhere) */
+export async function GET(_req: Request, context: any) {
   return NextResponse.json(
-    { ok: true, slug: params.slug },
+    { ok: true, slug: context?.params?.slug },
     { headers: { 'Cache-Control': 'no-store' } }
   );
 }
