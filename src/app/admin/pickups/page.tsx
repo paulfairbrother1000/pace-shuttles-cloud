@@ -2,6 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import Image from "next/image";
+import { publicImage } from "@/lib/publicImage";
+
+// ...inside your row render:
+<Image
+  src={publicImage(row.picture_url) || "/placeholder.png"}
+  alt={row.name || "Pick-up point"}
+  fill
+  className="object-cover"
+  sizes="64px"
+/>
+
 
 /* -------- Supabase (client-side) -------- */
 const sb = createBrowserClient(
