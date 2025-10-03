@@ -1461,4 +1461,8 @@ function TilePicker({
               )}
             </div>
           </button>
-        ))}
+              ))}
+      </div>        {/* closes grid */}
+    </div>          {/* CLOSE THIS: closes border-t wrapper */}
+  );
+}
