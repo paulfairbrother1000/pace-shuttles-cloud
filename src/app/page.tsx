@@ -7,7 +7,7 @@ import { createBrowserClient } from "@supabase/ssr";
 
 const LOGIN_PATH = "/login";
 
-// Landing images — put these in /public or replace with your URLs
+// Landing images — served from /public (no Supabase needed)
 const HERO_IMG_URL = "/pace-hero.jpg";
 const FOOTER_CTA_IMG_URL = "/partners-cta.jpg";
 
@@ -1067,19 +1067,19 @@ export default function HomePage() {
                     setCalCursor(startOfMonth(new Date()));
                   }}
                 >
-                 <div className="relative w-full aspect-[4/3]">
-  {imgUrl ? (
-    <Image
-      src={imgUrl}
-      alt={c.name}
-      fill
-      className="object-cover"
-      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-    />
-  ) : (
-    <div className="h-full w-full bg-neutral-100" />
-  )}
-</div>
+                  <div className="relative w-full aspect-[4/3]">
+                    {imgUrl ? (
+                      <Image
+                        src={imgUrl}
+                        alt={c.name}
+                        fill
+                        className="object-cover"
+                        sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                      />
+                    ) : (
+                      <div className="h-full w-full bg-neutral-100" />
+                    )}
+                  </div>
 
                   <div className="p-4">
                     <div className="font-medium">{c.name}</div>
@@ -1197,7 +1197,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {activePane === "destination" && (
+        {activePane === "destination" and (
           <TilePicker
             title="Choose a destination"
             items={destinations.map((d) => ({
