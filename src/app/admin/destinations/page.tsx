@@ -2,6 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { publicImage } from "@/lib/publicImage";
+// ...
+<Image
+  src={publicImage(dest.picture_url) || "/placeholder.png"}
+  alt={dest.name || "Destination"}
+  fill
+  className="object-cover"
+  sizes="64px"
+/>
+
 
 /* -------- Supabase client (inline to avoid module issues) -------- */
 const sb = createBrowserClient(
