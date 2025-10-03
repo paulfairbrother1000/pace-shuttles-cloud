@@ -1197,7 +1197,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {activePane === "destination" and (
+        {activePane === "destination" && (
           <TilePicker
             title="Choose a destination"
             items={destinations.map((d) => ({
@@ -1462,7 +1462,3 @@ function TilePicker({
             </div>
           </button>
         ))}
-      </div>
-    </div>
-  );
-}
