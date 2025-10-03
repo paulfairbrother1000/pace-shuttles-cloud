@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { publicImage } from "@/lib/publicImage";
+// ...
+<Image src={publicImage(type.picture_url) || "/placeholder.png"} alt={type.name} fill className="object-cover" />
+
 
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
