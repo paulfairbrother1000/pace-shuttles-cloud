@@ -70,30 +70,27 @@ function publicImage(input?: string | null): string | undefined {
       const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
       if (m) {
         return (isLocal || u.hostname !== supaHost)
-          ? `https://${supaHost}/storage/v1/object/public/${m[1]}`
-          : raw;
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
       }
-      return raw; // non-Supabase absolute URL → leave as-is
+      return raw; // non-Supabase absolute URL
     } catch {
-      /* fall through and treat as key */
+      /* fall through */
     }
   }
 
-  // Already a storage path missing host
+  // Already a storage path without host
   if (raw.startsWith("/storage/v1/object/public/")) {
-    return `https://${supaHost}${raw}`;
+    return `https://${supaHost}${raw}?v=5`;
   }
 
-  // Treat "/images/..." and "images/..." as storage keys
-  let key = raw.replace(/^\/+/, ""); // drop any leading slash
-
-  // If key already includes the bucket prefix, don't add it again
+  // Treat BOTH "/images/..." and "images/..." as storage keys
+  let key = raw.replace(/^\/+/, "");
   if (key.startsWith(`${bucket}/`)) {
-    return `https://${supaHost}/storage/v1/object/public/${key}`;
+    // key already includes bucket
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
   }
-
-  // Otherwise, prepend the bucket
-  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
 
