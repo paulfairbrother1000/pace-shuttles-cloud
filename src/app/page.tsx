@@ -48,9 +48,9 @@ function Banner({ children }: { children: React.ReactNode }) {
 /* ---------- Image URL normalizer (fixes HTTP emulator links on iOS) ---------- */
 /**
  * Accepts:
- *  - bare object keys like "countries/uk.jpg" or "images/countries/uk.jpg"
+ *  - bare object keys like "countries/uk.jpg"
  *  - absolute URLs (emulator/local or production)
- *  - app-relative storage paths ("/storage/v1/object/public/...").
+ *  - app-relative paths ("/foo/bar.jpg")
  * Returns an HTTPS public URL on your real Supabase host for anything storage-related.
  */
 function publicImage(input?: string | null): string | undefined {
@@ -70,8 +70,8 @@ function publicImage(input?: string | null): string | undefined {
       const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
       if (m) {
         return (isLocal || u.hostname !== supaHost)
-          ? `https://${supaHost}/storage/v1/object/public/${m[1]}`
-          : raw;
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
       }
       return raw; // non-Supabase absolute URL
     } catch {
@@ -79,19 +79,21 @@ function publicImage(input?: string | null): string | undefined {
     }
   }
 
-  // App-relative full storage path
+  // Already a storage path without host
   if (raw.startsWith("/storage/v1/object/public/")) {
-    return `https://${supaHost}${raw}`;
+    return `https://${supaHost}${raw}?v=5`;
   }
 
-  // Treat BOTH "/images/..." and "images/..." as storage keys (bucket root)
+  // Treat BOTH "/images/..." and "images/..." as storage keys
   let key = raw.replace(/^\/+/, "");
   if (key.startsWith(`${bucket}/`)) {
-    // Already includes the bucket
-    return `https://${supaHost}/storage/v1/object/public/${key}`;
+    // key already includes bucket
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
   }
-  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
+
+
 
 // --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
@@ -117,7 +119,8 @@ type RouteRow = {
   season_to?: string | null;        // YYYY-MM-DD
   is_active?: boolean | null;
   transport_type?: string | null;   // legacy/fallback text or id/name
-  countries?: { id: string; name: string; timezone?: string | null } | null; // joined country record
+  // joined country record (timezone comes from countries table)
+  countries?: { id: string; name: string; timezone?: string | null } | null;
 };
 
 type Assignment = { id: string; route_id: string; vehicle_id: string; preferred?: boolean | null; is_active?: boolean | null; };
@@ -221,7 +224,12 @@ function soldKey(routeId: string, ymd: string) {
 const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
 
 type QuoteOk = {
-  availability: "available" | "no_journey" | "no_vehicles" | "sold_out" | "insufficient_capacity_for_party";
+  availability:
+    | "available"
+    | "no_journey"
+    | "no_vehicles"
+    | "sold_out"
+    | "insufficient_capacity_for_party";
   qty: number;
   base_cents: number;
   tax_cents: number;
@@ -640,6 +648,16 @@ export default function HomePage() {
     }
     return m;
   }, [occurrences, boatsByRoute, partiesByKey]);
+
+  // convenience: sold out map (local)
+  const soldOutByKey = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const occ of occurrences) {
+      const rem = remainingSeatsByKey.get(`${occ.route_id}_${occ.dateISO}`) ?? 0;
+      m.set(`${occ.route_id}_${occ.dateISO}`, rem <= 0);
+    }
+    return m;
+  }, [occurrences, remainingSeatsByKey]);
 
   /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
   function isSoldOut(routeId: string, dateISO: string) {
@@ -1408,17 +1426,22 @@ function TilePicker({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {includeAll && (
           <button
-            className={`text-left rounded-2xl border bg-white p-3 hover:shadow-sm transition ${!selectedId ? "ring-2 ring-blue-600" : ""}`}
+            className={`text-left rounded-2xl border bg-white p-3 hover:shadow-sm transition ${
+              !selectedId ? "ring-2 ring-blue-600" : ""
+            }`}
             onClick={() => onChoose(null)}
           >
             <div className="font-medium">All</div>
             <div className="text-xs text-neutral-600 mt-1">No filter</div>
           </button>
         )}
+
         {items.map((it) => (
           <button
             key={it.id}
-            className={`text-left rounded-2xl border bg-white overflow-hidden p-0 hover:shadow-sm transition ${selectedId === it.id ? "ring-2 ring-blue-600" : ""}`}
+            className={`text-left rounded-2xl border bg-white overflow-hidden p-0 hover:shadow-sm transition ${
+              selectedId === it.id ? "ring-2 ring-blue-600" : ""
+            }`}
             onClick={() => onChoose(it.id)}
           >
             <div className="relative w-full">
@@ -1436,16 +1459,19 @@ function TilePicker({
                 )}
               </div>
             </div>
+
             <div className="p-3">
               <div className="font-medium">{it.name}</div>
               {it.description && (
-                <div className="text-xs text-neutral-600 mt-1 line-clamp-3">{it.description}</div>
+                <div className="text-xs text-neutral-600 mt-1 line-clamp-3">
+                  {it.description}
+                </div>
               )}
             </div>
           </button>
         ))}
-      </div>{/* closes grid */}
-    </div>/* closes border-t wrapper */
+      </div>
+    </div>
   );
 }
 
