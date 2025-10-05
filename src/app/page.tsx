@@ -11,6 +11,9 @@ const LOGIN_PATH = "/login";
 const HERO_IMG_URL = "/pace-hero.jpg";
 const FOOTER_CTA_IMG_URL = "/partners-cta.jpg";
 
+// Small cache-buster for image optimizer caching (bump when you want to flush)
+const IMG_CACHE_STAMP = "v=4";
+
 /** Only create the client in the browser and when envs exist. */
 const supabase =
   typeof window !== "undefined" &&
@@ -45,13 +48,14 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- Image URL normalizer (fixes HTTP emulator links on iOS) ---------- */
+/* ---------- Image URL normalizer (hardened) ---------- */
 /**
  * Accepts:
- *  - bare object keys like "countries/uk.jpg"
+ *  - storage keys like "images/countries/uk.jpg"
  *  - absolute URLs (emulator/local or production)
  *  - app-relative paths ("/foo/bar.jpg")
  * Returns an HTTPS public URL on your real Supabase host for anything storage-related.
+ * Rewrites any localhost/IP/http storage URLs to your live https://<project>.supabase.co host.
  */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
@@ -62,37 +66,45 @@ function publicImage(input?: string | null): string | undefined {
 
   const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
   const supaHost = supaUrl.replace(/^https?:\/\//i, "");
-  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images")
+    .replace(/^\/+|\/+$/g, "");
 
-  // If absolute URL, rewrite emulator/foreign-host storage URLs to our real host
+  // Absolute URL? Rewrite localhost/IP/different-host storage paths to our real host
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
-      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      const isLocalHostOrIP =
+        u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      // match /storage/v1/object/public/... or /storage/v1/object/sign/...
+      const m = u.pathname.match(/\/storage\/v1\/object\/(public|sign)\/(.+)$/);
 
       if (m && supaHost) {
-        // If it's local/emulator or a different host, rebuild on our HTTPS Supabase host
-        if (isLocal || u.hostname !== supaHost) {
-          return `https://${supaHost}/storage/v1/object/public/${m[1]}`;
+        if (isLocalHostOrIP || u.hostname !== supaHost || u.protocol === "http:") {
+          return `https://${supaHost}/storage/v1/object/${m[1]}/${m[2]}`;
         }
-        // Already correct host and path
+        // Already correct host/protocol
         return raw;
       }
 
-      // Not a Supabase-storage path; leave as-is
+      // Not a Supabase storage URL; leave as-is
       return raw;
     } catch {
       // Malformed absolute URL; fall through to treat as key
     }
   }
 
-  // Treat as object key in the public bucket
+  // Treat as storage key in the public bucket
   if (supaHost) {
     const key = raw.replace(/^\/+/, "");
     return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
   }
   return undefined;
+}
+
+/** Append a tiny cache-busting query so the optimizer doesn't serve stale 127.0.0.1 images. */
+function bust(u?: string): string {
+  if (!u) return "";
+  return u.includes("?") ? `${u}&${IMG_CACHE_STAMP}` : `${u}?${IMG_CACHE_STAMP}`;
 }
 
 // --- legacy helper kept for transport types (now uses normalizer)
@@ -899,7 +911,7 @@ export default function HomePage() {
     }
 
     const seats = seatSelections[rowKey] ?? DEFAULT_SEATS;
-    const departure_ts = makeDepartureISO(row.dateISO, row.route.pickup_time);
+    the const departure_ts = makeDepartureISO(row.dateISO, row.route.pickup_time);
 
     let confirm: QuoteOk;
     try {
@@ -1053,6 +1065,7 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {countries.map((c) => {
               const imgUrl = publicImage(c.picture_url);
+              const displayUrl = imgUrl ? bust(imgUrl) : "";
               return (
                 <button
                   key={c.id}
@@ -1068,9 +1081,9 @@ export default function HomePage() {
                   }}
                 >
                   <div className="relative w-full aspect-[4/3]">
-                    {imgUrl ? (
+                    {displayUrl ? (
                       <Image
-                        src={imgUrl}
+                        src={displayUrl}
                         alt={c.name}
                         fill
                         className="object-cover"
@@ -1285,13 +1298,16 @@ export default function HomePage() {
                 const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
                 const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
 
+                const puUrl = publicImage(pu?.picture_url);
+                const deUrl = publicImage(de?.picture_url);
+
                 return (
                   <tr key={r.key} data-rowkey={r.key} ref={(el) => { rowRefs.current[r.key] = el }} className="border-t align-top">
                     <td className="p-3">
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
                           <Image
-                            src={publicImage(pu?.picture_url) || "/placeholder.png"}
+                            src={puUrl ? bust(puUrl) : "/placeholder.png"}
                             alt={pu?.name || "Pick-up"}
                             fill
                             className="object-cover"
@@ -1305,7 +1321,7 @@ export default function HomePage() {
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
                           <Image
-                            src={publicImage(de?.picture_url) || "/placeholder.png"}
+                            src={deUrl ? bust(deUrl) : "/placeholder.png"}
                             alt={de?.name || "Destination"}
                             fill
                             className="object-cover"
@@ -1443,7 +1459,7 @@ function TilePicker({
               <div className="aspect-[4/3]">
                 {it.image ? (
                   <Image
-                    src={it.image}
+                    src={bust(it.image)}
                     alt={it.name}
                     fill
                     className="object-cover"
