@@ -48,9 +48,9 @@ function Banner({ children }: { children: React.ReactNode }) {
 /* ---------- Image URL normalizer (fixes HTTP emulator links on iOS) ---------- */
 /**
  * Accepts:
- *  - bare object keys like "countries/uk.jpg"
+ *  - bare object keys like "countries/uk.jpg" or "images/countries/uk.jpg"
  *  - absolute URLs (emulator/local or production)
- *  - app-relative paths ("/foo/bar.jpg")
+ *  - app-relative storage paths ("/storage/v1/object/public/...").
  * Returns an HTTPS public URL on your real Supabase host for anything storage-related.
  */
 function publicImage(input?: string | null): string | undefined {
@@ -70,8 +70,8 @@ function publicImage(input?: string | null): string | undefined {
       const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
       if (m) {
         return (isLocal || u.hostname !== supaHost)
-          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
-          : `${raw}?v=5`;
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}`
+          : raw;
       }
       return raw; // non-Supabase absolute URL
     } catch {
@@ -79,21 +79,19 @@ function publicImage(input?: string | null): string | undefined {
     }
   }
 
-  // Already a storage path without host
+  // App-relative full storage path
   if (raw.startsWith("/storage/v1/object/public/")) {
-    return `https://${supaHost}${raw}?v=5`;
+    return `https://${supaHost}${raw}`;
   }
 
-  // Treat BOTH "/images/..." and "images/..." as storage keys
+  // Treat BOTH "/images/..." and "images/..." as storage keys (bucket root)
   let key = raw.replace(/^\/+/, "");
   if (key.startsWith(`${bucket}/`)) {
-    // key already includes bucket
-    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+    // Already includes the bucket
+    return `https://${supaHost}/storage/v1/object/public/${key}`;
   }
-  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
 }
-
-
 
 // --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
@@ -119,8 +117,7 @@ type RouteRow = {
   season_to?: string | null;        // YYYY-MM-DD
   is_active?: boolean | null;
   transport_type?: string | null;   // legacy/fallback text or id/name
-  // joined country record (timezone comes from countries table)
-  countries?: { id: string; name: string; timezone?: string | null } | null;
+  countries?: { id: string; name: string; timezone?: string | null } | null; // joined country record
 };
 
 type Assignment = { id: string; route_id: string; vehicle_id: string; preferred?: boolean | null; is_active?: boolean | null; };
@@ -224,12 +221,7 @@ function soldKey(routeId: string, ymd: string) {
 const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
 
 type QuoteOk = {
-  availability:
-    | "available"
-    | "no_journey"
-    | "no_vehicles"
-    | "sold_out"
-    | "insufficient_capacity_for_party";
+  availability: "available" | "no_journey" | "no_vehicles" | "sold_out" | "insufficient_capacity_for_party";
   qty: number;
   base_cents: number;
   tax_cents: number;
@@ -648,16 +640,6 @@ export default function HomePage() {
     }
     return m;
   }, [occurrences, boatsByRoute, partiesByKey]);
-
-  // convenience: sold out map (local)
-  const soldOutByKey = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const occ of occurrences) {
-      const rem = remainingSeatsByKey.get(`${occ.route_id}_${occ.dateISO}`) ?? 0;
-      m.set(`${occ.route_id}_${occ.dateISO}`, rem <= 0);
-    }
-    return m;
-  }, [occurrences, remainingSeatsByKey]);
 
   /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
   function isSoldOut(routeId: string, dateISO: string) {
@@ -1462,3 +1444,8 @@ function TilePicker({
             </div>
           </button>
         ))}
+      </div>{/* closes grid */}
+    </div>/* closes border-t wrapper */
+  );
+}
+
