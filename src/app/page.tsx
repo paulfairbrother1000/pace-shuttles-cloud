@@ -60,34 +60,42 @@ function publicImage(input?: string | null): string | undefined {
   const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
   const supaHost = supaUrl.replace(/^https?:\/\//i, "");
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
 
-  // If it's an absolute http(s) URL, normalize only Supabase storage links to our project's host
+  // Absolute URL? Normalize only Supabase storage links onto our project host
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
       const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
       const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
-      if (m && supaHost) {
-        if (isLocal || u.hostname !== supaHost) {
-          return `https://${supaHost}/storage/v1/object/public/${m[1]}`;
-        }
-        return raw; // already correct
+      if (m) {
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}`
+          : raw;
       }
-      return raw; // non-Supabase URL: leave as-is
+      return raw; // non-Supabase absolute URL → leave as-is
     } catch {
-      // fall through to treat as key
+      /* fall through and treat as key */
     }
   }
 
-  // If it's a bare Supabase storage path missing host, add ours
+  // Already a storage path missing host
   if (raw.startsWith("/storage/v1/object/public/")) {
-    return supaHost ? `https://${supaHost}${raw}` : undefined;
+    return `https://${supaHost}${raw}`;
   }
 
-  // Treat BOTH "images/foo.jpg" and "/images/foo.jpg" as bucket keys
-  const key = raw.replace(/^\/+/, "");
-  return supaHost ? `https://${supaHost}/storage/v1/object/public/${bucket}/${key}` : undefined;
+  // Treat "/images/..." and "images/..." as storage keys
+  let key = raw.replace(/^\/+/, ""); // drop any leading slash
+
+  // If key already includes the bucket prefix, don't add it again
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}`;
+  }
+
+  // Otherwise, prepend the bucket
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}`;
 }
+
 
 
 // --- legacy helper kept for transport types (now uses normalizer)
