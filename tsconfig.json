@@ -1,33 +1,36 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
-    "allowJs": true,
-    "skipLibCheck": true,
+    "lib": ["dom", "dom.iterable", "esnext"],
+
+    // Keep builds lenient for now
     "strict": false,
+    "skipLibCheck": true,
     "noEmit": true,
-    "esModuleInterop": true,
+
+    // Module/JSX settings compatible with Next 13+/15
     "module": "esnext",
     "moduleResolution": "bundler",
+    "jsx": "preserve",
+
+    // Interop & defaults that prevent common TS import/JSX hiccups
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
     "incremental": true,
+
+    // Base URL + alias
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "src/*"
-      ]
+      "@/*": ["src/*"]
     },
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+
+    // Useful ambient types
+    "types": ["node"],
+
+    // Next.js TypeScript plugin
+    "plugins": [{ "name": "next" }]
   },
   "include": [
     "next-env.d.ts",
@@ -36,6 +39,8 @@
     ".next/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next",
+    "dist"
   ]
 }
