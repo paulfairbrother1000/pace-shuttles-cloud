@@ -5,16 +5,6 @@ import { createBrowserClient } from "@supabase/ssr";
 import Image from "next/image";
 import { publicImage } from "@/lib/publicImage";
 
-// ...inside your row render:
-<Image
-  src={publicImage(row.picture_url) || "/placeholder.png"}
-  alt={row.name || "Pick-up point"}
-  fill
-  className="object-cover"
-  sizes="64px"
-/>
-
-
 /* -------- Supabase (client-side) -------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -208,7 +198,7 @@ export default function AdminPickupPointsPage() {
       if (!canSave) return setMsg("Enter name, country, and transport type.");
       setSaving(true);
 
-      // Optional upload (client-side; requires storage insert policy on 'images' bucket)
+      // Optional upload
       let picture_url: string | null = preview ?? null;
       if (file) {
         const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
@@ -478,9 +468,15 @@ export default function AdminPickupPointsPage() {
                     <td className="p-3">{typeName(r.transport_type_id)}</td>
                     <td className="p-3">{placeName(r.transport_type_place_id)}</td>
                     <td className="p-3">
-                      {r.picture_url ? (
-                        <img src={r.picture_url} alt={r.name} className="h-12 w-20 object-cover rounded border" />
-                      ) : "—"}
+                      <div className="relative h-12 w-20 overflow-hidden rounded border">
+                        <Image
+                          src={publicImage(r.picture_url) || "/placeholder.png"}
+                          alt={r.name || "Pick-up point"}
+                          fill
+                          className="object-cover"
+                          sizes="80px"
+                        />
+                      </div>
                     </td>
                     <td className="p-3 text-right space-x-2">
                       <button className="px-3 py-1 rounded-full border" onClick={() => loadOne(r.id)}>
