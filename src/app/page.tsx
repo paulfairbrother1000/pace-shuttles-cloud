@@ -1,4 +1,4 @@
-// src/app/page.tsx
+// src/app/page.tsx  (Part 1/4)
 "use client";
 
 import Image from "next/image";
@@ -93,8 +93,6 @@ function publicImage(input?: string | null): string | undefined {
   return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
-
-
 // --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
   return publicImage(t.picture_url);
@@ -119,7 +117,6 @@ type RouteRow = {
   season_to?: string | null;        // YYYY-MM-DD
   is_active?: boolean | null;
   transport_type?: string | null;   // legacy/fallback text or id/name
-  // joined country record (timezone comes from countries table)
   countries?: { id: string; name: string; timezone?: string | null } | null;
 };
 
@@ -135,7 +132,7 @@ type Vehicle = {
   maxseatdiscount?: number | null;
   maxseats?: number | string | null;
 };
-type TransportTypeRow = { id: string; name: string; description?: string | null; picture_url?: string | null; is_active?: boolean | null; };
+type TransportTypeRow = { id: string; name: string; description?: string | null; picture_url?: string | null; is_active?: boolean | null };
 
 // paid orders we use to pre-mark Sold out
 type Order = {
@@ -217,10 +214,9 @@ function makeDepartureISO(dateISO: string, pickup_time: string | null | undefine
 function soldKey(routeId: string, ymd: string) {
   return `${String(routeId).trim()}_${String(ymd).slice(0, 10)}`;
 }
+// src/app/page.tsx  (Part 2/4)
 
-/* ========================================================================================= */
-/* ===== Quotes: one request per row, with diag in dev and AbortController ===== */
-
+/* ===== Quotes (snake_case API to /api/quote) ===== */
 const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
 
 type QuoteOk = {
@@ -235,17 +231,16 @@ type QuoteOk = {
   tax_cents: number;
   fees_cents: number;
   total_cents: number;
-  unit_cents?: number;             // NEW, preferred
+  unit_cents?: number;             // preferred
   perSeatAllInC?: number;          // legacy fallback (pounds float)
   currency?: string;
-  vehicle_id?: string | null;      // boat that priced this quote
+  vehicle_id?: string | null;
   max_qty_at_price?: number | null;
   token: string;
 };
 
 type QuoteErr = { error_code: string; step?: string; details?: string };
 
-/** Single clean GET using snake_case (matches server). Optional pin to a vehicle. */
 async function fetchQuoteOnce(
   routeId: string,
   dateISO: string,
@@ -277,9 +272,7 @@ async function fetchQuoteOnce(
   return json;
 }
 
-/* ========================================================================================= */
-/* ===== Greedy allocator used to compute remaining seats at first paint ===== */
-
+/* ===== Greedy allocator: compute remaining seats at first paint ===== */
 type Party = { size: number };
 function allocatePartiesForRemaining(
   parties: Party[],
@@ -305,8 +298,6 @@ function allocatePartiesForRemaining(
   const remaining = Math.max(0, cap - used);
   return { remaining, used, cap, unassigned };
 }
-
-/* ========================================================================================= */
 
 export default function HomePage() {
   // -------- Hydration guard to avoid SSR/CSR mismatch --------
@@ -385,14 +376,14 @@ export default function HomePage() {
           supabase.from("destinations").select("id,name,country_id,picture_url,description,url").eq("country_id", countryId).order("name"),
           supabase
             .from("routes")
-            .select(`
-              *,
-              countries:country_id (
-                id,
-                name,
-                timezone
-              )
-            `)
+            .select(
+              `*,
+               countries:country_id (
+                 id,
+                 name,
+                 timezone
+               )`
+            )
             .eq("country_id", countryId)
             .eq("is_active", true)
             .order("created_at", { ascending: false }),
@@ -605,9 +596,9 @@ export default function HomePage() {
     return "—";
   };
 
-  /* ---------- SOLD OUT on first paint: allocator-based (tight & correct) ---------- */
+  /* ---------- SOLD OUT at first paint ---------- */
 
-  // map: route_id → candidate boats with caps/preferred
+  // map: route_id → boats
   const boatsByRoute = useMemo(() => {
     const m = new Map<string, { vehicle_id: string; cap: number; preferred: boolean }[]>();
     for (const a of assignments) {
@@ -622,7 +613,7 @@ export default function HomePage() {
     return m;
   }, [assignments, vehicles]);
 
-  // map: `${route_id}_${dateISO}` → list of party sizes (PAID orders)
+  // map: ${route_id}_${dateISO} → list of party sizes (PAID orders)
   const partiesByKey = useMemo(() => {
     const m = new Map<string, Party[]>();
     for (const o of orders) {
@@ -636,7 +627,7 @@ export default function HomePage() {
     return m;
   }, [orders]);
 
-  // map: `${route_id}_${dateISO}` → remaining seats after allocating all existing parties
+  // map: ${route_id}_${dateISO} → remaining seats after allocating all existing parties
   const remainingSeatsByKey = useMemo(() => {
     const m = new Map<string, number>();
     for (const occ of occurrences) {
@@ -658,6 +649,174 @@ export default function HomePage() {
     }
     return m;
   }, [occurrences, remainingSeatsByKey]);
+
+  /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
+  function isSoldOut(routeId: string, dateISO: string) {
+    const k = `${routeId}_${dateISO}`;
+    const dbRem = remainingByKeyDB.get(k);
+    if (dbRem != null) return dbRem <= 0;
+    return (remainingSeatsByKey.get(k) ?? 0) <= 0;
+  }
+
+  /* ---------- Filters -> rows ---------- */
+  const filteredOccurrences = useMemo(() => {
+    const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
+    const minISO = startOfDay(nowPlus25h).toISOString().slice(0, 10);
+
+    let occ = occurrences.slice();
+    occ = occ.filter((o) => o.dateISO >= minISO);
+
+    if (filterDateISO) {
+      occ = occ.filter((o) => o.dateISO === filterDateISO);
+    }
+    if (filterDestinationId) {
+      const keepRoute = new Set(verifiedRoutes.filter((r) => r.destination_id === filterDestinationId).map((r) => r.id));
+      occ = occ.filter((o) => keepRoute.has(o.route_id));
+    }
+    if (filterPickupId) {
+      const keepRoute = new Set(verifiedRoutes.filter((r) => r.pickup_id === filterPickupId).map((r) => r.id));
+      occ = occ.filter((o) => keepRoute.has(o.route_id));
+    }
+    if (filterTypeName) {
+      const wanted = filterTypeName.toLowerCase();
+      const keepRoute = new Set(
+        verifiedRoutes
+          .filter((r) => vehicleTypeNameForRoute(r.id).toLowerCase() === wanted)
+          .map((r) => r.id)
+      );
+      occ = occ.filter((o) => keepRoute.has(o.route_id));
+    }
+    return occ;
+  }, [occurrences, verifiedRoutes, filterDateISO, filterDestinationId, filterPickupId, filterTypeName]);
+
+  type RowOut = { key: string; route: RouteRow; dateISO: string };
+  const rowsAll: RowOut[] = useMemo(() => {
+    const map = new Map<string, RouteRow>();
+    verifiedRoutes.forEach
+  /* ---------- Derived: verified routes ---------- */
+  const verifiedRoutes = useMemo(() => {
+    const withAsn = new Set(assignments.map((a) => a.route_id));
+    return routes.filter((r) => withAsn.has(r.id));
+  }, [routes, assignments]);
+
+  /* ---------- Generate occurrences (6 months) — use ROUTE LOCAL DATE ---------- */
+  type Occurrence = { id: string; route_id: string; dateISO: string };
+  const occurrences: Occurrence[] = useMemo(() => {
+    const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
+
+    const today = startOfDay(new Date());
+    const windowStart = startOfMonth(today);
+    const windowEnd = endOfMonth(addMonths(today, 5));
+
+    const out: Occurrence[] = [];
+    for (const r of verifiedRoutes) {
+      const kind = parseFrequency(r.frequency);
+
+      if (kind.type === "WEEKLY") {
+        const s = new Date(windowStart);
+        const diff = (kind.weekday - s.getDay() + 7) % 7;
+        s.setDate(s.getDate() + diff);
+        for (let d = new Date(s); d <= windowEnd; d = addDays(d, 7)) {
+          if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
+          if (d.getTime() < startOfDay(nowPlus25h).getTime()) continue;
+          const iso = formatLocalISO(d, r.countries?.timezone);
+          out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
+        }
+      } else if (kind.type === "DAILY") {
+        for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
+          if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
+          if (d.getTime() < startOfDay(nowPlus25h).getTime()) continue;
+          const iso = formatLocalISO(d, r.countries?.timezone);
+          out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
+        }
+      } else {
+        if (withinSeason(today, r.season_from ?? null, r.season_to ?? null)) {
+          const d = new Date(today);
+          if (d.getTime() >= startOfDay(nowPlus25h).getTime()) {
+            const iso = formatLocalISO(d, r.countries?.timezone);
+            out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
+          }
+        }
+      }
+    }
+    return out;
+  }, [verifiedRoutes]);
+
+  /* ---------- lookups ---------- */
+  const pickupById = (id: string | null | undefined) => pickups.find((p) => p.id === id) || null;
+  const destById = (id: string | null | undefined) => destinations.find((d) => d.id === id) || null;
+
+  const routeMap = useMemo(() => {
+    const m = new Map<string, RouteRow>();
+    verifiedRoutes.forEach((r) => m.set(r.id, r));
+    return m;
+  }, [verifiedRoutes]);
+
+  const vehicleTypeNameForRoute = (routeId: string): string => {
+    const vs = assignments
+      .filter((a) => a.route_id === routeId)
+      .map((a) => vehicles.find((v) => v && v.id === a.vehicle_id))
+      .filter(Boolean) as Vehicle[];
+
+    if (vs.length) {
+      const v = vs[0];
+      if (v?.type_id) {
+        const mapped = transportTypesById[String(v.type_id)];
+        if (mapped) return mapped;
+      }
+    }
+    const r = routeMap.get(routeId);
+    if (r?.transport_type) {
+      const raw = r.transport_type;
+      if (transportTypesById[raw]) return transportTypesById[raw];
+      const viaName = transportTypesByName[raw.toLowerCase()];
+      if (viaName) return viaName;
+      return raw;
+    }
+    return "—";
+  };
+
+  /* ---------- SOLD OUT on first paint ---------- */
+  const boatsByRoute = useMemo(() => {
+    const m = new Map<string, { vehicle_id: string; cap: number; preferred: boolean }[]>();
+    for (const a of assignments) {
+      if (a.is_active === false) continue;
+      const v = vehicles.find(x => x.id === a.vehicle_id && x.active !== false);
+      if (!v) continue;
+      const cap = Number(v.maxseats ?? 0);
+      const arr = m.get(a.route_id) ?? [];
+      arr.push({ vehicle_id: a.vehicle_id, cap: Number.isFinite(cap) ? cap : 0, preferred: !!a.preferred });
+      m.set(a.route_id, arr);
+    }
+    return m;
+  }, [assignments, vehicles]);
+
+  // map: ${route_id}_${dateISO} → list of party sizes (PAID orders)
+  const partiesByKey = useMemo(() => {
+    const m = new Map<string, Party[]>();
+    for (const o of orders) {
+      if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
+      const k = `${o.route_id}_${o.journey_date}`;
+      const arr = m.get(k) ?? [];
+      const size = Math.max(0, Number(o.qty ?? 0));
+      if (size > 0) arr.push({ size });
+      m.set(k, arr);
+    }
+    return m;
+  }, [orders]);
+
+  // map: ${route_id}_${dateISO} → remaining seats after allocating all existing parties
+  const remainingSeatsByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const occ of occurrences) {
+      const boats = boatsByRoute.get(occ.route_id) ?? [];
+      if (!boats.length) { m.set(`${occ.route_id}_${occ.dateISO}`, 0); continue; }
+      const parties = partiesByKey.get(`${occ.route_id}_${occ.dateISO}`) ?? [];
+      const { remaining } = allocatePartiesForRemaining(parties, boats);
+      m.set(`${occ.route_id}_${occ.dateISO}`, remaining);
+    }
+    return m;
+  }, [occurrences, boatsByRoute, partiesByKey]);
 
   /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
   function isSoldOut(routeId: string, dateISO: string) {
@@ -739,7 +898,6 @@ export default function HomePage() {
       }
       return;
     }
-
     if (loading || !inventoryReady) return;
 
     const ac = new AbortController();
@@ -749,9 +907,8 @@ export default function HomePage() {
           const qty = seatSelections[r.key] ?? DEFAULT_SEATS;
           const pinned = quotesByRow[r.key]?.vehicle_id ?? null;
 
-          // If pre-marked sold out, do NOT fetch a quote — keep stable UX.
+          // If pre-marked sold out, do NOT fetch a quote — stable UX.
           const preSoldOut = isSoldOut(r.route.id, r.dateISO);
-
           if (preSoldOut) {
             setQuotesByRow((p) => ({
               ...p,
@@ -770,12 +927,8 @@ export default function HomePage() {
 
           try {
             const json = await fetchQuoteOnce(r.route.id, r.dateISO, qty, ac.signal, pinned);
-
             if ("error_code" in json) {
-              const extra =
-                json.step || json.details
-                  ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})`
-                  : "";
+              const extra = json.step || json.details ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})` : "";
               setQuotesByRow((p) => ({ ...p, [r.key]: null }));
               setQuoteErrByRow((p) => ({ ...p, [r.key]: `${json.error_code}${extra}` }));
               return;
@@ -787,10 +940,7 @@ export default function HomePage() {
                 : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
 
             if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
-              setQuoteErrByRow((p) => ({
-                ...p,
-                [r.key]: `Only ${json.max_qty_at_price} seats available at this price.`,
-              }));
+              setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
             } else {
               setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
             }
@@ -833,15 +983,10 @@ export default function HomePage() {
     if (preSoldOut) return;
 
     const pinned = quotesByRow[rowKey]?.vehicle_id ?? null;
-
-    const ac = new AbortController();
     try {
-      const json = await fetchQuoteOnce(row.route.id, row.dateISO, n, ac.signal, pinned);
+      const json = await fetchQuoteOnce(row.route.id, row.dateISO, n, undefined, pinned);
       if ("error_code" in json) {
-        const extra =
-          json.step || json.details
-            ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})`
-            : "";
+        const extra = json.step || json.details ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})` : "";
         setQuotesByRow((p) => ({ ...p, [rowKey]: null }));
         setQuoteErrByRow((p) => ({ ...p, [rowKey]: `${json.error_code}${extra}` }));
         return;
@@ -853,10 +998,7 @@ export default function HomePage() {
           : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
 
       if (json.max_qty_at_price != null && n > json.max_qty_at_price) {
-        setQuoteErrByRow((p) => ({
-          ...p,
-          [rowKey]: `Only ${json.max_qty_at_price} seats available at this price.`,
-        }));
+        setQuoteErrByRow((p) => ({ ...p, [rowKey]: `Only ${json.max_qty_at_price} seats available at this price.` }));
       } else {
         setQuoteErrByRow((p) => ({ ...p, [rowKey]: null }));
       }
@@ -884,7 +1026,7 @@ export default function HomePage() {
     }
   };
 
-  // === handleContinue: reconfirm, store the FRESH token in quote_intents, then go to /checkout?qid=... ===
+  // === handleContinue: reconfirm, store the FRESH token in quote_intents, then go ===
   const handleContinue = async (rowKey: string, routeId: string) => {
     if (!supabase) { alert("Supabase client is not configured."); return; }
 
@@ -893,10 +1035,7 @@ export default function HomePage() {
     if (!row) { alert("Missing row data."); return; }
 
     const preSoldOut = isSoldOut(routeId, row.dateISO);
-    if (preSoldOut) {
-      alert("Sorry, this departure is sold out.");
-      return;
-    }
+    if (preSoldOut) { alert("Sorry, this departure is sold out."); return; }
 
     const seats = seatSelections[rowKey] ?? DEFAULT_SEATS;
     const departure_ts = makeDepartureISO(row.dateISO, row.route.pickup_time);
@@ -904,14 +1043,8 @@ export default function HomePage() {
     let confirm: QuoteOk;
     try {
       const result = await fetchQuoteOnce(routeId, row.dateISO, seats, undefined, q?.vehicle_id ?? null);
-      if ("error_code" in result) {
-        alert(`Live quote check failed: ${result.error_code}${result.details ? ` — ${result.details}` : ""}`);
-        return;
-      }
-      if (result.availability === "sold_out") {
-        alert("Sorry, this departure has just sold out.");
-        return;
-      }
+      if ("error_code" in result) { alert(`Live quote check failed: ${result.error_code}${result.details ?  ` — ${result.details}` : ""}`); return; }
+      if (result.availability === "sold_out") { alert("Sorry, this departure has just sold out."); return; }
       if (result.max_qty_at_price != null && seats > result.max_qty_at_price) {
         alert(`Only ${result.max_qty_at_price} seats are available at this price. Please lower the seat count or choose another date.`);
         return;
@@ -955,7 +1088,6 @@ export default function HomePage() {
         window.location.href = `${LOGIN_PATH}?next=${encodeURIComponent(nextUrl)}`;
         return;
       }
-
       window.location.href = nextUrl;
     } catch (e: any) {
       console.error("quote_intents insert exception:", e);
@@ -1073,7 +1205,7 @@ export default function HomePage() {
                         src={imgUrl}
                         alt={c.name}
                         fill
-                        unoptimized   // ← Supabase image: bypass optimizer
+                        unoptimized
                         className="object-cover"
                         sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                       />
@@ -1111,8 +1243,7 @@ export default function HomePage() {
       </div>
     );
   }
-
-  // ---------- Existing planner UI (country selected) ----------
+  // ---------- Planner UI (country selected) ----------
   return (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
       {hydrated && !supabase && (
@@ -1124,9 +1255,7 @@ export default function HomePage() {
 
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Plan your shuttle</h1>
-        <p className="text-neutral-600">
-          Select from the routes below using the filters to help tailor your experience.
-        </p>
+        <p className="text-neutral-600">Use the tiles below to filter, then pick a journey.</p>
       </header>
 
       <div className="flex items-center gap-2">
@@ -1160,9 +1289,7 @@ export default function HomePage() {
           <div className="border-t pt-4">
             <div className="flex items-center justify-between mb-3">
               <button className="px-3 py-1 border rounded-lg" onClick={() => setCalCursor(addMonths(calCursor, -1))}>←</button>
-              <div className="text-lg font-medium" suppressHydrationWarning>
-                {monthLabel}
-              </div>
+              <div className="text-lg font-medium" suppressHydrationWarning>{monthLabel}</div>
               <button className="px-3 py-1 border rounded-lg" onClick={() => setCalCursor(addMonths(calCursor, 1))}>→</button>
             </div>
             <div className="grid grid-cols-7 gap-2 text-center text-xs text-neutral-600 mb-1">
@@ -1175,7 +1302,7 @@ export default function HomePage() {
                 return (
                   <button
                     key={d.iso + i}
-                    className={`min-h-[128px] text-left p-2 rounded-xl border transition ${selected ? "bg-blue-600 text-white border-blue-600" : d.inMonth ? "bg-white hover:shadow-sm" : "bg-neutral-50 text-neutral-400"}`}
+                    className={`min-h-[112px] text-left p-2 rounded-xl border transition ${selected ? "bg-blue-600 text-white border-blue-600" : d.inMonth ? "bg-white hover:shadow-sm" : "bg-neutral-50 text-neutral-400"}`}
                     onClick={() => setFilterDateISO(d.iso)}
                   >
                     <div className="text-xs opacity-70">{d.label}</div>
@@ -1214,10 +1341,7 @@ export default function HomePage() {
           <TilePicker
             title="Choose a pick-up point"
             items={pickups.map((p) => ({
-              id: p.id,
-              name: p.name,
-              description: p.description ?? "",
-              image: publicImage(p.picture_url),
+              id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url)
             }))}
             onChoose={setFilterPickupId}
             selectedId={filterPickupId}
@@ -1234,7 +1358,7 @@ export default function HomePage() {
                 id: t.name,
                 name: t.name,
                 description: t.description ?? "",
-                image: typeImgSrc(t), // already calls publicImage inside
+                image: typeImgSrc(t),
               }))}
             onChoose={setFilterTypeName}
             selectedId={filterTypeName}
@@ -1243,8 +1367,64 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* Journeys table */}
-      <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow">
+      {/* Mobile-first Journey Cards (visible on < md) */}
+      <section className="md:hidden space-y-3">
+        {loading ? (
+          <div className="p-4 rounded-xl border bg-white">Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-4 rounded-xl border bg-white">No verified routes for this country in the selected window.</div>
+        ) : (
+          rows.map((r) => {
+            const pu = pickupById(r.route.pickup_id);
+            const de = destById(r.route.destination_id);
+            const vType = vehicleTypeNameForRoute(r.route.id);
+            const q = quotesByRow[r.key];
+
+            const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+            const hasLivePrice = !!q?.token;
+            const rowSoldOut = preSoldOut || q?.availability === "sold_out";
+
+            const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
+            const selected = seatSelections[r.key] ?? 2;
+            const err = quoteErrByRow[r.key];
+
+            const k = `${r.route.id}_${r.dateISO}`;
+            const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+            const overByCapacity = !rowSoldOut && selected > remaining;
+            const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
+
+            return (
+              <JourneyCard
+                key={r.key}
+                pickupName={pu?.name ?? "—"}
+                pickupImg={publicImage(pu?.picture_url)}
+                destName={de?.name ?? "—"}
+                destImg={publicImage(de?.picture_url)}
+                dateISO={r.dateISO}
+                timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
+                durationMins={r.route.approx_duration_mins ?? undefined}
+                vehicleType={vType}
+                soldOut={rowSoldOut}
+                priceLabel={hasLivePrice && !rowSoldOut ? currencyIntPounds(priceDisplay) : "—"}
+                lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
+                errorMsg={
+                  rowSoldOut ? undefined :
+                  overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.` :
+                  overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` :
+                  err ?? undefined
+                }
+                seats={selected}
+                onSeatsChange={(n) => handleSeatChange(r.key, n)}
+                onContinue={() => handleContinue(r.key, r.route.id)}
+                continueDisabled={rowSoldOut || overByCapacity}
+              />
+            );
+          })
+        )}
+      </section>
+
+      {/* Desktop/tablet table (hidden on < md) */}
+      <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
         {loading ? (
           <div className="p-4">Loading…</div>
         ) : rows.length === 0 ? (
@@ -1276,7 +1456,7 @@ export default function HomePage() {
                 const rowSoldOut = preSoldOut || q?.availability === "sold_out";
 
                 const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
-                const selected = seatSelections[r.key] ?? DEFAULT_SEATS;
+                const selected = seatSelections[r.key] ?? 2;
                 const err = quoteErrByRow[r.key];
 
                 const k = `${r.route.id}_${r.dateISO}`;
@@ -1295,7 +1475,7 @@ export default function HomePage() {
                             src={publicImage(pu?.picture_url) || "/placeholder.png"}
                             alt={pu?.name || "Pick-up"}
                             fill
-                            unoptimized   // ← Supabase image
+                            unoptimized
                             className="object-cover"
                             sizes="64px"
                           />
@@ -1310,7 +1490,7 @@ export default function HomePage() {
                             src={publicImage(de?.picture_url) || "/placeholder.png"}
                             alt={de?.name || "Destination"}
                             fill
-                            unoptimized   // ← Supabase image
+                            unoptimized
                             className="object-cover"
                             sizes="64px"
                           />
@@ -1348,17 +1528,7 @@ export default function HomePage() {
                           </div>
                         )}
 
-                        {!rowSoldOut && overByCapacity && (
-                          <div className="text-[11px] text-amber-700 mt-0.5">
-                            Only {remaining} seat{remaining === 1 ? "" : "s"} left.
-                          </div>
-                        )}
-                        {overMaxAtPrice && !rowSoldOut && (
-                          <div className="text-[11px] text-amber-700 mt-0.5">
-                            Only {q?.max_qty_at_price} seats available at this price.
-                          </div>
-                        )}
-                        {!overByCapacity && !overMaxAtPrice && err && !rowSoldOut && (
+                        {!showLowSeats && !overMaxAtPrice && err && !rowSoldOut && (
                           <div className="text-[11px] text-amber-700 mt-0.5">{err}</div>
                         )}
                       </div>
@@ -1391,9 +1561,7 @@ export default function HomePage() {
                         }
                         onClick={() => handleContinue(r.key, r.route.id)}
                         disabled={rowSoldOut || overByCapacity}
-                        style={{
-                          backgroundColor: rowSoldOut || overByCapacity ? "#9ca3af" : "#2563eb"
-                        }}
+                        style={{ backgroundColor: rowSoldOut || overByCapacity ? "#9ca3af" : "#2563eb" }}
                       >
                         {rowSoldOut ? "Sold out" : "Continue"}
                       </button>
@@ -1426,7 +1594,7 @@ function TilePicker({
   return (
     <div className="border-t pt-4">
       <div className="mb-3 text-sm text-neutral-700">{title}</div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {includeAll && (
           <button
             className={`text-left rounded-2xl border bg-white p-3 hover:shadow-sm transition ${
@@ -1454,7 +1622,7 @@ function TilePicker({
                     src={it.image}
                     alt={it.name}
                     fill
-                    unoptimized   // ← Supabase image (from DB)
+                    unoptimized
                     className="object-cover"
                     sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                   />
@@ -1474,6 +1642,96 @@ function TilePicker({
             </div>
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Mobile Journey Card ---------- */
+function JourneyCard(props: {
+  pickupName: string;
+  pickupImg?: string;
+  destName: string;
+  destImg?: string;
+  dateISO: string;
+  timeStr: string;
+  durationMins?: number;
+  vehicleType: string;
+  soldOut: boolean;
+  priceLabel: string;
+  lowSeats?: number;
+  errorMsg?: string;
+  seats: number;
+  onSeatsChange: (n: number) => void;
+  onContinue: () => void;
+  continueDisabled?: boolean;
+}) {
+  const {
+    pickupName, pickupImg, destName, destImg, dateISO, timeStr,
+    durationMins, vehicleType, soldOut, priceLabel, lowSeats,
+    errorMsg, seats, onSeatsChange, onContinue, continueDisabled
+  } = props;
+
+  return (
+    <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+      <div className="flex">
+        <div className="w-1/2 relative aspect-[4/3]">
+          <Image
+            src={pickupImg || "/placeholder.png"}
+            alt={pickupName}
+            fill
+            unoptimized
+            className="object-cover"
+            sizes="50vw"
+          />
+        </div>
+        <div className="w-1/2 relative aspect-[4/3]">
+          <Image
+            src={destImg || "/placeholder.png"}
+            alt={destName}
+            fill
+            unoptimized
+            className="object-cover"
+            sizes="50vw"
+          />
+        </div>
+      </div>
+
+      <div className="p-3 space-y-2">
+        <div className="text-sm font-medium">{pickupName} → {destName}</div>
+        <div className="text-xs text-neutral-600" suppressHydrationWarning>
+          {new Date(dateISO + "T12:00:00").toLocaleDateString()} · {timeStr}
+          {typeof durationMins === "number" ? ` · ${durationMins} mins` : ""}
+        </div>
+        <div className="text-xs text-neutral-600">{vehicleType}</div>
+
+        <div className="flex items-center justify-between">
+          <div className="text-lg font-semibold">{soldOut ? "Sold out" : priceLabel}</div>
+          <select
+            className="border rounded-lg px-2 py-1 text-sm"
+            value={seats}
+            onChange={(e) => onSeatsChange(parseInt(e.target.value))}
+            disabled={soldOut}
+          >
+            {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
+          </select>
+        </div>
+
+        {lowSeats && !soldOut && (
+          <div className="text-[11px] text-amber-700">Only {lowSeats} seat{lowSeats === 1 ? "" : "s"} left</div>
+        )}
+        {errorMsg && !soldOut && (
+          <div className="text-[11px] text-amber-700">{errorMsg}</div>
+        )}
+
+        <button
+          className="w-full mt-1 px-3 py-2 rounded-lg text-white text-sm"
+          onClick={onContinue}
+          disabled={!!continueDisabled}
+          style={{ backgroundColor: continueDisabled ? "#9ca3af" : "#2563eb" }}
+        >
+          {soldOut ? "Sold out" : "Continue"}
+        </button>
       </div>
     </div>
   );
