@@ -427,7 +427,7 @@ export default function AdminPickupPointsPage() {
           </div>
         </form>
       </section>
- 
+
       {/* List */}
       <section className="space-y-3">
         <div className="flex gap-2">
@@ -475,6 +475,12 @@ export default function AdminPickupPointsPage() {
                           fill
                           className="object-cover"
                           sizes="80px"
+                          unoptimized // ← bypass the optimizer so Supabase URLs load even if domain isn’t whitelisted
+                          onError={(e) => {
+                            // Optional: fall back to placeholder if remote image fails
+                            const img = e.currentTarget as HTMLImageElement;
+                            img.src = "/placeholder.png";
+                          }}
                         />
                       </div>
                     </td>
