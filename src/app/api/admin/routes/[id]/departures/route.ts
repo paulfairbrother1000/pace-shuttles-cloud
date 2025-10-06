@@ -105,7 +105,7 @@ async function generateDepartures(req: NextRequest, routeId: string, doWrite: bo
   }
 
   // Window (query overrides season)
-  const url = new URL(req.url);
+  const url = new globalThis.URL(req.url);
   const fromParam = url.searchParams.get("from");
   const toParam = url.searchParams.get("to");
 
