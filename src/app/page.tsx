@@ -93,6 +93,8 @@ function publicImage(input?: string | null): string | undefined {
   return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
+
+
 // --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
   return publicImage(t.picture_url);
