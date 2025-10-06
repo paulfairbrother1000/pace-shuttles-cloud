@@ -1,9 +1,11 @@
-// src/app/page.tsx  (Part 1/4)
+// src/app/page.tsx
 "use client";
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { TilePicker } from "@/components/TilePicker";
+import { JourneyCard } from "@/components/JourneyCard";
 
 const LOGIN_PATH = "/login";
 
@@ -45,14 +47,7 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- Image URL normalizer (fixes HTTP emulator links on iOS) ---------- */
-/**
- * Accepts:
- *  - bare object keys like "countries/uk.jpg"
- *  - absolute URLs (emulator/local or production)
- *  - app-relative paths ("/foo/bar.jpg")
- * Returns an HTTPS public URL on your real Supabase host for anything storage-related.
- */
+/* ---------- Image URL normalizer ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -62,7 +57,6 @@ function publicImage(input?: string | null): string | undefined {
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
   if (!supaHost) return undefined;
 
-  // Absolute URL? Normalize only Supabase storage links onto our project host
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
@@ -73,85 +67,26 @@ function publicImage(input?: string | null): string | undefined {
           ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
           : `${raw}?v=5`;
       }
-      return raw; // non-Supabase absolute URL
+      return raw;
     } catch {
-      /* fall through */
+      /* ignore */
     }
   }
-
-  // Already a storage path without host
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
   }
-
-  // Treat BOTH "/images/..." and "images/..." as storage keys
-  let key = raw.replace(/^\/+/, "");
+  const key = raw.replace(/^\/+/, "");
   if (key.startsWith(`${bucket}/`)) {
-    // key already includes bucket
     return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
   }
   return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
-// --- legacy helper kept for transport types (now uses normalizer)
-function typeImgSrc(t: { id: string; picture_url?: string | null }) {
+function typeImgSrc(t: { picture_url?: string | null }) {
   return publicImage(t.picture_url);
 }
 
-/* ---------- Types ---------- */
-type Country = { id: string; name: string; description?: string | null; picture_url?: string | null };
-type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
-type Destination = { id: string; name: string; country_id: string | null; picture_url?: string | null; description?: string | null; url?: string | null };
-
-type RouteRow = {
-  id: string;
-  route_name: string | null;
-  country_id: string | null;
-  pickup_id: string | null;
-  destination_id: string | null;
-  approx_duration_mins: number | null;
-  pickup_time: string | null;       // "HH:mm"
-  frequency: string | null;         // e.g. "Every Tuesday", "Daily", "Ad-hoc"
-  frequency_rrule?: string | null;  // optional
-  season_from?: string | null;      // YYYY-MM-DD
-  season_to?: string | null;        // YYYY-MM-DD
-  is_active?: boolean | null;
-  transport_type?: string | null;   // legacy/fallback text or id/name
-  countries?: { id: string; name: string; timezone?: string | null } | null;
-};
-
-type Assignment = { id: string; route_id: string; vehicle_id: string; preferred?: boolean | null; is_active?: boolean | null; };
-type Vehicle = {
-  id: string;
-  name: string;
-  operator_id?: string | null;
-  type_id?: string | null;
-  active?: boolean | null;
-  minseats?: number | null;
-  minvalue?: number | null;
-  maxseatdiscount?: number | null;
-  maxseats?: number | string | null;
-};
-type TransportTypeRow = { id: string; name: string; description?: string | null; picture_url?: string | null; is_active?: boolean | null };
-
-// paid orders we use to pre-mark Sold out
-type Order = {
-  id: string;
-  status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired";
-  route_id: string | null;
-  journey_date: string | null; // YYYY-MM-DD (local date)
-  qty: number | null;
-};
-
-type UiQuote = {
-  displayPounds: number;
-  token: string;
-  availability?: "available" | "sold_out" | "no_journey" | "no_vehicles" | "insufficient_capacity_for_party";
-  currency?: string;
-  vehicle_id?: string | null;
-  max_qty_at_price?: number | null;
-};
-
+/* ---------- Date/format helpers ---------- */
 const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MAX_ROWS = 10;
@@ -184,8 +119,11 @@ function parseFrequency(freq: string | null | undefined): Freq {
 
 function hhmmLocalToDisplay(hhmm: string | null | undefined) {
   if (!hhmm) return "—";
-  try { const [h, m] = (hhmm || "").split(":").map((x) => parseInt(x, 10)); const d = new Date(); d.setHours(h, m, 0, 0);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch { return hhmm || "—"; }
+  try {
+    const [h, m] = (hhmm || "").split(":").map((x) => parseInt(x, 10));
+    const d = new Date(); d.setHours(h, m, 0, 0);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch { return hhmm || "—"; }
 }
 
 function currencyIntPounds(n: number | null | undefined) {
@@ -193,7 +131,6 @@ function currencyIntPounds(n: number | null | undefined) {
   return `£${Math.ceil(n).toLocaleString("en-GB")}`;
 }
 
-/** Format a Date into YYYY-MM-DD in a given IANA time zone. */
 function formatLocalISO(d: Date, timeZone?: string | null): string {
   const tz = (timeZone && timeZone.trim()) || "UTC";
   const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -204,42 +141,74 @@ function formatLocalISO(d: Date, timeZone?: string | null): string {
   return `${y}-${m}-${dd}`;
 }
 
-/** Combine a local YYYY-MM-DD + HH:mm into a UTC ISO string; returns null if incomplete. */
 function makeDepartureISO(dateISO: string, pickup_time: string | null | undefined): string | null {
   if (!dateISO || !pickup_time) return null;
   try { return new Date(`${dateISO}T${pickup_time}:00`).toISOString(); } catch { return null; }
 }
+/* ---------- Types ---------- */
+type Country = { id: string; name: string; description?: string | null; picture_url?: string | null };
+type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
+type Destination = { id: string; name: string; country_id: string | null; picture_url?: string | null; description?: string | null; url?: string | null };
 
-/** Build the canonical sold-out key (route_id + "_" + YYYY-MM-DD). */
-function soldKey(routeId: string, ymd: string) {
-  return `${String(routeId).trim()}_${String(ymd).slice(0, 10)}`;
-}
-// src/app/page.tsx  (Part 2/4)
+type RouteRow = {
+  id: string;
+  route_name: string | null;
+  country_id: string | null;
+  pickup_id: string | null;
+  destination_id: string | null;
+  approx_duration_mins: number | null;
+  pickup_time: string | null;       // "HH:mm"
+  frequency: string | null;         // "Every Tuesday", "Daily", "Ad-hoc"
+  frequency_rrule?: string | null;
+  season_from?: string | null;      // YYYY-MM-DD
+  season_to?: string | null;        // YYYY-MM-DD
+  is_active?: boolean | null;
+  transport_type?: string | null;
+  countries?: { id: string; name: string; timezone?: string | null } | null;
+};
 
-/* ===== Quotes (snake_case API to /api/quote) ===== */
-const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
+type Assignment = { id: string; route_id: string; vehicle_id: string; preferred?: boolean | null; is_active?: boolean | null; };
+type Vehicle = {
+  id: string;
+  name: string;
+  operator_id?: string | null;
+  type_id?: string | null;
+  active?: boolean | null;
+  minseats?: number | null;
+  minvalue?: number | null;
+  maxseatdiscount?: number | null;
+  maxseats?: number | string | null;
+};
+type TransportTypeRow = { id: string; name: string; description?: string | null; picture_url?: string | null; is_active?: boolean | null };
+
+type Order = { id: string; status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired"; route_id: string | null; journey_date: string | null; qty: number | null };
+
+type UiQuote = {
+  displayPounds: number;
+  token: string;
+  availability?: "available" | "sold_out" | "no_journey" | "no_vehicles" | "insufficient_capacity_for_party";
+  currency?: string;
+  vehicle_id?: string | null;
+  max_qty_at_price?: number | null;
+};
 
 type QuoteOk = {
-  availability:
-    | "available"
-    | "no_journey"
-    | "no_vehicles"
-    | "sold_out"
-    | "insufficient_capacity_for_party";
+  availability: "available" | "no_journey" | "no_vehicles" | "sold_out" | "insufficient_capacity_for_party";
   qty: number;
   base_cents: number;
   tax_cents: number;
   fees_cents: number;
   total_cents: number;
-  unit_cents?: number;             // preferred
-  perSeatAllInC?: number;          // legacy fallback (pounds float)
+  unit_cents?: number;
+  perSeatAllInC?: number;
   currency?: string;
   vehicle_id?: string | null;
   max_qty_at_price?: number | null;
   token: string;
 };
-
 type QuoteErr = { error_code: string; step?: string; details?: string };
+
+const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
 
 async function fetchQuoteOnce(
   routeId: string,
@@ -256,51 +225,32 @@ async function fetchQuoteOnce(
   });
   if (vehicleId) sp.set("vehicle_id", vehicleId);
 
-  const res = await fetch(`/api/quote?${sp.toString()}`, {
-    method: "GET",
-    cache: "no-store",
-    signal,
-  });
-
+  const res = await fetch(`/api/quote?${sp.toString()}`, { method: "GET", cache: "no-store", signal });
   const txt = await res.text();
-  let json: any;
-  try {
-    json = JSON.parse(txt);
-  } catch {
-    return { error_code: `non_json_${res.status}`, details: txt.slice(0, 160) };
-  }
-  return json;
+  try { return JSON.parse(txt); } catch { return { error_code: `non_json_${res.status}`, details: txt.slice(0, 160) }; }
 }
 
-/* ===== Greedy allocator: compute remaining seats at first paint ===== */
+/* ---------- Greedy allocator ---------- */
 type Party = { size: number };
-function allocatePartiesForRemaining(
-  parties: Party[],
-  boats: { vehicle_id: string; cap: number; preferred: boolean }[]
-) {
+function allocatePartiesForRemaining(parties: Party[], boats: { vehicle_id: string; cap: number; preferred: boolean }[]) {
   const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
   const state = boats.map(b => ({ id: b.vehicle_id, cap: Math.max(0, Math.floor(b.cap)), used: 0, preferred: !!b.preferred }));
-
   let unassigned = 0;
   for (const g of groups) {
     const candidates = state
       .map(s => ({ id: s.id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
       .filter(c => c.free >= g.size)
       .sort((a, b) => (a.preferred === b.preferred ? a.free - b.free : (a.preferred ? -1 : 1)));
-
     if (!candidates.length) { unassigned += g.size; continue; }
-    const chosen = candidates[0];
-    chosen.ref.used += g.size;
+    candidates[0].ref.used += g.size;
   }
-
   const used = state.reduce((s, x) => s + x.used, 0);
   const cap  = state.reduce((s, x) => s + x.cap, 0);
-  const remaining = Math.max(0, cap - used);
-  return { remaining, used, cap, unassigned };
+  return { remaining: Math.max(0, cap - used) };
 }
 
+/* ============================== MAIN COMPONENT ============================== */
 export default function HomePage() {
-  // -------- Hydration guard to avoid SSR/CSR mismatch --------
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => { setHydrated(true); }, []);
 
@@ -323,10 +273,8 @@ export default function HomePage() {
   // paid orders in window to pre-mark sold out
   const [orders, setOrders] = useState<Order[]>([]);
 
-  // Authoritative sold-out keys from DB (route_id + journey_date)
+  // DB-driven signals
   const [soldOutKeys, setSoldOutKeys] = useState<Set<string>>(new Set());
-
-  // DB truth: remaining capacity per (route_id + "_" + ymd)
   const [remainingByKeyDB, setRemainingByKeyDB] = useState<Map<string, number>>(new Map());
 
   /* UI */
@@ -362,36 +310,24 @@ export default function HomePage() {
   /* ---------- Load lookups & routes when a country is chosen ---------- */
   useEffect(() => {
     if (!countryId) return;
-
     let off = false;
     (async () => {
       setLoading(true);
       setMsg(null);
-
       if (!supabase) { setLoading(false); return; }
 
       try {
         const [pu, de, r, tt] = await Promise.all([
           supabase.from("pickup_points").select("id,name,country_id,picture_url,description").eq("country_id", countryId).order("name"),
           supabase.from("destinations").select("id,name,country_id,picture_url,description,url").eq("country_id", countryId).order("name"),
-          supabase
-            .from("routes")
-            .select(
-              `*,
-               countries:country_id (
-                 id,
-                 name,
-                 timezone
-               )`
-            )
-            .eq("country_id", countryId)
-            .eq("is_active", true)
+          supabase.from("routes")
+            .select(`*, countries:country_id ( id, name, timezone )`)
+            .eq("country_id", countryId).eq("is_active", true)
             .order("created_at", { ascending: false }),
           supabase.from("transport_types").select("id,name,description,picture_url,is_active"),
         ]);
 
         if (off) return;
-
         if (pu.error || de.error || r.error || tt.error) {
           setMsg(pu.error?.message || de.error?.message || r.error?.message || tt.error?.message || "Load failed");
           setLoading(false);
@@ -402,9 +338,7 @@ export default function HomePage() {
         setDestinations((de.data as Destination[]) || []);
 
         const today = startOfDay(new Date());
-        setRoutes(((r.data as RouteRow[]) || []).filter((row) =>
-          withinSeason(today, row.season_from ?? null, row.season_to ?? null)
-        ));
+        setRoutes(((r.data as RouteRow[]) || []).filter((row) => withinSeason(today, row.season_from ?? null, row.season_to ?? null)));
 
         const ttRows = (tt.data as TransportTypeRow[]) || [];
         setTransportTypeRows(ttRows);
@@ -416,16 +350,14 @@ export default function HomePage() {
 
         const routeIds = ((r.data as RouteRow[]) || []).map((x) => x.id);
 
-        // Fetch active assignments (boats) for these routes
+        // Assignments (boats)
         let asn: Assignment[] = [];
         let vList: Vehicle[] = [];
         if (routeIds.length) {
           const { data: aData, error: aErr } = await supabase
             .from("route_vehicle_assignments")
             .select("id,route_id,vehicle_id,preferred,is_active")
-            .in("route_id", routeIds)
-            .eq("is_active", true);
-
+            .in("route_id", routeIds).eq("is_active", true);
           if (aErr) { setMsg(aErr.message); setAssignments([]); setVehicles([]); setLoading(false); return; }
           asn = (aData as Assignment[]) || [];
           setAssignments(asn);
@@ -435,8 +367,7 @@ export default function HomePage() {
             const { data: vData, error: vErr } = await supabase
               .from("vehicles")
               .select("id,name,operator_id,type_id,active,minseats,minvalue,maxseatdiscount,maxseats")
-              .in("id", vehicleIds)
-              .eq("active", true);
+              .in("id", vehicleIds).eq("active", true);
             if (vErr) { setMsg(vErr.message); setVehicles([]); }
             else { vList = (vData as Vehicle[]) || []; setVehicles(vList); }
           } else {
@@ -444,7 +375,7 @@ export default function HomePage() {
           }
         }
 
-        // fetch PAID orders for the visible window (next ~6 months)
+        // Paid orders (window next ~6 months)
         const windowStart = startOfMonth(startOfDay(new Date()));
         const windowEnd = endOfMonth(addMonths(windowStart, 5));
         const { data: oData, error: oErr } = await supabase
@@ -456,51 +387,29 @@ export default function HomePage() {
         if (oErr) { setMsg(oErr.message); setOrders([]); }
         else { setOrders((oData as Order[]) || []); }
 
-        // Authoritative sold-out keys for the window. Uses DB view vw_soldout_keys.
+        // Sold-out keys from DB view
         try {
-          const { data: soldData, error: soldErr } = await supabase
-            .from("vw_soldout_keys")
-            .select("route_id,journey_date");
+          const { data: soldData, error: soldErr } = await supabase.from("vw_soldout_keys").select("route_id,journey_date");
+          if (soldErr) setSoldOutKeys(new Set());
+          else setSoldOutKeys(new Set<string>((soldData ?? []).map((k: any) => `${k.route_id}_${k.journey_date}`)));
+        } catch { setSoldOutKeys(new Set()); }
 
-          if (soldErr) {
-            console.error("soldout fetch:", soldErr.message ?? soldErr);
-            setSoldOutKeys(new Set());
-          } else {
-            const keys = new Set<string>((soldData ?? []).map((k: any) => `${k.route_id}_${k.journey_date}`));
-            setSoldOutKeys(keys);
-            if (process.env.NODE_ENV !== "production") {
-              console.log("soldOutKeys from DB", [...keys].slice(0, 40));
-            }
-          }
-        } catch (e: any) {
-          console.error("soldout fetch exception:", e);
-          setSoldOutKeys(new Set());
-        }
-
-        // ---- NEW: preload DB-backed remaining capacity per (route, ymd)
+        // Remaining capacity per route/day from DB view
         try {
-          let capMap = new Map<string, number>();
+          const capMap = new Map<string, number>();
           if (routeIds.length) {
             const { data: capRows, error: capErr } = await supabase
               .from("vw_route_day_capacity")
               .select("route_id, ymd, remaining")
               .in("route_id", routeIds)
-              .gte("ymd", windowStart.toISOString().slice(0, 10))
-              .lte("ymd", windowEnd.toISOString().slice(0, 10));
-
-            if (capErr) {
-              console.error("vw_route_day_capacity fetch:", capErr.message ?? capErr);
-            } else {
-              for (const r of (capRows ?? []) as any[]) {
-                capMap.set(`${r.route_id}_${r.ymd}`, Number(r.remaining ?? 0));
-              }
+              .gte("ymd", windowStart.toISOString().slice(0,10))
+              .lte("ymd", windowEnd.toISOString().slice(0,10));
+            if (!capErr) {
+              for (const r of (capRows ?? []) as any[]) capMap.set(`${r.route_id}_${r.ymd}`, Number(r.remaining ?? 0));
             }
           }
           setRemainingByKeyDB(capMap);
-        } catch (e: any) {
-          console.error("capacity preload exception:", e);
-          setRemainingByKeyDB(new Map());
-        }
+        } catch { setRemainingByKeyDB(new Map()); }
 
       } catch (e: any) {
         setMsg(e?.message ?? String(e));
@@ -508,210 +417,25 @@ export default function HomePage() {
         setLoading(false);
       }
     })();
-
     return () => { off = true; };
   }, [countryId]);
-
   /* ---------- Derived: verified routes ---------- */
   const verifiedRoutes = useMemo(() => {
     const withAsn = new Set(assignments.map((a) => a.route_id));
     return routes.filter((r) => withAsn.has(r.id));
   }, [routes, assignments]);
 
-  /* ---------- Generate occurrences (6 months) — use ROUTE LOCAL DATE ---------- */
+  /* ---------- Occurrences (6 months) ---------- */
   type Occurrence = { id: string; route_id: string; dateISO: string };
   const occurrences: Occurrence[] = useMemo(() => {
     const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
-
     const today = startOfDay(new Date());
     const windowStart = startOfMonth(today);
     const windowEnd = endOfMonth(addMonths(today, 5));
-
     const out: Occurrence[] = [];
+
     for (const r of verifiedRoutes) {
       const kind = parseFrequency(r.frequency);
-
-      if (kind.type === "WEEKLY") {
-        const s = new Date(windowStart);
-        const diff = (kind.weekday - s.getDay() + 7) % 7;
-        s.setDate(s.getDate() + diff);
-        for (let d = new Date(s); d <= windowEnd; d = addDays(d, 7)) {
-          if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
-          if (d.getTime() < startOfDay(nowPlus25h).getTime()) continue;
-          const iso = formatLocalISO(d, r.countries?.timezone);
-          out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
-        }
-      } else if (kind.type === "DAILY") {
-        for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
-          if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
-          if (d.getTime() < startOfDay(nowPlus25h).getTime()) continue;
-          const iso = formatLocalISO(d, r.countries?.timezone);
-          out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
-        }
-      } else {
-        if (withinSeason(today, r.season_from ?? null, r.season_to ?? null)) {
-          const d = new Date(today);
-          if (d.getTime() >= startOfDay(nowPlus25h).getTime()) {
-            const iso = formatLocalISO(d, r.countries?.timezone);
-            out.push({ id: `${r.id}_${iso}`, route_id: r.id, dateISO: iso });
-          }
-        }
-      }
-    }
-
-    return out;
-  }, [verifiedRoutes]);
-
-  /* ---------- lookups ---------- */
-  const pickupById = (id: string | null | undefined) => pickups.find((p) => p.id === id) || null;
-  const destById = (id: string | null | undefined) => destinations.find((d) => d.id === id) || null;
-
-  const routeMap = useMemo(() => {
-    const m = new Map<string, RouteRow>();
-    verifiedRoutes.forEach((r) => m.set(r.id, r));
-    return m;
-  }, [verifiedRoutes]);
-
-  const vehicleTypeNameForRoute = (routeId: string): string => {
-    const vs = assignments
-      .filter((a) => a.route_id === routeId)
-      .map((a) => vehicles.find((v) => v && v.id === a.vehicle_id))
-      .filter(Boolean) as Vehicle[];
-
-    if (vs.length) {
-      const v = vs[0];
-      if (v?.type_id) {
-        const mapped = transportTypesById[String(v.type_id)];
-        if (mapped) return mapped;
-      }
-    }
-    const r = routeMap.get(routeId);
-    if (r?.transport_type) {
-      const raw = r.transport_type;
-      if (transportTypesById[raw]) return transportTypesById[raw];
-      const viaName = transportTypesByName[raw.toLowerCase()];
-      if (viaName) return viaName;
-      return raw;
-    }
-    return "—";
-  };
-
-  /* ---------- SOLD OUT at first paint ---------- */
-
-  // map: route_id → boats
-  const boatsByRoute = useMemo(() => {
-    const m = new Map<string, { vehicle_id: string; cap: number; preferred: boolean }[]>();
-    for (const a of assignments) {
-      if (a.is_active === false) continue;
-      const v = vehicles.find(x => x.id === a.vehicle_id && x.active !== false);
-      if (!v) continue;
-      const cap = Number(v.maxseats ?? 0);
-      const arr = m.get(a.route_id) ?? [];
-      arr.push({ vehicle_id: a.vehicle_id, cap: Number.isFinite(cap) ? cap : 0, preferred: !!a.preferred });
-      m.set(a.route_id, arr);
-    }
-    return m;
-  }, [assignments, vehicles]);
-
-  // map: ${route_id}_${dateISO} → list of party sizes (PAID orders)
-  const partiesByKey = useMemo(() => {
-    const m = new Map<string, Party[]>();
-    for (const o of orders) {
-      if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
-      const k = `${o.route_id}_${o.journey_date}`;
-      const arr = m.get(k) ?? [];
-      const size = Math.max(0, Number(o.qty ?? 0));
-      if (size > 0) arr.push({ size });
-      m.set(k, arr);
-    }
-    return m;
-  }, [orders]);
-
-  // map: ${route_id}_${dateISO} → remaining seats after allocating all existing parties
-  const remainingSeatsByKey = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const occ of occurrences) {
-      const boats = boatsByRoute.get(occ.route_id) ?? [];
-      if (!boats.length) { m.set(`${occ.route_id}_${occ.dateISO}`, 0); continue; }
-      const parties = partiesByKey.get(`${occ.route_id}_${occ.dateISO}`) ?? [];
-      const { remaining } = allocatePartiesForRemaining(parties, boats);
-      m.set(`${occ.route_id}_${occ.dateISO}`, remaining);
-    }
-    return m;
-  }, [occurrences, boatsByRoute, partiesByKey]);
-
-  // convenience: sold out map (local)
-  const soldOutByKey = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const occ of occurrences) {
-      const rem = remainingSeatsByKey.get(`${occ.route_id}_${occ.dateISO}`) ?? 0;
-      m.set(`${occ.route_id}_${occ.dateISO}`, rem <= 0);
-    }
-    return m;
-  }, [occurrences, remainingSeatsByKey]);
-
-  /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
-  function isSoldOut(routeId: string, dateISO: string) {
-    const k = `${routeId}_${dateISO}`;
-    const dbRem = remainingByKeyDB.get(k);
-    if (dbRem != null) return dbRem <= 0;
-    return (remainingSeatsByKey.get(k) ?? 0) <= 0;
-  }
-
-  /* ---------- Filters -> rows ---------- */
-  const filteredOccurrences = useMemo(() => {
-    const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
-    const minISO = startOfDay(nowPlus25h).toISOString().slice(0, 10);
-
-    let occ = occurrences.slice();
-    occ = occ.filter((o) => o.dateISO >= minISO);
-
-    if (filterDateISO) {
-      occ = occ.filter((o) => o.dateISO === filterDateISO);
-    }
-    if (filterDestinationId) {
-      const keepRoute = new Set(verifiedRoutes.filter((r) => r.destination_id === filterDestinationId).map((r) => r.id));
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
-    }
-    if (filterPickupId) {
-      const keepRoute = new Set(verifiedRoutes.filter((r) => r.pickup_id === filterPickupId).map((r) => r.id));
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
-    }
-    if (filterTypeName) {
-      const wanted = filterTypeName.toLowerCase();
-      const keepRoute = new Set(
-        verifiedRoutes
-          .filter((r) => vehicleTypeNameForRoute(r.id).toLowerCase() === wanted)
-          .map((r) => r.id)
-      );
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
-    }
-    return occ;
-  }, [occurrences, verifiedRoutes, filterDateISO, filterDestinationId, filterPickupId, filterTypeName]);
-
-  type RowOut = { key: string; route: RouteRow; dateISO: string };
-  const rowsAll: RowOut[] = useMemo(() => {
-    const map = new Map<string, RouteRow>();
-    verifiedRoutes.forEach
-  /* ---------- Derived: verified routes ---------- */
-  const verifiedRoutes = useMemo(() => {
-    const withAsn = new Set(assignments.map((a) => a.route_id));
-    return routes.filter((r) => withAsn.has(r.id));
-  }, [routes, assignments]);
-
-  /* ---------- Generate occurrences (6 months) — use ROUTE LOCAL DATE ---------- */
-  type Occurrence = { id: string; route_id: string; dateISO: string };
-  const occurrences: Occurrence[] = useMemo(() => {
-    const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
-
-    const today = startOfDay(new Date());
-    const windowStart = startOfMonth(today);
-    const windowEnd = endOfMonth(addMonths(today, 5));
-
-    const out: Occurrence[] = [];
-    for (const r of verifiedRoutes) {
-      const kind = parseFrequency(r.frequency);
-
       if (kind.type === "WEEKLY") {
         const s = new Date(windowStart);
         const diff = (kind.weekday - s.getDay() + 7) % 7;
@@ -744,7 +468,7 @@ export default function HomePage() {
 
   /* ---------- lookups ---------- */
   const pickupById = (id: string | null | undefined) => pickups.find((p) => p.id === id) || null;
-  const destById = (id: string | null | undefined) => destinations.find((d) => d.id === id) || null;
+  const destById   = (id: string | null | undefined) => destinations.find((d) => d.id === id) || null;
 
   const routeMap = useMemo(() => {
     const m = new Map<string, RouteRow>();
@@ -757,13 +481,9 @@ export default function HomePage() {
       .filter((a) => a.route_id === routeId)
       .map((a) => vehicles.find((v) => v && v.id === a.vehicle_id))
       .filter(Boolean) as Vehicle[];
-
-    if (vs.length) {
-      const v = vs[0];
-      if (v?.type_id) {
-        const mapped = transportTypesById[String(v.type_id)];
-        if (mapped) return mapped;
-      }
+    if (vs.length && vs[0]?.type_id) {
+      const mapped = transportTypesById[String(vs[0].type_id)];
+      if (mapped) return mapped;
     }
     const r = routeMap.get(routeId);
     if (r?.transport_type) {
@@ -776,7 +496,7 @@ export default function HomePage() {
     return "—";
   };
 
-  /* ---------- SOLD OUT on first paint ---------- */
+  /* ---------- capacity (first paint) ---------- */
   const boatsByRoute = useMemo(() => {
     const m = new Map<string, { vehicle_id: string; cap: number; preferred: boolean }[]>();
     for (const a of assignments) {
@@ -791,7 +511,6 @@ export default function HomePage() {
     return m;
   }, [assignments, vehicles]);
 
-  // map: ${route_id}_${dateISO} → list of party sizes (PAID orders)
   const partiesByKey = useMemo(() => {
     const m = new Map<string, Party[]>();
     for (const o of orders) {
@@ -805,7 +524,6 @@ export default function HomePage() {
     return m;
   }, [orders]);
 
-  // map: ${route_id}_${dateISO} → remaining seats after allocating all existing parties
   const remainingSeatsByKey = useMemo(() => {
     const m = new Map<string, number>();
     for (const occ of occurrences) {
@@ -818,7 +536,6 @@ export default function HomePage() {
     return m;
   }, [occurrences, boatsByRoute, partiesByKey]);
 
-  /** DB-driven sold-out: prefer vw_route_day_capacity; fallback to local allocator */
   function isSoldOut(routeId: string, dateISO: string) {
     const k = `${routeId}_${dateISO}`;
     const dbRem = remainingByKeyDB.get(k);
@@ -830,29 +547,22 @@ export default function HomePage() {
   const filteredOccurrences = useMemo(() => {
     const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
     const minISO = startOfDay(nowPlus25h).toISOString().slice(0, 10);
-
-    let occ = occurrences.slice();
-    occ = occ.filter((o) => o.dateISO >= minISO);
-
-    if (filterDateISO) {
-      occ = occ.filter((o) => o.dateISO === filterDateISO);
-    }
+    let occ = occurrences.filter((o) => o.dateISO >= minISO);
+    if (filterDateISO) occ = occ.filter((o) => o.dateISO === filterDateISO);
     if (filterDestinationId) {
-      const keepRoute = new Set(verifiedRoutes.filter((r) => r.destination_id === filterDestinationId).map((r) => r.id));
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
+      const keep = new Set(verifiedRoutes.filter((r) => r.destination_id === filterDestinationId).map((r) => r.id));
+      occ = occ.filter((o) => keep.has(o.route_id));
     }
     if (filterPickupId) {
-      const keepRoute = new Set(verifiedRoutes.filter((r) => r.pickup_id === filterPickupId).map((r) => r.id));
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
+      const keep = new Set(verifiedRoutes.filter((r) => r.pickup_id === filterPickupId).map((r) => r.id));
+      occ = occ.filter((o) => keep.has(o.route_id));
     }
     if (filterTypeName) {
       const wanted = filterTypeName.toLowerCase();
-      const keepRoute = new Set(
-        verifiedRoutes
-          .filter((r) => vehicleTypeNameForRoute(r.id).toLowerCase() === wanted)
-          .map((r) => r.id)
+      const keep = new Set(
+        verifiedRoutes.filter((r) => vehicleTypeNameForRoute(r.id).toLowerCase() === wanted).map((r) => r.id)
       );
-      occ = occ.filter((o) => keepRoute.has(o.route_id));
+      occ = occ.filter((o) => keep.has(o.route_id));
     }
     return occ;
   }, [occurrences, verifiedRoutes, filterDateISO, filterDestinationId, filterPickupId, filterTypeName]);
@@ -864,32 +574,23 @@ export default function HomePage() {
     return filteredOccurrences
       .map((o) => {
         const r = map.get(o.route_id);
-        if (!r) return null;
-        return { key: o.id, route: r, dateISO: o.dateISO };
+        return r ? { key: o.id, route: r, dateISO: o.dateISO } : null;
       })
-      .filter(Boolean)
-      .sort((a, b) => a!.dateISO.localeCompare(b!.dateISO)) as RowOut[];
+      .filter(Boolean) as RowOut[];
   }, [filteredOccurrences, verifiedRoutes]);
 
-  const rows = useMemo(() => rowsAll.slice(0, MAX_ROWS), [rowsAll]);
+  const rows = useMemo(() => rowsAll.sort((a, b) => a.dateISO.localeCompare(b.dateISO)).slice(0, MAX_ROWS), [rowsAll]);
 
   /* ---------- Live quotes ---------- */
   const [quotesByRow, setQuotesByRow] = useState<Record<string, UiQuote | null>>({});
   const [quoteErrByRow, setQuoteErrByRow] = useState<Record<string, string | null>>({});
-
-  // Inventory readiness gate: delay quote fetching until we have either DB keys or enough local data
-  const inventoryReady =
-    soldOutKeys.size > 0 ||
-    (assignments.length > 0 && vehicles.length > 0) ||
-    orders.length > 0;
+  const inventoryReady = soldOutKeys.size > 0 || (assignments.length > 0 && vehicles.length > 0) || orders.length > 0;
 
   const [seatSelections, setSeatSelections] = useState<Record<string, number>>({});
   const [lastGoodPriceByRow, setLastGoodPriceByRow] = useState<Record<string, number>>({});
   const [lockedPriceByRow, setLockedPriceByRow] = useState<Record<string, number>>({});
-
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
-  // Fetch quotes for visible rows (AFTER rows are defined)
   useEffect(() => {
     if (!rows.length) {
       if (Object.keys(quotesByRow).length || Object.keys(quoteErrByRow).length) {
@@ -901,87 +602,72 @@ export default function HomePage() {
     if (loading || !inventoryReady) return;
 
     const ac = new AbortController();
-    const run = async () => {
-      await Promise.all(
-        rows.map(async (r) => {
-          const qty = seatSelections[r.key] ?? DEFAULT_SEATS;
-          const pinned = quotesByRow[r.key]?.vehicle_id ?? null;
-
-          // If pre-marked sold out, do NOT fetch a quote — stable UX.
-          const preSoldOut = isSoldOut(r.route.id, r.dateISO);
-          if (preSoldOut) {
-            setQuotesByRow((p) => ({
-              ...p,
-              [r.key]: {
-                displayPounds: p[r.key]?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0,
-                token: p[r.key]?.token ?? "",
-                availability: "sold_out",
-                currency: p[r.key]?.currency ?? "GBP",
-                vehicle_id: p[r.key]?.vehicle_id ?? null,
-                max_qty_at_price: p[r.key]?.max_qty_at_price ?? null,
-              },
-            }));
-            setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
+    (async () => {
+      await Promise.all(rows.map(async (r) => {
+        const qty = seatSelections[r.key] ?? DEFAULT_SEATS;
+        const pinned = quotesByRow[r.key]?.vehicle_id ?? null;
+        const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+        if (preSoldOut) {
+          setQuotesByRow((p) => ({
+            ...p,
+            [r.key]: {
+              displayPounds: p[r.key]?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0,
+              token: p[r.key]?.token ?? "",
+              availability: "sold_out",
+              currency: p[r.key]?.currency ?? "GBP",
+              vehicle_id: p[r.key]?.vehicle_id ?? null,
+              max_qty_at_price: p[r.key]?.max_qty_at_price ?? null,
+            },
+          }));
+          setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
+          return;
+        }
+        try {
+          const json = await fetchQuoteOnce(r.route.id, r.dateISO, qty, ac.signal, pinned);
+          if ("error_code" in json) {
+            const extra = json.step || json.details ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})` : "";
+            setQuotesByRow((p) => ({ ...p, [r.key]: null }));
+            setQuoteErrByRow((p) => ({ ...p, [r.key]: `${json.error_code}${extra}` }));
             return;
           }
-
-          try {
-            const json = await fetchQuoteOnce(r.route.id, r.dateISO, qty, ac.signal, pinned);
-            if ("error_code" in json) {
-              const extra = json.step || json.details ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})` : "";
-              setQuotesByRow((p) => ({ ...p, [r.key]: null }));
-              setQuoteErrByRow((p) => ({ ...p, [r.key]: `${json.error_code}${extra}` }));
-              return;
-            }
-
-            const unitMinor =
-              (json.unit_cents ?? null) != null
-                ? Number(json.unit_cents)
-                : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
-
-            if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
-              setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
-            } else {
-              setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
-            }
-
-            const computed = Math.ceil(unitMinor / 100);
-            const locked = lockedPriceByRow[r.key];
-            const toShow = (locked != null) ? locked : computed;
-
-            setQuotesByRow((p) => ({
-              ...p,
-              [r.key]: {
-                displayPounds: toShow,
-                token: json.token,
-                availability: json.availability,
-                currency: json.currency ?? "GBP",
-                vehicle_id: json.vehicle_id ?? pinned ?? null,
-                max_qty_at_price: json.max_qty_at_price ?? null,
-              },
-            }));
-            setLastGoodPriceByRow((p) => ({ ...p, [r.key]: toShow }));
-            setLockedPriceByRow((p) => (locked != null ? p : { ...p, [r.key]: toShow }));
-          } catch (e: any) {
-            setQuotesByRow((p) => ({ ...p, [r.key]: null }));
-            setQuoteErrByRow((p) => ({ ...p, [r.key]: e?.message ?? "network" }));
+          const unitMinor = (json.unit_cents ?? null) != null ? Number(json.unit_cents) : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
+          if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
+            setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
+          } else {
+            setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
           }
-        })
-      );
-    };
+          const computed = Math.ceil(unitMinor / 100);
+          const locked = lockedPriceByRow[r.key];
+          const toShow = (locked != null) ? locked : computed;
+          setQuotesByRow((p) => ({
+            ...p,
+            [r.key]: {
+              displayPounds: toShow,
+              token: json.token,
+              availability: json.availability,
+              currency: json.currency ?? "GBP",
+              vehicle_id: json.vehicle_id ?? pinned ?? null,
+              max_qty_at_price: json.max_qty_at_price ?? null,
+            },
+          }));
+          setLastGoodPriceByRow((p) => ({ ...p, [r.key]: toShow }));
+          setLockedPriceByRow((p) => (locked != null ? p : { ...p, [r.key]: toShow }));
+        } catch (e: any) {
+          setQuotesByRow((p) => ({ ...p, [r.key]: null }));
+          setQuoteErrByRow((p) => ({ ...p, [r.key]: e?.message ?? "network" }));
+        }
+      }));
+    })();
 
-    run();
     return () => ac.abort();
-  }, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading]);
+  }, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading, lastGoodPriceByRow, lockedPriceByRow, quotesByRow, quoteErrByRow]);
 
   const handleSeatChange = async (rowKey: string, n: number) => {
     setSeatSelections((prev) => ({ ...prev, [rowKey]: n }));
     const row = rows.find((r) => r.key === rowKey);
     if (!row) return;
-
     const preSoldOut = isSoldOut(row.route.id, row.dateISO);
     if (preSoldOut) return;
-
     const pinned = quotesByRow[rowKey]?.vehicle_id ?? null;
     try {
       const json = await fetchQuoteOnce(row.route.id, row.dateISO, n, undefined, pinned);
@@ -991,22 +677,15 @@ export default function HomePage() {
         setQuoteErrByRow((p) => ({ ...p, [rowKey]: `${json.error_code}${extra}` }));
         return;
       }
-
-      const unitMinor =
-        (json.unit_cents ?? null) != null
-          ? Number(json.unit_cents)
-          : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
-
+      const unitMinor = (json.unit_cents ?? null) != null ? Number(json.unit_cents) : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
       if (json.max_qty_at_price != null && n > json.max_qty_at_price) {
         setQuoteErrByRow((p) => ({ ...p, [rowKey]: `Only ${json.max_qty_at_price} seats available at this price.` }));
       } else {
         setQuoteErrByRow((p) => ({ ...p, [rowKey]: null }));
       }
-
       const computed = Math.ceil(unitMinor / 100);
       const locked = lockedPriceByRow[rowKey];
       const toShow = (locked != null) ? locked : computed;
-
       setQuotesByRow((p) => ({
         ...p,
         [rowKey]: {
@@ -1026,24 +705,20 @@ export default function HomePage() {
     }
   };
 
-  // === handleContinue: reconfirm, store the FRESH token in quote_intents, then go ===
   const handleContinue = async (rowKey: string, routeId: string) => {
     if (!supabase) { alert("Supabase client is not configured."); return; }
-
     const row = rows.find((r) => r.key === rowKey);
     const q   = quotesByRow[rowKey];
     if (!row) { alert("Missing row data."); return; }
-
     const preSoldOut = isSoldOut(routeId, row.dateISO);
     if (preSoldOut) { alert("Sorry, this departure is sold out."); return; }
-
-    const seats = seatSelections[rowKey] ?? DEFAULT_SEATS;
+    const seats = (seatSelections[rowKey] ?? DEFAULT_SEATS);
     const departure_ts = makeDepartureISO(row.dateISO, row.route.pickup_time);
 
     let confirm: QuoteOk;
     try {
       const result = await fetchQuoteOnce(routeId, row.dateISO, seats, undefined, q?.vehicle_id ?? null);
-      if ("error_code" in result) { alert(`Live quote check failed: ${result.error_code}${result.details ?  ` — ${result.details}` : ""}`); return; }
+      if ("error_code" in result) { alert(`Live quote check failed: ${result.error_code}${result.details ? ` — ${result.details}` : ""}`); return; }
       if (result.availability === "sold_out") { alert("Sorry, this departure has just sold out."); return; }
       if (result.max_qty_at_price != null && seats > result.max_qty_at_price) {
         alert(`Only ${result.max_qty_at_price} seats are available at this price. Please lower the seat count or choose another date.`);
@@ -1063,11 +738,7 @@ export default function HomePage() {
           date_iso: row.dateISO,
           departure_ts,
           seats,
-          per_seat_all_in:
-            (lockedPriceByRow[rowKey] ??
-             quotesByRow[rowKey]?.displayPounds ??
-             lastGoodPriceByRow[rowKey] ??
-             null),
+          per_seat_all_in: (lockedPriceByRow[rowKey] ?? quotesByRow[rowKey]?.displayPounds ?? lastGoodPriceByRow[rowKey] ?? null),
           currency: q?.currency ?? "GBP",
           quote_token: confirm.token,
         })
@@ -1083,7 +754,6 @@ export default function HomePage() {
       const nextUrl = `/checkout?qid=${data.id}`;
       const { data: sessionData } = await supabase.auth.getSession();
       const isSignedIn = !!sessionData?.session?.user;
-
       if (!isSignedIn) {
         window.location.href = `${LOGIN_PATH}?next=${encodeURIComponent(nextUrl)}`;
         return;
@@ -1139,7 +809,7 @@ export default function HomePage() {
 
   /* =========================== RENDER =========================== */
 
-  // ---------- Landing (no country selected) ----------
+  // Landing (no country selected)
   if (!countryId) {
     return (
       <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
@@ -1150,7 +820,6 @@ export default function HomePage() {
           </Banner>
         )}
 
-        {/* Intro copy */}
         <section className="space-y-4">
           <p className="text-lg">
             <strong>Pace Shuttle</strong> offers fractional luxury charter and shuttle services to world-class,
@@ -1158,29 +827,19 @@ export default function HomePage() {
           </p>
         </section>
 
-        {/* Hero image */}
         <section>
           <div className="relative w-full overflow-hidden rounded-2xl border">
             <div className="aspect-[16/10] sm:aspect-[21/9]">
-              <Image
-                src={HERO_IMG_URL}
-                alt="Pace Shuttle — luxury transfers"
-                fill
-                priority
-                className="object-cover"
-                sizes="100vw"
-              />
+              <Image src={HERO_IMG_URL} alt="Pace Shuttle — luxury transfers" fill priority className="object-cover" sizes="100vw" />
             </div>
           </div>
         </section>
 
-        {/* Heading above country tiles */}
         <section className="text-center pt-6">
           <div className="font-semibold">Pace Shuttles is currently operating in the following countries.</div>
           <div>Book your dream arrival today</div>
         </section>
 
-        {/* Country tiles */}
         <section className="mx-auto max-w-5xl">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {countries.map((c) => {
@@ -1201,19 +860,11 @@ export default function HomePage() {
                 >
                   <div className="relative w-full aspect-[4/3]">
                     {imgUrl ? (
-                      <Image
-                        src={imgUrl}
-                        alt={c.name}
-                        fill
-                        unoptimized
-                        className="object-cover"
-                        sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-                      />
+                      <Image src={imgUrl} alt={c.name} fill unoptimized className="object-cover" sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw" />
                     ) : (
                       <div className="h-full w-full bg-neutral-100" />
                     )}
                   </div>
-
                   <div className="p-4">
                     <div className="font-medium">{c.name}</div>
                     {c.description && <div className="mt-1 text-sm text-neutral-600 line-clamp-3">{c.description}</div>}
@@ -1224,18 +875,11 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Footer CTA image linking to /partners */}
         <section className="pt-10">
           <a href="/partners" aria-label="Partner with Pace Shuttles">
             <div className="relative w-full overflow-hidden rounded-2xl border">
               <div className="aspect-[21/9]">
-                <Image
-                  src={FOOTER_CTA_IMG_URL}
-                  alt="Partner with Pace Shuttles"
-                  fill
-                  className="object-cover"
-                  sizes="100vw"
-                />
+                <Image src={FOOTER_CTA_IMG_URL} alt="Partner with Pace Shuttles" fill className="object-cover" sizes="100vw" />
               </div>
             </div>
           </a>
@@ -1243,7 +887,7 @@ export default function HomePage() {
       </div>
     );
   }
-    // ---------- Planner UI (country selected) ----------
+  // Planner UI (country selected)
   return (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
       {hydrated && !supabase && (
@@ -1278,12 +922,7 @@ export default function HomePage() {
           {(filterDateISO || filterDestinationId || filterPickupId || filterTypeName) && (
             <button
               className="ml-auto px-3 py-1 rounded-full border text-sm"
-              onClick={() => {
-                setFilterDateISO(null);
-                setFilterDestinationId(null);
-                setFilterPickupId(null);
-                setFilterTypeName(null);
-              }}
+              onClick={() => { setFilterDateISO(null); setFilterDestinationId(null); setFilterPickupId(null); setFilterTypeName(null); }}
             >
               Clear filters
             </button>
@@ -1317,9 +956,7 @@ export default function HomePage() {
                     <div className="text-xs opacity-70">{d.label}</div>
                     <div className="mt-1 space-y-1">
                       {names.map((n, idx) => (
-                        <div key={idx} className="text-[11px] leading-snug whitespace-normal break-words">
-                          {n}
-                        </div>
+                        <div key={idx} className="text-[11px] leading-snug whitespace-normal break-words">{n}</div>
                       ))}
                     </div>
                   </button>
@@ -1337,12 +974,7 @@ export default function HomePage() {
         {activePane === "destination" && (
           <TilePicker
             title="Choose a destination"
-            items={destinations.map((d) => ({
-              id: d.id,
-              name: d.name,
-              description: d.description ?? "",
-              image: publicImage(d.picture_url),
-            }))}
+            items={destinations.map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
             onChoose={setFilterDestinationId}
             selectedId={filterDestinationId}
             includeAll={false}
@@ -1352,12 +984,7 @@ export default function HomePage() {
         {activePane === "pickup" && (
           <TilePicker
             title="Choose a pick-up point"
-            items={pickups.map((p) => ({
-              id: p.id,
-              name: p.name,
-              description: p.description ?? "",
-              image: publicImage(p.picture_url),
-            }))}
+            items={pickups.map((p) => ({ id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url) }))}
             onChoose={setFilterPickupId}
             selectedId={filterPickupId}
             includeAll={false}
@@ -1367,14 +994,9 @@ export default function HomePage() {
         {activePane === "type" && (
           <TilePicker
             title="Choose a vehicle type"
-            items={transportTypeRows
-              .filter((t) => t.is_active !== false)
-              .map((t) => ({
-                id: t.name,
-                name: t.name,
-                description: t.description ?? "",
-                image: typeImgSrc(t),
-              }))}
+            items={transportTypeRows.filter((t) => t.is_active !== false).map((t) => ({
+              id: t.name, name: t.name, description: t.description ?? "", image: typeImgSrc(t),
+            }))}
             onChoose={setFilterTypeName}
             selectedId={filterTypeName}
             includeAll={false}
@@ -1382,7 +1004,7 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* Mobile-first Journey Cards (visible on < md) */}
+      {/* Mobile-first Journey Cards */}
       <section className="md:hidden space-y-3">
         {loading ? (
           <div className="p-4 rounded-xl border bg-white">Loading…</div>
@@ -1438,7 +1060,7 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* Desktop/tablet table (hidden on < md) */}
+      {/* Desktop/tablet table */}
       <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
         {loading ? (
           <div className="p-4">Loading…</div>
@@ -1460,7 +1082,7 @@ export default function HomePage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {rows.sort((a,b)=>a.dateISO.localeCompare(b.dateISO)).map((r) => {
                 const pu = pickupById(r.route.pickup_id);
                 const de = destById(r.route.destination_id);
                 const vType = vehicleTypeNameForRoute(r.route.id);
@@ -1477,7 +1099,6 @@ export default function HomePage() {
                 const k = `${r.route.id}_${r.dateISO}`;
                 const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
                 const overByCapacity = !rowSoldOut && selected > remaining;
-
                 const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
                 const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
 
@@ -1486,14 +1107,7 @@ export default function HomePage() {
                     <td className="p-3">
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
-                          <Image
-                            src={publicImage(pu?.picture_url) || "/placeholder.png"}
-                            alt={pu?.name || "Pick-up"}
-                            fill
-                            unoptimized
-                            className="object-cover"
-                            sizes="64px"
-                          />
+                          <Image src={publicImage(pu?.picture_url) || "/placeholder.png"} alt={pu?.name || "Pick-up"} fill unoptimized className="object-cover" sizes="64px" />
                         </div>
                         <span>{pu?.name ?? "—"}</span>
                       </div>
@@ -1501,37 +1115,22 @@ export default function HomePage() {
                     <td className="p-3">
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
-                          <Image
-                            src={publicImage(de?.picture_url) || "/placeholder.png"}
-                            alt={de?.name || "Destination"}
-                            fill
-                            unoptimized
-                            className="object-cover"
-                            sizes="64px"
-                          />
+                          <Image src={publicImage(de?.picture_url) || "/placeholder.png"} alt={de?.name || "Destination"} fill unoptimized className="object-cover" sizes="64px" />
                         </div>
                         <span>{de?.name ?? "—"}</span>
                       </div>
                     </td>
-                    <td className="p-3" suppressHydrationWarning>
-                      {new Date(r.dateISO + "T12:00:00").toLocaleDateString()}
-                    </td>
-                    <td className="p-3" suppressHydrationWarning>
-                      {hhmmLocalToDisplay(r.route.pickup_time)}
-                    </td>
+                    <td className="p-3" suppressHydrationWarning>{new Date(r.dateISO + "T12:00:00").toLocaleDateString()}</td>
+                    <td className="p-3" suppressHydrationWarning>{hhmmLocalToDisplay(r.route.pickup_time)}</td>
                     <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
                     <td className="p-3">{vType}</td>
                     <td className="p-3 text-right">
                       <div className="flex flex-col items-end gap-0.5">
                         <span className="font-semibold">
-                          {rowSoldOut ? "—" : hasLivePrice ? `£${Math.ceil(priceDisplay).toLocaleString("en-GB")}` : "—"}
+                          {rowSoldOut ? "—" : hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
                         </span>
                         <span className="text-xs text-neutral-500">
-                          {rowSoldOut
-                            ? "Sold out"
-                            : hasLivePrice
-                              ? "Per ticket (incl. tax & fees)"
-                              : (err ? `Quote error: ${err}` : "Awaiting live price")}
+                          {rowSoldOut ? "Sold out" : hasLivePrice ? "Per ticket (incl. tax & fees)" : (err ? `Quote error: ${err}` : "Awaiting live price")}
                         </span>
                         {showLowSeats && !rowSoldOut && (
                           <div className="text-[11px] text-amber-700 mt-0.5">
@@ -1550,22 +1149,17 @@ export default function HomePage() {
                         onChange={(e) => handleSeatChange(r.key, parseInt(e.target.value))}
                         disabled={rowSoldOut}
                       >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
-                          <option key={n} value={n}>{n}</option>
-                        ))}
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
                       </select>
                     </td>
                     <td className="p-3">
                       <button
                         className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
                         title={
-                          rowSoldOut
-                            ? "Sold out"
-                            : overByCapacity
-                              ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.`
-                              : overMaxAtPrice
-                                ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.`
-                                : hasLivePrice ? "Continue" : "Continue (price will be confirmed on next step)"
+                          rowSoldOut ? "Sold out"
+                          : overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.`
+                          : overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.`
+                          : hasLivePrice ? "Continue" : "Continue (price will be confirmed on next step)"
                         }
                         onClick={() => handleContinue(r.key, r.route.id)}
                         disabled={rowSoldOut || overByCapacity}
@@ -1583,4 +1177,4 @@ export default function HomePage() {
       </section>
     </div>
   );
-} // ← CLOSES HomePage
+} // closes HomePage
