@@ -5,7 +5,6 @@ import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 // ...
 
-
 /* ---------- Supabase client (inline) ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
