@@ -1,11 +1,9 @@
 // src/app/page.tsx
 "use client";
 
-import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
-import { TilePicker } from "@/components/TilePicker";
-import { JourneyCard } from "@/components/JourneyCard";
+import { TilePicker } from "../components/TilePicker";
+import { JourneyCard } from "../components/JourneyCard";
+
 
 const LOGIN_PATH = "/login";
 
