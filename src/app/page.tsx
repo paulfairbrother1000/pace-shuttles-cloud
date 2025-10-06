@@ -5,8 +5,6 @@ import { createBrowserClient } from "@supabase/ssr";
 import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 
-
-
 const LOGIN_PATH = "/login";
 
 // Landing images — served from /public (no Supabase needed)
@@ -24,7 +22,7 @@ const supabase =
       )
     : null;
 
-/** DEV helper: expose NEXT_PUBLIC vars for quick inspection (never logs server-only keys). */
+/** DEV helper: expose NEXT_PUBLIC vars (never logs server-only keys). */
 if (typeof window !== "undefined") {
   (window as any).PaceEnv = {
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -145,6 +143,7 @@ function makeDepartureISO(dateISO: string, pickup_time: string | null | undefine
   if (!dateISO || !pickup_time) return null;
   try { return new Date(`${dateISO}T${pickup_time}:00`).toISOString(); } catch { return null; }
 }
+
 /* ---------- Types ---------- */
 type Country = { id: string; name: string; description?: string | null; picture_url?: string | null };
 type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
@@ -248,7 +247,6 @@ function allocatePartiesForRemaining(parties: Party[], boats: { vehicle_id: stri
   const cap  = state.reduce((s, x) => s + x.cap, 0);
   return { remaining: Math.max(0, cap - used) };
 }
-
 /* ============================== MAIN COMPONENT ============================== */
 export default function HomePage() {
   const [hydrated, setHydrated] = useState(false);
@@ -294,6 +292,61 @@ export default function HomePage() {
   // default seats to show/fetch
   const DEFAULT_SEATS = 2;
 
+  /* ---------- Availability sets (active route + active assignment + active vehicle) ---------- */
+  const [availableCountryIds, setAvailableCountryIds] = useState<Set<string>>(new Set());
+  const [availableDestinationsByCountry, setAvailableDestinationsByCountry] = useState<Map<string, Set<string>>>(new Map());
+
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      if (!supabase) return;
+
+      // Active assignments
+      const { data: aData, error: aErr } = await supabase
+        .from("route_vehicle_assignments")
+        .select("route_id, vehicle_id, is_active")
+        .eq("is_active", true);
+      if (aErr) { console.error(aErr.message); return; }
+      const assignments = (aData ?? []) as { route_id: string; vehicle_id: string; is_active: boolean }[];
+
+      // Vehicles
+      const { data: vData, error: vErr } = await supabase
+        .from("vehicles")
+        .select("id, active");
+      if (vErr) { console.error(vErr.message); return; }
+      const activeVehicleIds = new Set((vData ?? []).filter(v => v.active !== false).map(v => v.id));
+
+      // Routes
+      const { data: rData, error: rErr } = await supabase
+        .from("routes")
+        .select("id, country_id, destination_id, is_active");
+      if (rErr) { console.error(rErr.message); return; }
+      const activeRoutes = (rData ?? []).filter(r => r.is_active !== false);
+
+      // Verified = active route that is assigned to an active vehicle
+      const assignedRouteIds = new Set(assignments.filter(a => activeVehicleIds.has(a.vehicle_id)).map(a => a.route_id));
+      const verifiedRoutes = activeRoutes.filter(r => assignedRouteIds.has(r.id));
+
+      // Build sets
+      const countrySet = new Set<string>();
+      const byCountry = new Map<string, Set<string>>();
+      for (const r of verifiedRoutes) {
+        if (!r.country_id) continue;
+        countrySet.add(r.country_id);
+        if (r.destination_id) {
+          if (!byCountry.has(r.country_id)) byCountry.set(r.country_id, new Set());
+          byCountry.get(r.country_id)!.add(r.destination_id);
+        }
+      }
+
+      if (!off) {
+        setAvailableCountryIds(countrySet);
+        setAvailableDestinationsByCountry(byCountry);
+      }
+    })();
+    return () => { off = true; };
+  }, []);
+
   /* ---------- Load countries ---------- */
   useEffect(() => {
     let off = false;
@@ -306,7 +359,6 @@ export default function HomePage() {
     })();
     return () => { off = true; };
   }, []);
-
   /* ---------- Load lookups & routes when a country is chosen ---------- */
   useEffect(() => {
     if (!countryId) return;
@@ -419,6 +471,7 @@ export default function HomePage() {
     })();
     return () => { off = true; };
   }, [countryId]);
+
   /* ---------- Derived: verified routes ---------- */
   const verifiedRoutes = useMemo(() => {
     const withAsn = new Set(assignments.map((a) => a.route_id));
@@ -661,7 +714,6 @@ export default function HomePage() {
 
     return () => ac.abort();
   }, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading, lastGoodPriceByRow, lockedPriceByRow, quotesByRow, quoteErrByRow]);
-
   const handleSeatChange = async (rowKey: string, n: number) => {
     setSeatSelections((prev) => ({ ...prev, [rowKey]: n }));
     const row = rows.find((r) => r.key === rowKey);
@@ -811,6 +863,7 @@ export default function HomePage() {
 
   // Landing (no country selected)
   if (!countryId) {
+    const visibleCountries = countries.filter((c) => availableCountryIds.has(c.id));
     return (
       <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
         {hydrated && !supabase && (
@@ -841,8 +894,11 @@ export default function HomePage() {
         </section>
 
         <section className="mx-auto max-w-5xl">
+          {visibleCountries.length === 0 && (
+            <div className="text-sm text-neutral-600 mb-3">No countries available yet.</div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {countries.map((c) => {
+            {visibleCountries.map((c) => {
               const imgUrl = publicImage(c.picture_url);
               return (
                 <button
@@ -850,7 +906,7 @@ export default function HomePage() {
                   className="text-left rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hover:shadow-md transition"
                   onClick={() => {
                     setCountryId(c.id);
-                    setActivePane("date");
+                    setActivePane("destination"); // ← go straight to destination step
                     setFilterDateISO(null);
                     setFilterDestinationId(null);
                     setFilterPickupId(null);
@@ -887,7 +943,10 @@ export default function HomePage() {
       </div>
     );
   }
+
   // Planner UI (country selected)
+  const allowedDestIds = availableDestinationsByCountry.get(countryId) ?? new Set<string>();
+
   return (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
       {hydrated && !supabase && (
@@ -974,8 +1033,10 @@ export default function HomePage() {
         {activePane === "destination" && (
           <TilePicker
             title="Choose a destination"
-            items={destinations.map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
-            onChoose={setFilterDestinationId}
+            items={destinations
+              .filter((d) => allowedDestIds.has(d.id)) // ← hide destinations without a valid assigned route
+              .map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
+            onChoose={(id) => { setFilterDestinationId(id); setActivePane("none"); }}
             selectedId={filterDestinationId}
             includeAll={false}
           />
@@ -1004,177 +1065,188 @@ export default function HomePage() {
         )}
       </section>
 
+      {/* Require a destination before showing records */}
+      {!filterDestinationId && (
+        <section className="rounded-2xl border border-neutral-200 bg-white p-4">
+          <div className="text-sm">Select a destination to see available journeys.</div>
+        </section>
+      )}
+
       {/* Mobile-first Journey Cards */}
-      <section className="md:hidden space-y-3">
-        {loading ? (
-          <div className="p-4 rounded-xl border bg-white">Loading…</div>
-        ) : rows.length === 0 ? (
-          <div className="p-4 rounded-xl border bg-white">No verified routes for this country in the selected window.</div>
-        ) : (
-          rows.map((r) => {
-            const pu = pickupById(r.route.pickup_id);
-            const de = destById(r.route.destination_id);
-            const vType = vehicleTypeNameForRoute(r.route.id);
-            const q = quotesByRow[r.key];
+      {filterDestinationId && (
+        <section className="md:hidden space-y-3">
+          {loading ? (
+            <div className="p-4 rounded-xl border bg-white">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="p-4 rounded-xl border bg-white">No verified routes match your filters.</div>
+          ) : (
+            rows.map((r) => {
+              const pu = pickupById(r.route.pickup_id);
+              const de = destById(r.route.destination_id);
+              const vType = vehicleTypeNameForRoute(r.route.id);
+              const q = quotesByRow[r.key];
 
-            const preSoldOut = isSoldOut(r.route.id, r.dateISO);
-            const hasLivePrice = !!q?.token;
-            const rowSoldOut = preSoldOut || q?.availability === "sold_out";
+              const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+              const hasLivePrice = !!q?.token;
+              const rowSoldOut = preSoldOut || q?.availability === "sold_out";
 
-            const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
-            const selected = seatSelections[r.key] ?? 2;
-            const err = quoteErrByRow[r.key];
+              const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
+              const selected = seatSelections[r.key] ?? 2;
+              const err = quoteErrByRow[r.key];
 
-            const k = `${r.route.id}_${r.dateISO}`;
-            const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
-            const overByCapacity = !rowSoldOut && selected > remaining;
-            const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
+              const k = `${r.route.id}_${r.dateISO}`;
+              const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+              const overByCapacity = !rowSoldOut && selected > remaining;
+              const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
 
-            return (
-              <JourneyCard
-                key={r.key}
-                pickupName={pu?.name ?? "—"}
-                pickupImg={publicImage(pu?.picture_url)}
-                destName={de?.name ?? "—"}
-                destImg={publicImage(de?.picture_url)}
-                dateISO={r.dateISO}
-                timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
-                durationMins={r.route.approx_duration_mins ?? undefined}
-                vehicleType={vType}
-                soldOut={rowSoldOut}
-                priceLabel={hasLivePrice && !rowSoldOut ? currencyIntPounds(priceDisplay) : "—"}
-                lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
-                errorMsg={
-                  rowSoldOut ? undefined :
-                  overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.` :
-                  overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` :
-                  err ?? undefined
-                }
-                seats={selected}
-                onSeatsChange={(n) => handleSeatChange(r.key, n)}
-                onContinue={() => handleContinue(r.key, r.route.id)}
-                continueDisabled={rowSoldOut || overByCapacity}
-              />
-            );
-          })
-        )}
-      </section>
+              return (
+                <JourneyCard
+                  key={r.key}
+                  pickupName={pu?.name ?? "—"}
+                  pickupImg={publicImage(pu?.picture_url)}
+                  destName={de?.name ?? "—"}
+                  destImg={publicImage(de?.picture_url)}
+                  dateISO={r.dateISO}
+                  timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
+                  durationMins={r.route.approx_duration_mins ?? undefined}
+                  vehicleType={vType}
+                  soldOut={rowSoldOut}
+                  priceLabel={hasLivePrice && !rowSoldOut ? currencyIntPounds(priceDisplay) : "—"}
+                  lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
+                  errorMsg={
+                    rowSoldOut ? undefined :
+                    overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.` :
+                    overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` :
+                    err ?? undefined
+                  }
+                  seats={selected}
+                  onSeatsChange={(n) => handleSeatChange(r.key, n)}
+                  onContinue={() => handleContinue(r.key, r.route.id)}
+                  continueDisabled={rowSoldOut || overByCapacity}
+                />
+              );
+            })
+          )}
+        </section>
+      )}
 
       {/* Desktop/tablet table */}
-      <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
-        {loading ? (
-          <div className="p-4">Loading…</div>
-        ) : rows.length === 0 ? (
-          <div className="p-4">No verified routes for this country in the selected window.</div>
-        ) : (
-          <table className="w-full">
-            <thead className="bg-neutral-50">
-              <tr>
-                <th className="text-left p-3">Pick-up</th>
-                <th className="text-left p-3">Destination</th>
-                <th className="text-left p-3">Date</th>
-                <th className="text-left p-3">Time</th>
-                <th className="text-left p-3">Duration (mins)</th>
-                <th className="text-left p-3">Vehicle Type</th>
-                <th className="text-right p-3">Seat price</th>
-                <th className="text-left p-3">Seats</th>
-                <th className="text-left p-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.sort((a,b)=>a.dateISO.localeCompare(b.dateISO)).map((r) => {
-                const pu = pickupById(r.route.pickup_id);
-                const de = destById(r.route.destination_id);
-                const vType = vehicleTypeNameForRoute(r.route.id);
-                const q = quotesByRow[r.key];
+      {filterDestinationId && (
+        <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
+          {loading ? (
+            <div className="p-4">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="p-4">No verified routes match your filters.</div>
+          ) : (
+            <table className="w-full">
+              <thead className="bg-neutral-50">
+                <tr>
+                  <th className="text-left p-3">Pick-up</th>
+                  <th className="text-left p-3">Destination</th>
+                  <th className="text-left p-3">Date</th>
+                  <th className="text-left p-3">Time</th>
+                  <th className="text-left p-3">Duration (mins)</th>
+                  <th className="text-left p-3">Vehicle Type</th>
+                  <th className="text-right p-3">Seat price</th>
+                  <th className="text-left p-3">Seats</th>
+                  <th className="text-left p-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const pu = pickupById(r.route.pickup_id);
+                  const de = destById(r.route.destination_id);
+                  const vType = vehicleTypeNameForRoute(r.route.id);
+                  const q = quotesByRow[r.key];
 
-                const preSoldOut = isSoldOut(r.route.id, r.dateISO);
-                const hasLivePrice = !!q?.token;
-                const rowSoldOut = preSoldOut || q?.availability === "sold_out";
+                  const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+                  const hasLivePrice = !!q?.token;
+                  const rowSoldOut = preSoldOut || q?.availability === "sold_out";
 
-                const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
-                const selected = seatSelections[r.key] ?? 2;
-                const err = quoteErrByRow[r.key];
+                  const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
+                  const selected = seatSelections[r.key] ?? 2;
+                  const err = quoteErrByRow[r.key];
 
-                const k = `${r.route.id}_${r.dateISO}`;
-                const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
-                const overByCapacity = !rowSoldOut && selected > remaining;
-                const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
-                const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
+                  const k = `${r.route.id}_${r.dateISO}`;
+                  const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+                  const overByCapacity = !rowSoldOut && selected > remaining;
+                  const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
+                  const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
 
-                return (
-                  <tr key={r.key} className="border-t align-top">
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        <div className="relative h-10 w-16 overflow-hidden rounded border">
-                          <Image src={publicImage(pu?.picture_url) || "/placeholder.png"} alt={pu?.name || "Pick-up"} fill unoptimized className="object-cover" sizes="64px" />
-                        </div>
-                        <span>{pu?.name ?? "—"}</span>
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        <div className="relative h-10 w-16 overflow-hidden rounded border">
-                          <Image src={publicImage(de?.picture_url) || "/placeholder.png"} alt={de?.name || "Destination"} fill unoptimized className="object-cover" sizes="64px" />
-                        </div>
-                        <span>{de?.name ?? "—"}</span>
-                      </div>
-                    </td>
-                    <td className="p-3" suppressHydrationWarning>{new Date(r.dateISO + "T12:00:00").toLocaleDateString()}</td>
-                    <td className="p-3" suppressHydrationWarning>{hhmmLocalToDisplay(r.route.pickup_time)}</td>
-                    <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
-                    <td className="p-3">{vType}</td>
-                    <td className="p-3 text-right">
-                      <div className="flex flex-col items-end gap-0.5">
-                        <span className="font-semibold">
-                          {rowSoldOut ? "—" : hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
-                        </span>
-                        <span className="text-xs text-neutral-500">
-                          {rowSoldOut ? "Sold out" : hasLivePrice ? "Per ticket (incl. tax & fees)" : (err ? `Quote error: ${err}` : "Awaiting live price")}
-                        </span>
-                        {showLowSeats && !rowSoldOut && (
-                          <div className="text-[11px] text-amber-700 mt-0.5">
-                            Only {remaining} seat{remaining === 1 ? "" : "s"} left
+                  return (
+                    <tr key={r.key} className="border-t align-top">
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="relative h-10 w-16 overflow-hidden rounded border">
+                            <Image src={publicImage(pu?.picture_url) || "/placeholder.png"} alt={pu?.name || "Pick-up"} fill unoptimized className="object-cover" sizes="64px" />
                           </div>
-                        )}
-                        {!showLowSeats && !overMaxAtPrice && err && !rowSoldOut && (
-                          <div className="text-[11px] text-amber-700 mt-0.5">{err}</div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <select
-                        className="border rounded-lg px-2 py-1"
-                        value={selected}
-                        onChange={(e) => handleSeatChange(r.key, parseInt(e.target.value))}
-                        disabled={rowSoldOut}
-                      >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
-                      </select>
-                    </td>
-                    <td className="p-3">
-                      <button
-                        className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                        title={
-                          rowSoldOut ? "Sold out"
-                          : overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.`
-                          : overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.`
-                          : hasLivePrice ? "Continue" : "Continue (price will be confirmed on next step)"
-                        }
-                        onClick={() => handleContinue(r.key, r.route.id)}
-                        disabled={rowSoldOut || overByCapacity}
-                        style={{ backgroundColor: rowSoldOut || overByCapacity ? "#9ca3af" : "#2563eb" }}
-                      >
-                        {rowSoldOut ? "Sold out" : "Continue"}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </section>
+                          <span>{pu?.name ?? "—"}</span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="relative h-10 w-16 overflow-hidden rounded border">
+                            <Image src={publicImage(de?.picture_url) || "/placeholder.png"} alt={de?.name || "Destination"} fill unoptimized className="object-cover" sizes="64px" />
+                          </div>
+                          <span>{de?.name ?? "—"}</span>
+                        </div>
+                      </td>
+                      <td className="p-3" suppressHydrationWarning>{new Date(r.dateISO + "T12:00:00").toLocaleDateString()}</td>
+                      <td className="p-3" suppressHydrationWarning>{hhmmLocalToDisplay(r.route.pickup_time)}</td>
+                      <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
+                      <td className="p-3">{vType}</td>
+                      <td className="p-3 text-right">
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className="font-semibold">
+                            {rowSoldOut ? "—" : hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
+                          </span>
+                          <span className="text-xs text-neutral-500">
+                            {rowSoldOut ? "Sold out" : hasLivePrice ? "Per ticket (incl. tax & fees)" : (err ? `Quote error: ${err}` : "Awaiting live price")}
+                          </span>
+                          {showLowSeats && !rowSoldOut && (
+                            <div className="text-[11px] text-amber-700 mt-0.5">
+                              Only {remaining} seat{remaining === 1 ? "" : "s"} left
+                            </div>
+                          )}
+                          {!showLowSeats && !overMaxAtPrice && err && !rowSoldOut && (
+                            <div className="text-[11px] text-amber-700 mt-0.5">{err}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <select
+                          className="border rounded-lg px-2 py-1"
+                          value={selected}
+                          onChange={(e) => handleSeatChange(r.key, parseInt(e.target.value))}
+                          disabled={rowSoldOut}
+                        >
+                          {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
+                        </select>
+                      </td>
+                      <td className="p-3">
+                        <button
+                          className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                          title={
+                            rowSoldOut ? "Sold out"
+                            : overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.`
+                            : overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.`
+                            : hasLivePrice ? "Continue" : "Continue (price will be confirmed on next step)"
+                          }
+                          onClick={() => handleContinue(r.key, r.route.id)}
+                          disabled={rowSoldOut || overByCapacity}
+                          style={{ backgroundColor: rowSoldOut || overByCapacity ? "#9ca3af" : "#2563eb" }}
+                        >
+                          {rowSoldOut ? "Sold out" : "Continue"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
     </div>
   );
 } // closes HomePage
