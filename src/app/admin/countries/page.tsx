@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 // ...
-<Image src={publicImage(country.picture_url) || "/placeholder.png"} alt={country.name} fill className="object-cover" />
+
 
 
 /* ---------- Supabase client (inline) ---------- */
