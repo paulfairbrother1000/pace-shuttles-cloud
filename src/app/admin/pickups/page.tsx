@@ -427,7 +427,7 @@ export default function AdminPickupPointsPage() {
           </div>
         </form>
       </section>
-
+ 
       {/* List */}
       <section className="space-y-3">
         <div className="flex gap-2">
