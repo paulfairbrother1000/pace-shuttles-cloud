@@ -15,9 +15,6 @@ const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const QUOTE_SECRET = process.env.QUOTE_SIGNING_SECRET!;
 const CREATE_BOOKING_IMMEDIATELY = process.env.CREATE_BOOKING_IMMEDIATELY === "true";
-const SECRET = process.env.QUOTE_SIGNING_SECRET; // not NEXT_PUBLIC_*
-
-
 
 /* ---------- Helpers ---------- */
 function sbAdmin() {
@@ -153,16 +150,29 @@ export async function POST(req: NextRequest) {
     }
 
     // verify quote token (same secret as /api/quote)
-    const v = await QuoteToken.verifyQuote(token, { secret: QUOTE_SECRET });
+    type VerifyOk = { ok: true; payload: QuotePayloadV1 };
+    type VerifyErr = { ok: false; error?: string; code?: string };
+    const v = (await QuoteToken.verifyQuote(token, { secret: QUOTE_SECRET })) as VerifyOk | VerifyErr;
+
     if (!v.ok) {
-      const reason = v.error || "invalid";
-      if (process.env.NODE_ENV !== "production")
+      // TS-safe extraction of a reason for logging (optional fields)
+      const reason =
+        ("error" in v && v.error) ||
+        ("code" in v && v.code) ||
+        "invalid";
+      if (process.env.NODE_ENV !== "production") {
         console.error("[/api/checkout] verifyQuote failed:", reason);
+      }
       return NextResponse.json(
-        { ok: false, error: "Quote token invalid/expired", ...(process.env.NODE_ENV !== "production" ? { reason } : {}) },
+        {
+          ok: false,
+          error: "Quote token invalid/expired",
+          ...(process.env.NODE_ENV !== "production" ? { reason } : {}),
+        },
         { status: 400 }
       );
     }
+
     const pay = v.payload as QuotePayloadV1;
 
     // basic payload checks (exact match)
