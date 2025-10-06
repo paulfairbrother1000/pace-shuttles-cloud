@@ -1243,7 +1243,7 @@ export default function HomePage() {
       </div>
     );
   }
-  // ---------- Planner UI (country selected) ----------
+    // ---------- Planner UI (country selected) ----------
   return (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
       {hydrated && !supabase && (
@@ -1278,7 +1278,12 @@ export default function HomePage() {
           {(filterDateISO || filterDestinationId || filterPickupId || filterTypeName) && (
             <button
               className="ml-auto px-3 py-1 rounded-full border text-sm"
-              onClick={() => { setFilterDateISO(null); setFilterDestinationId(null); setFilterPickupId(null); setFilterTypeName(null); }}
+              onClick={() => {
+                setFilterDateISO(null);
+                setFilterDestinationId(null);
+                setFilterPickupId(null);
+                setFilterTypeName(null);
+              }}
             >
               Clear filters
             </button>
@@ -1302,7 +1307,11 @@ export default function HomePage() {
                 return (
                   <button
                     key={d.iso + i}
-                    className={`min-h-[112px] text-left p-2 rounded-xl border transition ${selected ? "bg-blue-600 text-white border-blue-600" : d.inMonth ? "bg-white hover:shadow-sm" : "bg-neutral-50 text-neutral-400"}`}
+                    className={`min-h-[112px] text-left p-2 rounded-xl border transition ${
+                      selected ? "bg-blue-600 text-white border-blue-600"
+                      : d.inMonth ? "bg-white hover:shadow-sm"
+                      : "bg-neutral-50 text-neutral-400"
+                    }`}
                     onClick={() => setFilterDateISO(d.iso)}
                   >
                     <div className="text-xs opacity-70">{d.label}</div>
@@ -1329,7 +1338,10 @@ export default function HomePage() {
           <TilePicker
             title="Choose a destination"
             items={destinations.map((d) => ({
-              id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url)
+              id: d.id,
+              name: d.name,
+              description: d.description ?? "",
+              image: publicImage(d.picture_url),
             }))}
             onChoose={setFilterDestinationId}
             selectedId={filterDestinationId}
@@ -1341,7 +1353,10 @@ export default function HomePage() {
           <TilePicker
             title="Choose a pick-up point"
             items={pickups.map((p) => ({
-              id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url)
+              id: p.id,
+              name: p.name,
+              description: p.description ?? "",
+              image: publicImage(p.picture_url),
             }))}
             onChoose={setFilterPickupId}
             selectedId={filterPickupId}
@@ -1467,7 +1482,7 @@ export default function HomePage() {
                 const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
 
                 return (
-                  <tr key={r.key} data-rowkey={r.key} ref={(el) => { rowRefs.current[r.key] = el }} className="border-t align-top">
+                  <tr key={r.key} className="border-t align-top">
                     <td className="p-3">
                       <div className="flex items-center gap-2">
                         <div className="relative h-10 w-16 overflow-hidden rounded border">
@@ -1506,14 +1521,11 @@ export default function HomePage() {
                     </td>
                     <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
                     <td className="p-3">{vType}</td>
-
-                    {/* Price cell */}
                     <td className="p-3 text-right">
                       <div className="flex flex-col items-end gap-0.5">
                         <span className="font-semibold">
-                          {rowSoldOut ? "—" : hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
+                          {rowSoldOut ? "—" : hasLivePrice ? `£${Math.ceil(priceDisplay).toLocaleString("en-GB")}` : "—"}
                         </span>
-
                         <span className="text-xs text-neutral-500">
                           {rowSoldOut
                             ? "Sold out"
@@ -1521,20 +1533,16 @@ export default function HomePage() {
                               ? "Per ticket (incl. tax & fees)"
                               : (err ? `Quote error: ${err}` : "Awaiting live price")}
                         </span>
-
                         {showLowSeats && !rowSoldOut && (
                           <div className="text-[11px] text-amber-700 mt-0.5">
                             Only {remaining} seat{remaining === 1 ? "" : "s"} left
                           </div>
                         )}
-
                         {!showLowSeats && !overMaxAtPrice && err && !rowSoldOut && (
                           <div className="text-[11px] text-amber-700 mt-0.5">{err}</div>
                         )}
                       </div>
                     </td>
-
-                    {/* Seat selector */}
                     <td className="p-3">
                       <select
                         className="border rounded-lg px-2 py-1"
@@ -1542,11 +1550,11 @@ export default function HomePage() {
                         onChange={(e) => handleSeatChange(r.key, parseInt(e.target.value))}
                         disabled={rowSoldOut}
                       >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
                       </select>
                     </td>
-
-                    {/* CTA */}
                     <td className="p-3">
                       <button
                         className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
@@ -1575,7 +1583,9 @@ export default function HomePage() {
       </section>
     </div>
   );
-}
+} // ← CLOSES HomePage
+
+; /* -------------------------- Helpers below are top-level, not inside HomePage -------------------------- */
 
 /* ---------- Tile picker ---------- */
 function TilePicker({
@@ -1597,22 +1607,17 @@ function TilePicker({
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {includeAll && (
           <button
-            className={`text-left rounded-2xl border bg-white p-3 hover:shadow-sm transition ${
-              !selectedId ? "ring-2 ring-blue-600" : ""
-            }`}
+            className={`text-left rounded-2xl border bg-white p-3 hover:shadow-sm transition ${!selectedId ? "ring-2 ring-blue-600" : ""}`}
             onClick={() => onChoose(null)}
           >
             <div className="font-medium">All</div>
             <div className="text-xs text-neutral-600 mt-1">No filter</div>
           </button>
         )}
-
         {items.map((it) => (
           <button
             key={it.id}
-            className={`text-left rounded-2xl border bg-white overflow-hidden p-0 hover:shadow-sm transition ${
-              selectedId === it.id ? "ring-2 ring-blue-600" : ""
-            }`}
+            className={`text-left rounded-2xl border bg-white overflow-hidden p-0 hover:shadow-sm transition ${selectedId === it.id ? "ring-2 ring-blue-600" : ""}`}
             onClick={() => onChoose(it.id)}
           >
             <div className="relative w-full">
@@ -1631,13 +1636,10 @@ function TilePicker({
                 )}
               </div>
             </div>
-
             <div className="p-3">
               <div className="font-medium">{it.name}</div>
               {it.description && (
-                <div className="text-xs text-neutral-600 mt-1 line-clamp-3">
-                  {it.description}
-                </div>
+                <div className="text-xs text-neutral-600 mt-1 line-clamp-3">{it.description}</div>
               )}
             </div>
           </button>
