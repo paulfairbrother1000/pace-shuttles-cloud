@@ -2,16 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
-import { publicImage } from "@/lib/publicImage";
-// ...
-<Image src={publicImage(type.picture_url) || "/placeholder.png"} alt={type.name} fill className="object-cover" />
 
-
+// Create the browser Supabase client (client-only)
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+/* ---------- Types ---------- */
 type PsUser = { id: string; site_admin?: boolean | null };
 
 type TransportType = {
@@ -25,13 +23,16 @@ type TransportType = {
   created_at?: string | null;
 };
 
+/* ---------- Helpers ---------- */
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
 
 async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
+  // Try public URL first
   const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
   if (pub) return pub;
+  // Fallback: long-lived signed URL
   const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
   return data?.signedUrl ?? null;
 }
@@ -45,6 +46,8 @@ function slugify(s: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+/* ===================================================================== */
+
 export default function AdminTransportTypesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const isSiteAdmin = Boolean(psUser?.site_admin);
@@ -55,6 +58,7 @@ export default function AdminTransportTypesPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
+  // Form state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -65,6 +69,7 @@ export default function AdminTransportTypesPage() {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  /* ---------- Who am I (from localStorage) ---------- */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -75,6 +80,7 @@ export default function AdminTransportTypesPage() {
     }
   }, []);
 
+  /* ---------- Initial load ---------- */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -94,6 +100,7 @@ export default function AdminTransportTypesPage() {
     };
   }, []);
 
+  /* ---------- Resolve thumbnails (public or signed URLs) ---------- */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -107,6 +114,7 @@ export default function AdminTransportTypesPage() {
     };
   }, [rows]);
 
+  /* ---------- Filtering ---------- */
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
@@ -118,6 +126,7 @@ export default function AdminTransportTypesPage() {
     );
   }, [rows, q]);
 
+  /* ---------- Utilities ---------- */
   function resetForm() {
     setEditingId(null);
     setName("");
@@ -157,6 +166,7 @@ export default function AdminTransportTypesPage() {
     return path;
   }
 
+  /* ---------- Save (create/update) ---------- */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
     if (!isSiteAdmin) return setMsg("Only site admins can make changes.");
@@ -175,7 +185,7 @@ export default function AdminTransportTypesPage() {
       };
 
       if (!editingId) {
-        // CREATE via API
+        // CREATE
         const res = await fetch("/api/admin/transport-types", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -207,7 +217,7 @@ export default function AdminTransportTypesPage() {
         resetForm();
         setMsg("Created ✅");
       } else {
-        // UPDATE via API
+        // UPDATE
         const id = editingId;
         const toUpdate = { ...payload } as any;
 
@@ -238,6 +248,7 @@ export default function AdminTransportTypesPage() {
     }
   }
 
+  /* ---------- Edit/Delete ---------- */
   async function onEdit(id: string) {
     const row = rows.find((r) => r.id === id);
     if (!row) return;
@@ -272,6 +283,7 @@ export default function AdminTransportTypesPage() {
     setMsg("Deleted.");
   }
 
+  /* ---------- Render ---------- */
   if (!isSiteAdmin) {
     return (
       <div className="p-4">
@@ -285,7 +297,9 @@ export default function AdminTransportTypesPage() {
     <div className="space-y-8 p-4">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Transport Types</h1>
-        <p className="text-neutral-600">Create, edit, and delete transport types. Images power the homepage filter.</p>
+        <p className="text-neutral-600">
+          Create, edit, and delete transport types. Images power the homepage filter.
+        </p>
       </header>
 
       {/* Form */}
@@ -336,7 +350,11 @@ export default function AdminTransportTypesPage() {
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Active</label>
               <div className="flex items-center gap-2">
-                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={isActive}
+                  onChange={(e) => setIsActive(e.target.checked)}
+                />
                 <span className="text-sm">Show on homepage when in use</span>
               </div>
             </div>
@@ -345,7 +363,11 @@ export default function AdminTransportTypesPage() {
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Image</label>
-              <input type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} />
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
+              />
               <p className="text-xs text-neutral-500 mt-1">
                 Stored in <code>images/transport-types/&lt;typeId&gt;/</code>. Aim for a square image.
               </p>
@@ -354,7 +376,11 @@ export default function AdminTransportTypesPage() {
               <div>
                 <label className="block text-sm text-neutral-600 mb-1">Preview</label>
                 <div className="h-24 w-24 border rounded overflow-hidden">
-                  <img src={URL.createObjectURL(photoFile)} alt="preview" className="h-full w-full object-cover" />
+                  <img
+                    src={URL.createObjectURL(photoFile)}
+                    alt="preview"
+                    className="h-full w-full object-cover"
+                  />
                 </div>
               </div>
             )}
