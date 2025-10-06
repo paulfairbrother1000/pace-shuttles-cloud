@@ -93,8 +93,6 @@ function publicImage(input?: string | null): string | undefined {
   return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
-
-
 // --- legacy helper kept for transport types (now uses normalizer)
 function typeImgSrc(t: { id: string; picture_url?: string | null }) {
   return publicImage(t.picture_url);
@@ -1073,6 +1071,7 @@ export default function HomePage() {
                         src={imgUrl}
                         alt={c.name}
                         fill
+                        unoptimized   // ← Supabase image: bypass optimizer
                         className="object-cover"
                         sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                       />
@@ -1294,6 +1293,7 @@ export default function HomePage() {
                             src={publicImage(pu?.picture_url) || "/placeholder.png"}
                             alt={pu?.name || "Pick-up"}
                             fill
+                            unoptimized   // ← Supabase image
                             className="object-cover"
                             sizes="64px"
                           />
@@ -1308,6 +1308,7 @@ export default function HomePage() {
                             src={publicImage(de?.picture_url) || "/placeholder.png"}
                             alt={de?.name || "Destination"}
                             fill
+                            unoptimized   // ← Supabase image
                             className="object-cover"
                             sizes="64px"
                           />
@@ -1451,6 +1452,7 @@ function TilePicker({
                     src={it.image}
                     alt={it.name}
                     fill
+                    unoptimized   // ← Supabase image (from DB)
                     className="object-cover"
                     sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                   />
@@ -1474,4 +1476,3 @@ function TilePicker({
     </div>
   );
 }
-
