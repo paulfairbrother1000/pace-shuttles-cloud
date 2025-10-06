@@ -1585,7 +1585,7 @@ export default function HomePage() {
   );
 } // ← CLOSES HomePage
 
-; /* -------------------------- Helpers below are top-level, not inside HomePage -------------------------- */
+/* -------------------------- Helpers below are top-level, not inside HomePage -------------------------- */
 
 /* ---------- Tile picker ---------- */
 function TilePicker({
