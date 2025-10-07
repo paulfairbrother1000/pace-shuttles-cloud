@@ -6,6 +6,7 @@ import { createBrowserClient } from "@supabase/ssr";
 
 type UUID = string;
 type Country = { id: UUID; name: string };
+
 type Destination = {
   id?: UUID;
   name: string;
@@ -13,7 +14,7 @@ type Destination = {
   country_id: UUID | null;
   picture_url: string | null;
   url: string | null;
-  is_active: boolean | null;
+  // NOTE: no is_active field here to match your DB
 };
 
 const supabase =
@@ -43,7 +44,6 @@ export default function EditDestinationPage() {
     country_id: null,
     picture_url: "",
     url: "",
-    is_active: true,
   });
 
   useEffect(() => {
@@ -63,7 +63,7 @@ export default function EditDestinationPage() {
           ? Promise.resolve({ data: null, error: null } as any)
           : supabase
               .from("destinations")
-              .select("id,name,description,country_id,picture_url,url,is_active")
+              .select("id,name,description,country_id,picture_url,url") // ← no is_active
               .eq("id", id)
               .single(),
       ]);
@@ -80,7 +80,9 @@ export default function EditDestinationPage() {
 
       setLoading(false);
     })();
-    return () => { off = true; };
+    return () => {
+      off = true;
+    };
   }, [id, isNew]);
 
   async function save() {
@@ -97,7 +99,6 @@ export default function EditDestinationPage() {
             picture_url: form.picture_url || null,
             country_id: form.country_id || null,
             url: form.url || null,
-            is_active: form.is_active ?? true,
           })
           .select("id")
           .single();
@@ -112,7 +113,6 @@ export default function EditDestinationPage() {
             picture_url: form.picture_url || null,
             country_id: form.country_id || null,
             url: form.url || null,
-            is_active: form.is_active ?? true,
           })
           .eq("id", id);
         if (error) throw error;
@@ -228,17 +228,6 @@ export default function EditDestinationPage() {
               rows={5}
               className="w-full border rounded-lg px-3 py-2"
             />
-          </label>
-
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={!!form.is_active}
-              onChange={(e) =>
-                setForm({ ...form, is_active: e.target.checked })
-              }
-            />
-            <span className="text-sm">Active</span>
           </label>
 
           <div className="flex items-center gap-3 pt-2">

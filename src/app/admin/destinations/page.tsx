@@ -14,7 +14,7 @@ type Destination = {
   description: string | null;
   country_id: UUID | null;
   url: string | null;
-  is_active: boolean | null;
+  // NOTE: no is_active column in your DB, so we omit it everywhere
 };
 
 const supabase =
@@ -43,15 +43,16 @@ export default function AdminDestinations() {
       }
       setErr(null);
       setLoading(true);
+
       const { data, error } = await supabase
         .from("destinations")
-        .select("id,name,picture_url,description,country_id,url,is_active")
+        .select("id,name,picture_url,description,country_id,url") // ← no is_active
         .order("name", { ascending: true });
-      if (!off) {
-        if (error) setErr(error.message);
-        setRows((data || []) as Destination[]);
-        setLoading(false);
-      }
+
+      if (off) return;
+      if (error) setErr(error.message);
+      setRows((data || []) as Destination[]);
+      setLoading(false);
     })();
     return () => {
       off = true;
@@ -61,7 +62,7 @@ export default function AdminDestinations() {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
-    return rows.filter(r => r.name.toLowerCase().includes(s));
+    return rows.filter((r) => r.name.toLowerCase().includes(s));
   }, [q, rows]);
 
   return (
@@ -71,7 +72,7 @@ export default function AdminDestinations() {
         <div className="ml-auto flex items-center gap-2">
           <input
             value={q}
-            onChange={e => setQ(e.target.value)}
+            onChange={(e) => setQ(e.target.value)}
             placeholder="Search…"
             className="border rounded-full px-3 py-1.5 text-sm"
           />
@@ -94,7 +95,7 @@ export default function AdminDestinations() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {/* New tile (mobile-visible too) */}
+          {/* New tile */}
           <Link
             href="/admin/destinations/edit/new"
             className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden flex items-center justify-center aspect-[4/3]"
@@ -127,11 +128,6 @@ export default function AdminDestinations() {
                 {d.description && (
                   <div className="text-sm text-neutral-600 line-clamp-2">
                     {d.description}
-                  </div>
-                )}
-                {d.is_active === false && (
-                  <div className="mt-1 inline-flex px-2 py-0.5 rounded-full text-[11px] bg-neutral-100 text-neutral-700">
-                    inactive
                   </div>
                 )}
               </div>
