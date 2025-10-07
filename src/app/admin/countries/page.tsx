@@ -1,3 +1,4 @@
+// /src/app/admin/countries/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -26,7 +27,6 @@ const sb =
       )
     : null;
 
-// inline SVG fallback (no network request)
 const FALLBACK =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
@@ -36,7 +36,6 @@ const FALLBACK =
     </svg>`
   );
 
-// match how we name files when uploading
 function slugify(s: string) {
   return (s || "")
     .toLowerCase()
@@ -45,32 +44,34 @@ function slugify(s: string) {
     .replace(/(^-|-$)/g, "");
 }
 
-/**
- * Choose the best image URL for a country:
- * 1) normalize stored picture_url if present
- * 2) otherwise, try conventional storage keys under the "images" bucket:
- *    - countries/{code-lc}-{slug(name)}.jpg
- *    - countries/{code-lc}-{slug(name)}.png
- *    - countries/{code-lc}.jpg
- *    - countries/{code-lc}.png
- * Browser will 404 gracefully and onError we swap to FALLBACK.
+/** Pick the best URL:
+ * 1) stored picture_url (normalized)
+ * 2) try conventional keys under images/countries with .jpg/.jpeg/.png
+ *    - countries/{code}-{slug(name)}.{ext}
+ *    - countries/{code}.{ext}
+ *    - countries/{slug(name)}.{ext}  (handles rows with no code)
  */
 function bestCountryImage(c: Country): string {
   const explicit = publicImage(c.picture_url) || c.picture_url || "";
   if (explicit) return explicit;
 
   const code = (c.code || "").toLowerCase();
-  const base = `countries/${code}${code ? "-" : ""}${slugify(c.name || "")}`;
-  const candidates = [
-    `${base}.jpg`,
-    `${base}.png`,
-    code ? `countries/${code}.jpg` : "",
-    code ? `countries/${code}.png` : "",
-  ].filter(Boolean) as string[];
+  const slug = slugify(c.name || "");
+  const exts = [".jpg", ".jpeg", ".png"];
 
-  // normalize first candidate using publicImage (it will prepend bucket+host)
-  const first = candidates[0] || "";
-  return first ? publicImage(first) || "" : "";
+  const keys: string[] = [];
+  for (const ext of exts) {
+    if (code && slug) keys.push(`countries/${code}-${slug}${ext}`);
+    if (code) keys.push(`countries/${code}${ext}`);
+    if (slug) keys.push(`countries/${slug}${ext}`);
+  }
+
+  // return the first normalized candidate; browser will 404 gracefully and we swap to FALLBACK onError
+  for (const k of keys) {
+    const u = publicImage(k);
+    if (u) return u;
+  }
+  return "";
 }
 
 export default function CountriesAdminTiles() {
@@ -166,6 +167,8 @@ export default function CountriesAdminTiles() {
                     src={initialSrc}
                     alt={c.name || "Country"}
                     className="w-full h-full object-cover group-hover:scale-[1.02] transition"
+                    // Expose the computed URL for quick manual check
+                    title={initialSrc}
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).src = FALLBACK;
                     }}
