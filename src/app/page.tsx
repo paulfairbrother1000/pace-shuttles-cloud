@@ -273,7 +273,7 @@ type QuoteErr = { error_code: string; step?: string; details?: string };
 /* ---------- Server-hydrate payload contracts (SINGLE definition) ---------- */
 type HydrateGlobal = {
   countries: Country[];
-  available_country_ids: string[];
+  const availableCountryIds = useMemo(() => new Set(global.available_country_ids), [global]);
   available_destinations_by_country: Record<string, string[]>;
 };
 
@@ -412,7 +412,7 @@ const remainingSeatsByKey = useMemo(() => {
 
 function isSoldOut(routeId: string, dateISO: string) {
   const k = `${routeId}_${dateISO}`;
-  const dbRem = remainingByKeyDB.get(k);
+  const dbRem = remainingByKeyDB[k as keyof typeof remainingByKeyDB];
   if (dbRem != null) return dbRem <= 0;
   return (remainingSeatsByKey.get(k) ?? 0) <= 0;
 }
@@ -458,7 +458,11 @@ const rows = useMemo(() => rowsAll.sort((a, b) => a.dateISO.localeCompare(b.date
 /* ---------- Live quotes (via existing /api/quote) ---------- */
 const [quotesByRow, setQuotesByRow] = useState<Record<string, UiQuote | null>>({});
 const [quoteErrByRow, setQuoteErrByRow] = useState<Record<string, string | null>>({});
-const inventoryReady = soldOutKeys.size > 0 || (assignments.length > 0 && vehicles.length > 0) || orders.length > 0;
+const inventoryReady =
+  ((Array.isArray(soldOutKeys) ? soldOutKeys.length : (soldOutKeys as any)?.size ?? 0) > 0) ||
+  (assignments.length > 0 && vehicles.length > 0) ||
+  orders.length > 0;
+
 
 const [seatSelections, setSeatSelections] = useState<Record<string, number>>({});
 const [lastGoodPriceByRow, setLastGoodPriceByRow] = useState<Record<string, number>>({});
@@ -982,7 +986,7 @@ if (!countryId) {
               const err = quoteErrByRow[r.key];
 
               const k = `${r.route.id}_${r.dateISO}`;
-              const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+              const remaining = (remainingByKeyDB[k as keyof typeof remainingByKeyDB] ?? remainingSeatsByKey.get(k) ?? 0);
               const overByCapacity = !rowSoldOut && selected > remaining;
               const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
 
