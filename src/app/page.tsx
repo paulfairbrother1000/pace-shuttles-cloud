@@ -273,7 +273,7 @@ type QuoteErr = { error_code: string; step?: string; details?: string };
 /* ---------- Server-hydrate payload contracts (SINGLE definition) ---------- */
 type HydrateGlobal = {
   countries: Country[];
-  const availableCountryIds = useMemo(() => new Set(global.available_country_ids), [global]);
+  
   available_destinations_by_country: Record<string, string[]>;
 };
 
@@ -294,6 +294,14 @@ export default function Page() {
 // ===== SECTION 3: Derived data, pricing, handlers, calendar helpers =====
 
 /* ---------- Derived: verified routes ---------- */
+
+// Make a Set of country ids that actually have any destinations
+const availableCountryIds = useMemo(() => {
+  const obj = (availableDestinationsByCountry ?? {}) as Record<string, string[]>;
+  return new Set(Object.keys(obj));
+}, [availableDestinationsByCountry]);
+
+
 const verifiedRoutes = useMemo(() => {
   const withAsn = new Set(assignments.filter(a => a.is_active !== false).map((a) => a.route_id));
   return routes.filter((r) => withAsn.has(r.id));
@@ -485,6 +493,8 @@ useEffect(() => {
 
   const ac = new AbortController();
   const inFlight = inFlightRef.current;
+  const DEFAULT_SEATS = 2;
+
 
   (async () => {
     await Promise.all(rows.map(async (r) => {
@@ -1059,7 +1069,7 @@ if (!countryId) {
                   const err = quoteErrByRow[r.key];
 
                   const k = `${r.route.id}_${r.dateISO}`;
-                  const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+                  const remaining = ((remainingByKeyDB as Record<string, number>)[k] ?? remainingSeatsByKey.get(k) ?? 0);
                   const overByCapacity = !rowSoldOut && selected > remaining;
                   const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
                   const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
