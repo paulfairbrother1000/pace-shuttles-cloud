@@ -295,12 +295,6 @@ export default function Page() {
 
 /* ---------- Derived: verified routes ---------- */
 
-// Make a Set of country ids that actually have any destinations
-const availableCountryIds = useMemo(() => {
-  const obj = (availableDestinationsByCountry ?? {}) as Record<string, string[]>;
-  return new Set(Object.keys(obj));
-}, [availableDestinationsByCountry]);
-
 
 const verifiedRoutes = useMemo(() => {
   const withAsn = new Set(assignments.filter(a => a.is_active !== false).map((a) => a.route_id));
@@ -311,6 +305,7 @@ const verifiedRoutes = useMemo(() => {
 type Occurrence = { id: string; route_id: string; dateISO: string };
 const occurrences: Occurrence[] = useMemo(() => {
   const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
+  const DEFAULT_SEATS = 2;
   const today = startOfDay(new Date());
   const windowStart = startOfMonth(today);
   const windowEnd = endOfMonth(addMonths(today, 5));
@@ -493,8 +488,6 @@ useEffect(() => {
 
   const ac = new AbortController();
   const inFlight = inFlightRef.current;
-  const DEFAULT_SEATS = 2;
-
 
   (async () => {
     await Promise.all(rows.map(async (r) => {
