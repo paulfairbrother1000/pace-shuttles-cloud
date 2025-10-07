@@ -26,7 +26,7 @@ const sb =
       )
     : null;
 
-// inline SVG placeholder (no network requests)
+// inline SVG fallback (no network request)
 const FALLBACK =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
@@ -35,6 +35,43 @@ const FALLBACK =
       <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#9ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'>No image</text>
     </svg>`
   );
+
+// match how we name files when uploading
+function slugify(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+/**
+ * Choose the best image URL for a country:
+ * 1) normalize stored picture_url if present
+ * 2) otherwise, try conventional storage keys under the "images" bucket:
+ *    - countries/{code-lc}-{slug(name)}.jpg
+ *    - countries/{code-lc}-{slug(name)}.png
+ *    - countries/{code-lc}.jpg
+ *    - countries/{code-lc}.png
+ * Browser will 404 gracefully and onError we swap to FALLBACK.
+ */
+function bestCountryImage(c: Country): string {
+  const explicit = publicImage(c.picture_url) || c.picture_url || "";
+  if (explicit) return explicit;
+
+  const code = (c.code || "").toLowerCase();
+  const base = `countries/${code}${code ? "-" : ""}${slugify(c.name || "")}`;
+  const candidates = [
+    `${base}.jpg`,
+    `${base}.png`,
+    code ? `countries/${code}.jpg` : "",
+    code ? `countries/${code}.png` : "",
+  ].filter(Boolean) as string[];
+
+  // normalize first candidate using publicImage (it will prepend bucket+host)
+  const first = candidates[0] || "";
+  return first ? publicImage(first) || "" : "";
+}
 
 export default function CountriesAdminTiles() {
   const router = useRouter();
@@ -115,7 +152,7 @@ export default function CountriesAdminTiles() {
           </button>
 
           {filtered.map((c) => {
-            const src = publicImage(c.picture_url) || FALLBACK;
+            const initialSrc = bestCountryImage(c) || FALLBACK;
             return (
               <button
                 key={c.id}
@@ -126,7 +163,7 @@ export default function CountriesAdminTiles() {
                 <div className="relative w-full h-[160px] overflow-hidden">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={src}
+                    src={initialSrc}
                     alt={c.name || "Country"}
                     className="w-full h-full object-cover group-hover:scale-[1.02] transition"
                     onError={(e) => {
