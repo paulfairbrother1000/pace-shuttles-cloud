@@ -14,8 +14,42 @@ type Destination = {
   description: string | null;
   country_id: UUID | null;
   url: string | null;
-  // NOTE: no is_active column in your DB, so we omit it everywhere
 };
+
+// --- SAME normalizer your homepage uses ---
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      if (m) {
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
+      }
+      return raw; // already a full non-storage url
+    } catch {
+      /* fallthrough */
+    }
+  }
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
+  const key = raw.replace(/^\/+/, "");
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+  }
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+}
 
 const supabase =
   typeof window !== "undefined" &&
@@ -46,7 +80,7 @@ export default function AdminDestinations() {
 
       const { data, error } = await supabase
         .from("destinations")
-        .select("id,name,picture_url,description,country_id,url") // ← no is_active
+        .select("id,name,picture_url,description,country_id,url")
         .order("name", { ascending: true });
 
       if (off) return;
@@ -76,6 +110,7 @@ export default function AdminDestinations() {
             placeholder="Search…"
             className="border rounded-full px-3 py-1.5 text-sm"
           />
+          {/* ✅ correct path for create */}
           <Link
             href="/admin/destinations/edit/new"
             className="px-3 py-1.5 rounded-full bg-blue-600 text-white text-sm"
@@ -95,7 +130,7 @@ export default function AdminDestinations() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {/* New tile */}
+          {/* quick-create tile */}
           <Link
             href="/admin/destinations/edit/new"
             className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden flex items-center justify-center aspect-[4/3]"
@@ -103,36 +138,40 @@ export default function AdminDestinations() {
             <span className="text-blue-700 font-medium">＋ New Destination</span>
           </Link>
 
-          {filtered.map((d) => (
-            <Link
-              key={d.id}
-              href={`/admin/destinations/edit/${d.id}`}
-              className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden"
-            >
-              <div className="relative w-full aspect-[4/3]">
-                {d.picture_url ? (
-                  <Image
-                    src={d.picture_url}
-                    alt={d.name}
-                    fill
-                    unoptimized
-                    className="object-cover"
-                    sizes="(max-width: 768px) 100vw, 33vw"
-                  />
-                ) : (
-                  <div className="h-full w-full bg-neutral-100" />
-                )}
-              </div>
-              <div className="p-3">
-                <div className="font-medium">{d.name}</div>
-                {d.description && (
-                  <div className="text-sm text-neutral-600 line-clamp-2">
-                    {d.description}
-                  </div>
-                )}
-              </div>
-            </Link>
-          ))}
+          {filtered.map((d) => {
+            const img = publicImage(d.picture_url);
+            return (
+              // ✅ correct path for edit
+              <Link
+                key={d.id}
+                href={`/admin/destinations/edit/${d.id}`}
+                className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden"
+              >
+                <div className="relative w-full aspect-[4/3]">
+                  {img ? (
+                    <Image
+                      src={img}
+                      alt={d.name}
+                      fill
+                      unoptimized
+                      className="object-cover"
+                      sizes="(max-width: 768px) 100vw, 33vw"
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-neutral-100" />
+                  )}
+                </div>
+                <div className="p-3">
+                  <div className="font-medium">{d.name}</div>
+                  {d.description && (
+                    <div className="text-sm text-neutral-600 line-clamp-2">
+                      {d.description}
+                    </div>
+                  )}
+                </div>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>
