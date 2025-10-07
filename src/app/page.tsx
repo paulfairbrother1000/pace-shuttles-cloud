@@ -935,21 +935,21 @@ if (!countryId) {
         </div>
       </section>
 
-      <section className="pt-10">
-        <a href="/partners" aria-label="Partner with Pace Shuttles">
-          <div className="relative w-full overflow-hidden rounded-2xl border">
-            <div className="aspect-[21/9]">
-              <Image
-                src={FOOTER_CTA_IMG_URL}
-                alt="Partner with Pace Shuttles"
-                fill
-                className="object-cover"
-                sizes="100vw"
-              />
-            </div>
-          </div>
-        </a>
-      </section>
+<section className="pt-10">
+  <a href="/partners" aria-label="Partner with Pace Shuttles">
+    <Image
+      src={FOOTER_CTA_IMG_URL}
+      alt="Partner with Pace Shuttles"
+      // 👇 set these to the REAL pixel size of your footer image
+      width={2400}
+      height={600}
+      sizes="100vw"
+      priority={false}
+      className="w-full h-auto rounded-2xl border"
+    />
+  </a>
+</section>
+
 
     </div>
   );
