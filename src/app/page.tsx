@@ -14,6 +14,38 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
+// --- server-hydrate helpers ---
+async function fetchJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "no-store" });
+  const text = await res.text();
+  try {
+    const json = JSON.parse(text);
+    if (!res.ok) throw new Error(json?.error || res.statusText || "Request failed");
+    return json as T;
+  } catch {
+    throw new Error(`Fetch failed (${res.status}): ${text?.slice(0, 300)}`);
+  }
+}
+
+type HydrateGlobal = {
+  countries: Country[];
+  available_country_ids: string[];
+  available_destinations_by_country: Record<string, string[]>;
+};
+
+type HydrateCountry = {
+  pickups: Pickup[];
+  destinations: Destination[];
+  routes: RouteRow[];
+  assignments: Assignment[];
+  vehicles: Vehicle[];
+  orders: Order[];
+  transport_types: TransportTypeRow[];
+  sold_out_keys: string[];                         // ["routeId_YYYY-MM-DD", ...]
+  remaining_by_key_db: Record<string, number>;     // { "routeId_YYYY-MM-DD": remaining }
+};
+
+
 // Browser-only Supabase client (safe no-op on the server)
 const supabase = (() => {
   if (typeof window === "undefined") return null;
@@ -278,89 +310,88 @@ export default function HomePage() {
   const [availableCountryIds, setAvailableCountryIds] = useState<Set<string>>(new Set());
   const [availableDestinationsByCountry, setAvailableDestinationsByCountry] = useState<Map<string, Set<string>>>(new Map());
 
-  /* ---------- Global hydrate (countries + availability) ---------- */
-  useEffect(() => {
-    let off = false;
-    (async () => {
-      try {
-        const data = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
-        if (off) return;
-        setCountries(data.countries || []);
-        setAvailableCountryIds(new Set(data.available_country_ids || []));
-        const byCountry = new Map<string, Set<string>>();
-        for (const [cid, dests] of Object.entries(data.available_destinations_by_country || {})) {
-          byCountry.set(cid, new Set(dests));
-        }
-        setAvailableDestinationsByCountry(byCountry);
-        setMsg(null);
-      } catch (e: any) {
-        setMsg(e?.message ?? "Failed to load countries.");
-      }
-    })();
-    return () => { off = true; };
-  }, []);
+/* ---------- Load countries (server-side hydrate) ---------- */
+useEffect(() => {
+  let off = false;
+  (async () => {
+    try {
+      const data = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
+      if (off) return;
 
-  /* ---------- Country hydrate (lookups, routes, orders, capacity) ---------- */
-  useEffect(() => {
-    if (!countryId) return;
-    let off = false;
-    (async () => {
-      setLoading(true);
+      setCountries(data.countries || []);
+
+      // availability sets
+      setAvailableCountryIds(new Set(data.available_country_ids || []));
+      const byCountry = new Map<string, Set<string>>();
+      Object.entries(data.available_destinations_by_country || {}).forEach(([cid, arr]) => {
+        byCountry.set(cid, new Set(arr));
+      });
+      setAvailableDestinationsByCountry(byCountry);
+
       setMsg(null);
-      try {
-        const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(countryId)}`);
+    } catch (e: any) {
+      console.error("[hydrate-global]", e);
+      setMsg(e?.message || String(e));
+      setCountries([]);
+      setAvailableCountryIds(new Set());
+      setAvailableDestinationsByCountry(new Map());
+    }
+  })();
+  return () => { off = true; };
+}, []);
 
-        if (off) return;
 
-        setPickups(data.pickups || []);
-        setDestinations(data.destinations || []);
-        setRoutes((data.routes || []).filter(r => {
-          // safety: server should already filter to is_active + season, but keep client guard
-          const today = startOfDay(new Date());
-          return (r.is_active !== false) && withinSeason(today, r.season_from ?? null, r.season_to ?? null);
-        }));
+  /* ---------- Load lookups & routes when a country is chosen (server-side hydrate) ---------- */
+useEffect(() => {
+  if (!countryId) return;
+  let off = false;
 
-        setAssignments(data.assignments || []);
-        setVehicles(data.vehicles || []);
-        setOrders(data.orders || []);
+  (async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(countryId)}`);
+      if (off) return;
 
-        // transport types -> maps
-        const ttRows = data.transport_types || [];
-        setTransportTypeRows(ttRows);
-        const idMap: Record<string, string> = {};
-        const nameMap: Record<string, string> = {};
-        ttRows.forEach((t) => { idMap[t.id] = t.name; nameMap[t.name.toLowerCase()] = t.name; });
-        setTransportTypesById(idMap);
-        setTransportTypesByName(nameMap);
+      setPickups(data.pickups || []);
+      setDestinations(data.destinations || []);
 
-        // sold out + remaining capacity views
-        setSoldOutKeys(new Set<string>((data.sold_out_keys || [])));
-        const capMap = new Map<string, number>();
-        for (const [k, v] of Object.entries(data.remaining_by_key_db || {})) capMap.set(k, Number(v ?? 0));
-        setRemainingByKeyDB(capMap);
+      // Filter routes by season as before
+      const today = startOfDay(new Date());
+      setRoutes((data.routes || []).filter((row) => withinSeason(today, row.season_from ?? null, row.season_to ?? null)));
 
-        setMsg(null);
-      } catch (e: any) {
-        setMsg(e?.message ?? "Failed to load data for selected country.");
-        setPickups([]); setDestinations([]); setRoutes([]);
-        setAssignments([]); setVehicles([]); setOrders([]);
-        setTransportTypeRows([]); setTransportTypesById({}); setTransportTypesByName({});
-        setSoldOutKeys(new Set()); setRemainingByKeyDB(new Map());
-      } finally {
-        setLoading(false);
-      }
-    })();
-    return () => { off = true; };
-  }, [countryId]);
-/* ---------- tiny fetch helper (client) ---------- */
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, cache: "no-store" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Request failed (${res.status})`);
-  }
-  return res.json() as Promise<T>;
-}
+      setAssignments(data.assignments || []);
+      setVehicles(data.vehicles || []);
+      setOrders(data.orders || []);
+
+      // transport types
+      const ttRows = data.transport_types || [];
+      setTransportTypeRows(ttRows);
+      const idMap: Record<string, string> = {};
+      const nameMap: Record<string, string> = {};
+      ttRows.forEach((t) => { idMap[t.id] = t.name; nameMap[t.name.toLowerCase()] = t.name; });
+      setTransportTypesById(idMap);
+      setTransportTypesByName(nameMap);
+
+      // sold out + remaining (from DB views)
+      setSoldOutKeys(new Set<string>(data.sold_out_keys || []));
+      setRemainingByKeyDB(new Map(Object.entries(data.remaining_by_key_db || {}).map(([k, v]) => [k, Number(v) || 0])));
+
+    } catch (e: any) {
+      console.error("[hydrate-country]", e);
+      setMsg(e?.message || String(e));
+      setPickups([]); setDestinations([]); setRoutes([]);
+      setAssignments([]); setVehicles([]); setOrders([]);
+      setTransportTypeRows([]); setTransportTypesById({}); setTransportTypesByName({});
+      setSoldOutKeys(new Set()); setRemainingByKeyDB(new Map());
+    } finally {
+      if (!off) setLoading(false);
+    }
+  })();
+
+  return () => { off = true; };
+}, [countryId]);
+
 
 /* ---------- server payload contracts ---------- */
 type HydrateGlobal = {
@@ -801,6 +832,7 @@ if (!countryId) {
   const visibleCountries = countries.filter((c) => availableCountryIds.has(c.id));
   return (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
+
       {hydrated && !supabase && (
         <Banner>
           Supabase not configured. Check <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
@@ -808,10 +840,18 @@ if (!countryId) {
         </Banner>
       )}
 
+      {/* ← Add this: shows server-hydrate errors on the landing page */}
+      {msg && (
+        <Banner>
+          <span className="font-medium">Error:</span> {msg}
+        </Banner>
+      )}
+
       {/* ... landing sections unchanged ... */}
     </div>
   );
 }
+
 
 /* Planner UI (country selected) */
 const allowedDestIds = availableDestinationsByCountry.get(countryId) ?? new Set<string>();
