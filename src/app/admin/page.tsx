@@ -121,7 +121,7 @@ function boatTieBreak(a: Boat, b: Boat) {
   return a.vehicle_id.localeCompare(b.vehicle_id);
 }
 
-ffunction allocateDetailed(
+function allocateDetailed(
   parties: Party[],
   boats: Boat[],
   opts?: { horizon?: "T24" | "T72" | ">72h" | "past" }
@@ -596,7 +596,8 @@ export default function AdminPage() {
   .filter(Boolean) as Boat[];
 
 
-      let previewAlloc = allocateDetailed(parties, boats);
+      let previewAlloc = allocateDetailed(parties, boats, { horizon });
+
       const maxTotal = boats.reduce((s, b) => s + b.max, 0);
 
 
