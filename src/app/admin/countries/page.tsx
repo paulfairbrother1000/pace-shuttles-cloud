@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
@@ -12,11 +11,11 @@ type Country = {
   name: string;
   code: string | null;
   description: string | null;
-  picture_url: string | null;
+  picture_url: string | null; // ← used for the tile image
   created_at: string | null;
 };
 
-const sb =
+const supabase =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -26,85 +25,19 @@ const sb =
       )
     : null;
 
-/* inline SVG fallback (avoids 404s for /placeholder.png) */
-const FALLBACK =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' width='640' height='400'>
-      <rect width='100%' height='100%' fill='#f3f4f6'/>
-      <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#9ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'>No image</text>
-    </svg>`
-  );
+const FALLBACK_SVG =
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='400'%3E%3Crect width='100%25' height='100%25' fill='%23f3f4f6'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'%3ENo image%3C/text%3E%3C/svg%3E";
 
-function slugify(s: string) {
-  return (s || "")
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
-
-/** Choose the best image URL for a country.
- * Tries, in order:
- *  1) stored picture_url (normalized)
- *  2) images/countries/{code}-{slug}.{jpg|jpeg|png}  (tries 2- and 3-letter codes)
- *  3) images/countries/{code}.{ext}
- *  4) images/countries/{slug}.{ext}
- */
-function bestCountryImage(c: Country): string {
-  // 1) explicit URL in DB (normalize if it's a storage key)
-  const explicit = publicImage(c.picture_url) || c.picture_url || "";
-  if (explicit) return explicit;
-
-  const codeRaw = (c.code || "").trim().toLowerCase();
-  const codes = Array.from(
-    new Set(
-      [
-        codeRaw, // whatever is stored
-        codeRaw.slice(0, 2), // alpha-2
-        codeRaw.slice(0, 3), // alpha-3
-      ].filter(Boolean)
-    )
-  );
-
-  const slug = slugify(c.name || "");
-  const exts = [".jpg", ".jpeg", ".png"];
-
-  // 2) code + slug
-  for (const ext of exts) {
-    for (const cd of codes) {
-      const u = publicImage(`countries/${cd}-${slug}${ext}`);
-      if (u) return u;
-    }
-  }
-  // 3) code alone
-  for (const ext of exts) {
-    for (const cd of codes) {
-      const u = publicImage(`countries/${cd}${ext}`);
-      if (u) return u;
-    }
-  }
-  // 4) slug alone
-  for (const ext of exts) {
-    const u = publicImage(`countries/${slug}${ext}`);
-    if (u) return u;
-  }
-
-  return "";
-}
-
-export default function CountriesAdminTiles() {
-  const router = useRouter();
-
+export default function AdminCountriesTilesPage() {
+  const [rows, setRows] = useState<Country[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [rows, setRows] = useState<Country[]>([]);
   const [q, setQ] = useState("");
 
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!sb) {
+      if (!supabase) {
         setErr("Supabase client is not configured.");
         setLoading(false);
         return;
@@ -112,7 +45,7 @@ export default function CountriesAdminTiles() {
       setLoading(true);
       setErr(null);
       try {
-        const { data, error } = await sb
+        const { data, error } = await supabase
           .from("countries")
           .select("id,name,code,description,picture_url,created_at")
           .order("name");
@@ -132,23 +65,27 @@ export default function CountriesAdminTiles() {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
-    return rows.filter((r) => r.name?.toLowerCase().includes(s));
+    return rows.filter(
+      (r) =>
+        r.name?.toLowerCase().includes(s) ||
+        (r.description ?? "").toLowerCase().includes(s)
+    );
   }, [rows, q]);
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-center gap-3">
+    <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
+      <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold">Admin • Countries</h1>
         <div className="ml-auto flex items-center gap-2">
           <input
-            className="border rounded-lg px-3 py-2"
+            className="border rounded-lg px-3 py-2 text-sm min-w-[220px]"
             placeholder="Search…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
           <button
-            className="px-3 py-2 rounded-full bg-blue-600 text-white"
-            onClick={() => router.push("/admin/countries/edit/new")}
+            className="px-4 py-2 rounded-full bg-blue-600 text-white text-sm"
+            onClick={() => (window.location.href = "/admin/countries/edit/new")}
           >
             New Country
           </button>
@@ -161,50 +98,67 @@ export default function CountriesAdminTiles() {
         </div>
       )}
 
-      {loading ? (
-        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-      ) : (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {/* New */}
-          <button
-            onClick={() => router.push("/admin/countries/edit/new")}
-            className="h-[240px] rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition flex items-center justify-center"
-          >
-            <span className="text-blue-600">+ New Country</span>
-          </button>
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {/* New tile */}
+        <button
+          className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-left"
+          onClick={() => (window.location.href = "/admin/countries/edit/new")}
+        >
+          <div className="h-[180px] bg-neutral-100 rounded-t-2xl grid place-items-center text-neutral-400">
+            + New Country
+          </div>
+          <div className="p-3 text-neutral-500 text-sm">Create a new country</div>
+        </button>
 
-          {filtered.map((c) => {
-            const initialSrc = bestCountryImage(c) || FALLBACK;
+        {/* Data tiles */}
+        {loading ? (
+          <div className="col-span-full p-4 rounded-2xl border bg-white shadow">
+            Loading…
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="col-span-full p-4 rounded-2xl border bg-white shadow">
+            No countries found.
+          </div>
+        ) : (
+          filtered.map((c) => {
+            const imgSrc =
+              publicImage(c.picture_url || undefined) ?? FALLBACK_SVG;
+
             return (
-              <button
+              <div
                 key={c.id}
-                onClick={() => router.push(`/admin/countries/edit/${c.id}`)}
-                className="group rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-left overflow-hidden"
-                title="Edit"
+                className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden hover:shadow-md transition"
               >
-                <div className="relative w-full h-[160px] overflow-hidden">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={initialSrc}
-                    alt={c.name || "Country"}
-                    className="w-full h-full object-cover group-hover:scale-[1.02] transition"
-                    title={initialSrc /* hover to inspect which URL was chosen */}
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = FALLBACK;
-                    }}
-                  />
-                </div>
-                <div className="p-3">
-                  <div className="font-medium">{c.name}</div>
-                  <div className="text-xs text-neutral-600 line-clamp-2">
-                    {c.description || "—"}
+                <button
+                  className="block w-full text-left"
+                  onClick={() =>
+                    (window.location.href = `/admin/countries/edit/${c.id}`)
+                  }
+                >
+                  <div className="relative w-full h-[180px] overflow-hidden bg-neutral-100">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={imgSrc}
+                      alt={c.name || "Country"}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = FALLBACK_SVG;
+                      }}
+                    />
                   </div>
-                </div>
-              </button>
+
+                  <div className="p-3 space-y-1">
+                    <div className="font-medium">{c.name}</div>
+                    <div className="text-sm text-neutral-600 line-clamp-2">
+                      {c.description || "—"}
+                    </div>
+                  </div>
+                </button>
+              </div>
             );
-          })}
-        </div>
-      )}
+          })
+        )}
+      </section>
     </div>
   );
 }
