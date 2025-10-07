@@ -1,10 +1,12 @@
-// Server-shifted Home page: move all DB reads + heavy joins OFF the browser.
-// This component now calls consolidated API routes that you’ll add server-side:
-//   - GET  /api/home-hydrate                → global: countries + availability sets
-//   - GET  /api/home-hydrate?country_id=ID  → country view: lookups + verified routes + orders + capacity views
-//   - GET  /api/quote?route_id=...          → (existing) single live quote
-//   - POST /api/quote-intents               → creates quote_intents row and returns { id }
-// These endpoints should do ALL Supabase access on the server (using service role or RLS-safe RPCs).
+// src/app/page.tsx
+
+// Server-shifted Home page: all Supabase reads happen server-side via:
+//   - GET  /api/home-hydrate
+//   - GET  /api/home-hydrate?country_id=ID
+//   - GET  /api/quote?route_id=...&date=...&qty=...
+//   - POST /api/quote-intents
+//
+// This component remains "use client" for interactivity only.
 
 "use client";
 
@@ -24,13 +26,13 @@ function allocatePartiesForRemaining(
   const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
   const state = boats.map(b => ({
     id: b.vehicle_id,
-    cap: Math.max(0, Math.floor(b.cap)),
+    cap: Math.max(0, Math.floor(Number(b.cap) || 0)),
     used: 0,
     preferred: !!b.preferred,
   }));
   for (const g of groups) {
     const candidates = state
-      .map(s => ({ id: s.id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
+      .map(s => ({ ref: s, free: s.cap - s.used, preferred: s.preferred }))
       .filter(c => c.free >= g.size)
       .sort((a, b) =>
         a.preferred === b.preferred ? a.free - b.free : (a.preferred ? -1 : 1)
@@ -73,19 +75,13 @@ async function fetchQuoteOnce(
   }
 }
 
-
-// --- server-hydrate helpers ---
-// Unified fetch helper: no cache, status check, useful errors
+// --- unified fetch helper for server-hydrate endpoints ---
 async function fetchJSON<T>(input: string, init?: RequestInit): Promise<T> {
   const res = await fetch(input, { ...init, cache: "no-store" });
-
-  // Surface HTTP errors explicitly
   if (!res.ok) {
     const snippet = (await res.text()).slice(0, 200);
     throw new Error(`HTTP ${res.status} from ${input}: ${snippet}`);
   }
-
-  // Robust JSON parse with readable fallback
   const txt = await res.text();
   try {
     return JSON.parse(txt) as T;
@@ -93,25 +89,6 @@ async function fetchJSON<T>(input: string, init?: RequestInit): Promise<T> {
     throw new Error(`Non-JSON from ${input}: ${txt.slice(0, 200)}`);
   }
 }
-
-type HydrateGlobal = {
-  countries: Country[];
-  available_country_ids: string[];
-  available_destinations_by_country: Record<string, string[]>;
-};
-
-type HydrateCountry = {
-  pickups: Pickup[];
-  destinations: Destination[];
-  routes: RouteRow[];
-  assignments: Assignment[];
-  vehicles: Vehicle[];
-  orders: Order[];
-  transport_types: TransportTypeRow[];
-  sold_out_keys: string[];                         // ["routeId_YYYY-MM-DD", ...]
-  remaining_by_key_db: Record<string, number>;     // { "routeId_YYYY-MM-DD": remaining }
-};
-
 
 // Browser-only Supabase client (safe no-op on the server)
 const supabase = (() => {
@@ -121,10 +98,7 @@ const supabase = (() => {
   return url && anon ? createBrowserClient(url, anon) : null;
 })();
 
-
 const LOGIN_PATH = "/login";
-
-// Landing images — served from /public (no Supabase needed)
 const HERO_IMG_URL = "/pace-hero.jpg";
 const FOOTER_CTA_IMG_URL = "/partners-cta.jpg";
 
@@ -136,8 +110,6 @@ function Banner({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-
-
 
 /* ---------- Image URL normalizer (for Supabase public storage) ---------- */
 function publicImage(input?: string | null): string | undefined {
@@ -160,9 +132,7 @@ function publicImage(input?: string | null): string | undefined {
           : `${raw}?v=5`;
       }
       return raw;
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -237,8 +207,7 @@ function makeDepartureISO(dateISO: string, pickup_time: string | null | undefine
   if (!dateISO || !pickup_time) return null;
   try { return new Date(`${dateISO}T${pickup_time}:00`).toISOString(); } catch { return null; }
 }
-
-/* ---------- Types (mirror the previous ones; now hydrated server-side) ---------- */
+/* ---------- Types hydrated from the server ---------- */
 type Country = { id: string; name: string; description?: string | null; picture_url?: string | null };
 type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
 type Destination = { id: string; name: string; country_id: string | null; picture_url?: string | null; description?: string | null; url?: string | null };
@@ -301,140 +270,25 @@ type QuoteOk = {
 };
 type QuoteErr = { error_code: string; step?: string; details?: string };
 
+/* ---------- Server-hydrate payload contracts (SINGLE definition) ---------- */
+type HydrateGlobal = {
+  countries: Country[];
+  available_country_ids: string[];
+  available_destinations_by_country: Record<string, string[]>;
+};
 
-/* ============================== MAIN COMPONENT ============================== */
-export default function HomePage() {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => { setHydrated(true); }, []);
-
-  /* Step 1: countries (server-hydrated) */
-  const [countries, setCountries] = useState<Country[]>([]);
-  const [countryId, setCountryId] = useState<string>("");
-
-  /* Lookups (server-hydrated per country) */
-  const [pickups, setPickups] = useState<Pickup[]>([]);
-  const [destinations, setDestinations] = useState<Destination[]>([]);
-  const [transportTypeRows, setTransportTypeRows] = useState<TransportTypeRow[]>([]);
-  const [transportTypesById, setTransportTypesById] = useState<Record<string, string>>({});
-  const [transportTypesByName, setTransportTypesByName] = useState<Record<string, string>>({});
-
-  /* Routes & verification inputs */
-  const [routes, setRoutes] = useState<RouteRow[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-
-  // paid orders in window to pre-mark sold out
-  const [orders, setOrders] = useState<Order[]>([]);
-
-  // DB-driven signals
-  const [soldOutKeys, setSoldOutKeys] = useState<Set<string>>(new Set());
-  const [remainingByKeyDB, setRemainingByKeyDB] = useState<Map<string, number>>(new Map());
-
-  /* UI */
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  /* Filters */
-  const [activePane, setActivePane] = useState<"none" | "date" | "destination" | "pickup" | "type">("date");
-  const [filterDateISO, setFilterDateISO] = useState<string | null>(null);
-  const [filterDestinationId, setFilterDestinationId] = useState<string | null>(null);
-  const [filterPickupId, setFilterPickupId] = useState<string | null>(null);
-  const [filterTypeName, setFilterTypeName] = useState<string | null>(null);
-
-  // Month calendar cursor
-  const [calCursor, setCalCursor] = useState<Date>(startOfMonth(new Date()));
-
-  // default seats to show/fetch
-  const DEFAULT_SEATS = 2;
-
-  /* ---------- Availability sets from server ---------- */
-  const [availableCountryIds, setAvailableCountryIds] = useState<Set<string>>(new Set());
-  const [availableDestinationsByCountry, setAvailableDestinationsByCountry] = useState<Map<string, Set<string>>>(new Map());
-
-/* ---------- Load countries (server-side hydrate) ---------- */
-useEffect(() => {
-  let off = false;
-  (async () => {
-    try {
-      const data = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
-      if (off) return;
-
-      setCountries(data.countries || []);
-
-      // availability sets
-      setAvailableCountryIds(new Set(data.available_country_ids || []));
-      const byCountry = new Map<string, Set<string>>();
-      Object.entries(data.available_destinations_by_country || {}).forEach(([cid, arr]) => {
-        byCountry.set(cid, new Set(arr));
-      });
-      setAvailableDestinationsByCountry(byCountry);
-
-      setMsg(null);
-    } catch (e: any) {
-      console.error("[hydrate-global]", e);
-      setMsg(e?.message || String(e));
-      setCountries([]);
-      setAvailableCountryIds(new Set());
-      setAvailableDestinationsByCountry(new Map());
-    }
-  })();
-  return () => { off = true; };
-}, []);
-
-
-  /* ---------- Load lookups & routes when a country is chosen (server-side hydrate) ---------- */
-useEffect(() => {
-  if (!countryId) return;
-  let off = false;
-
-  (async () => {
-    setLoading(true);
-    setMsg(null);
-    try {
-      const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(countryId)}`);
-      if (off) return;
-
-      setPickups(data.pickups || []);
-      setDestinations(data.destinations || []);
-
-      // Filter routes by season as before
-      const today = startOfDay(new Date());
-      setRoutes((data.routes || []).filter((row) => withinSeason(today, row.season_from ?? null, row.season_to ?? null)));
-
-      setAssignments(data.assignments || []);
-      setVehicles(data.vehicles || []);
-      setOrders(data.orders || []);
-
-      // transport types
-      const ttRows = data.transport_types || [];
-      setTransportTypeRows(ttRows);
-      const idMap: Record<string, string> = {};
-      const nameMap: Record<string, string> = {};
-      ttRows.forEach((t) => { idMap[t.id] = t.name; nameMap[t.name.toLowerCase()] = t.name; });
-      setTransportTypesById(idMap);
-      setTransportTypesByName(nameMap);
-
-      // sold out + remaining (from DB views)
-      setSoldOutKeys(new Set<string>(data.sold_out_keys || []));
-      setRemainingByKeyDB(new Map(Object.entries(data.remaining_by_key_db || {}).map(([k, v]) => [k, Number(v) || 0])));
-
-    } catch (e: any) {
-      console.error("[hydrate-country]", e);
-      setMsg(e?.message || String(e));
-      setPickups([]); setDestinations([]); setRoutes([]);
-      setAssignments([]); setVehicles([]); setOrders([]);
-      setTransportTypeRows([]); setTransportTypesById({}); setTransportTypesByName({});
-      setSoldOutKeys(new Set()); setRemainingByKeyDB(new Map());
-    } finally {
-      if (!off) setLoading(false);
-    }
-  })();
-
-  return () => { off = true; };
-}, [countryId]);
-
-
-
+type HydrateCountry = {
+  pickups: Pickup[];
+  destinations: Destination[];
+  routes: RouteRow[];
+  transport_types: TransportTypeRow[];
+  assignments: Assignment[];
+  vehicles: Vehicle[];
+  orders: Order[];
+  sold_out_keys: string[];                      // `${route_id}_${ymd}`
+  remaining_by_key_db: Record<string, number>;  // `${route_id}_${ymd}` -> remaining
+};
+// ===== SECTION 3: Derived data, pricing, handlers, calendar helpers =====
 
 /* ---------- Derived: verified routes ---------- */
 const verifiedRoutes = useMemo(() => {
@@ -609,7 +463,6 @@ const [lockedPriceByRow, setLockedPriceByRow] = useState<Record<string, number>>
 const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 // Dedup quote fetches per row (qty|pinned signature)
 const inFlightRef = useRef<Map<string, string>>(new Map());
-
 
 useEffect(() => {
   if (!rows.length || loading || !inventoryReady) {
@@ -851,6 +704,9 @@ const calendarDays = useMemo(() => {
   return days.slice(0, 42);
 }, [calCursor]);
 
+// ===== END SECTION 3 =====
+// ===== SECTION 4: Render =====
+
 /* =========================== RENDER =========================== */
 
 if (!countryId) {
@@ -865,14 +721,14 @@ if (!countryId) {
         </Banner>
       )}
 
-      {/* ← Add this: shows server-hydrate errors on the landing page */}
+      {/* shows server-hydrate errors on the landing page */}
       {msg && (
         <Banner>
           <span className="font-medium">Error:</span> {msg}
         </Banner>
       )}
 
-          {/* Landing sections */}
+      {/* Landing sections */}
       <section className="space-y-4">
         <p className="text-lg">
           <strong>Pace Shuttle</strong> offers fractional luxury charter and shuttle services to world-class,
@@ -966,7 +822,6 @@ if (!countryId) {
     </div>
   );
 }
-
 
 /* Planner UI (country selected) */
 const allowedDestIds = availableDestinationsByCountry.get(countryId) ?? new Set<string>();
@@ -1277,4 +1132,5 @@ return (
     )}
   </div>
 );
-}
+
+// ===== END SECTION 4 =====

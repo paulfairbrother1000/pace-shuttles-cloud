@@ -112,6 +112,25 @@ async function ensureJourneyId(routeId: string, dateISO: string, diag = false) {
   }
 }
 
+async function getJourneyMeta(journeyId: string) {
+  const db = sbAdmin();
+  const { data, error } = await db
+    .from("journeys")
+    .select("id, route_id, departure_ts, locked_at, lock_mode")
+    .eq("id", journeyId)
+    .maybeSingle();
+  if (error) throw error;
+  const dep = data?.departure_ts ? new Date(data.departure_ts) : null;
+  const hoursOut = dep ? Math.max(0, (dep.getTime() - Date.now()) / 36e5) : null;
+  return {
+    route_id: data?.route_id as string | null,
+    departure_ts: dep,
+    hoursOut,
+    locked_at: data?.locked_at ?? null,
+    lock_mode: (data?.lock_mode as string | null) ?? "preview",
+  };
+}
+
 async function getSoldSeats(journeyId: string) {
   const db = sbAdmin();
   const { data, error } = await db
@@ -124,9 +143,7 @@ async function getSoldSeats(journeyId: string) {
   const byVeh: Record<string, number> = {};
   for (const b of data || []) {
     const status = String(b.status ?? "").toLowerCase();
-    if (status === "cancelled" || "canceled") {
-      if (status === "cancelled" || status === "canceled") continue;
-    }
+    if (status === "cancelled" || status === "canceled") continue;
     const n = Math.max(0, Number(b.seats ?? 0));
     total += n;
     const vid = (b as any).vehicle_id ?? "__unassigned__";
@@ -247,7 +264,7 @@ function decorateAndSort(vehicles: Array<{
     });
 }
 
-/** For each vehicle: { open, discountActive } given total sold seats. */
+/** For each vehicle: { open, discountActive } baseline on cumulative mins. */
 function computeOpenInfo(list: ReturnType<typeof decorateAndSort>, totalSold: number) {
   const cumMin: number[] = [];
   let s = 0;
@@ -315,6 +332,10 @@ async function handleQuote(req: NextRequest) {
     }
     if (!journeyId) return ok({ availability: "no_journey", error_code: "no_journey", _diag: diag ? { whoami } : undefined });
 
+    // Journey meta for time-based rules (T-72 discount / T-24 readiness)
+    const jmeta = await getJourneyMeta(journeyId);
+    const hoursOut = jmeta.hoursOut ?? null;
+
     /* 2) vehicles */
     let vRes: { items: any[]; source: string };
     try {
@@ -348,37 +369,71 @@ async function handleQuote(req: NextRequest) {
     } catch (e) {
       return fail("getSoldSeats", e, diag, whoami);
     }
-    const openInfo = computeOpenInfo(vehicles as any, totalSold);
+    const openInfoBase = computeOpenInfo(vehicles as any, totalSold);
 
     const totalMax = vehicles.reduce((s, v) => s + Math.max(0, v.maxseats), 0);
     const remainingOverall = totalMax - totalSold;
     if (remainingOverall <= 0) return ok({ availability: "sold_out", _diag: diag ? { whoami } : undefined });
 
-    /* 4) tax/fees */
+    /* 4) tax/fees (country-aware first, then global fallback) */
     const db = sbAdmin();
-    let taxRate = 0, feesRate = 0;
+
+    // Route -> country
+    let routeCountryId: string | null = null;
     try {
-      const { data, error } = await db
-        .from("tax_fees")
-        .select("tax,fees")
-        .order("created_at", { ascending: false })
-        .limit(1)
+      const { data: rRow, error: rErr } = await db
+        .from("routes")
+        .select("country_id")
+        .eq("id", routeId)
         .maybeSingle();
-      if (error) throw error;
-      taxRate = asFraction(data?.tax ?? 0);
-      feesRate = asFraction(data?.fees ?? 0);
-    } catch (e) {
-      if (diag) console.warn("[quote] tax_fees read failed:", e);
-      taxRate = 0;
-      feesRate = 0;
+      if (rErr) throw rErr;
+      routeCountryId = (rRow?.country_id as string) ?? null;
+    } catch {
+      routeCountryId = null;
     }
 
-    /* 5) choose candidate craft */
+    let taxRate = 0, feesRate = 0;
+    try {
+      if (routeCountryId) {
+        const { data, error } = await db
+          .from("tax_fees")
+          .select("tax,fees")
+          .eq("country_id", routeCountryId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        if (data) {
+          taxRate = asFraction(data.tax ?? 0);
+          feesRate = asFraction(data.fees ?? 0);
+        }
+      }
+      // Fallback: most recent global (if any)
+      if (taxRate === 0 && feesRate === 0) {
+        const { data, error } = await db
+          .from("tax_fees")
+          .select("tax,fees")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        if (data) {
+          taxRate = asFraction(data.tax ?? 0);
+          feesRate = asFraction(data.fees ?? 0);
+        }
+      }
+    } catch (e) {
+      if (diag) console.warn("[quote] tax_fees read failed:", e);
+      taxRate = taxRate || 0;
+      feesRate = feesRate || 0;
+    }
+
+    /* 5) choose candidate craft (apply baseline open + T-72 discount rule) */
     type Candidate = { v: typeof vehicles[number]; price_unit: number; remaining: number; discountActive: boolean };
     const candidates: Candidate[] = [];
 
     for (const v of vehicles) {
-      const open = openInfo[v.id]?.open ?? false;
+      const open = openInfoBase[v.id]?.open ?? false;
       if (!open) continue;
 
       const soldOnThis = byVehicle[v.id] ?? 0;
@@ -386,7 +441,16 @@ async function handleQuote(req: NextRequest) {
       if (remaining <= 0) continue;
 
       const baseNoDisc = (v as any).base_price as number;
-      const discountActive = openInfo[v.id]?.discountActive ?? false;
+
+      // Baseline discount trigger (fill-next-boat model)
+      const baselineDiscount = openInfoBase[v.id]?.discountActive ?? false;
+
+      // T-72 rule: if <=72h and vehicle has NOT met min seats (or is at min-1), discount active
+      const timeDiscount =
+        (hoursOut !== null && hoursOut <= 72) &&
+        (soldOnThis < v.minseats || soldOnThis === v.minseats - 1);
+
+      const discountActive = baselineDiscount || timeDiscount;
       const disc = asFraction(v.maxseatdiscount ?? 0);
       const effectiveBase = discountActive ? Math.ceil(baseNoDisc * (1 - disc)) : baseNoDisc;
 
@@ -415,7 +479,7 @@ async function handleQuote(req: NextRequest) {
         currency: "GBP",
         vehicle_id: chosen.v.id,
         vehicle_name: chosen.v.name,
-        _diag: diag ? { whoami } : undefined,
+        _diag: diag ? { whoami, hoursOut } : undefined,
       });
     }
 
@@ -466,7 +530,7 @@ async function handleQuote(req: NextRequest) {
       max_qty_at_price: chosen.remaining,
       open_discount_active: chosen.discountActive,
     };
-    if (diag) resp._diag = { whoami, source: vRes.source, totalSold, byVehicle, taxRate, feesRate };
+    if (diag) resp._diag = { whoami, source: vRes.source, totalSold, byVehicle, taxRate, feesRate, hoursOut, lock_mode: jmeta.lock_mode };
 
     return ok(resp);
   } catch (e) {
