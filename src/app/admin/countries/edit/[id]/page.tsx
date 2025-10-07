@@ -3,124 +3,99 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-import { publicImage } from "@/lib/publicImage";
 
 type UUID = string;
 
-type WorldCountry = { code: string; name: string };
-type Country = {
+type CountryRow = {
   id: UUID;
   name: string;
   code: string | null;
   description: string | null;
   picture_url: string | null;
-  created_at: string | null;
 };
 
-const IMAGE_BUCKET = "images";
-
-const sb =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
-
-function slugify(s: string) {
-  return s.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
-
-function parsePublicUrl(publicUrl: string): { bucket: string; path: string } | null {
-  try {
-    const u = new URL(publicUrl);
-    const marker = "/storage/v1/object/public/";
-    const i = u.pathname.indexOf(marker);
-    if (i === -1) return null;
-    const after = u.pathname.slice(i + marker.length);
-    const slash = after.indexOf("/");
-    if (slash === -1) return null;
-    return { bucket: after.slice(0, slash), path: after.slice(slash + 1) };
-  } catch {
-    return null;
+/* ---------- Supabase client ---------- */
+function supa() {
+  if (
+    typeof window !== "undefined" &&
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  ) {
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
   }
+  return null;
 }
 
-// inline fallback
-const FALLBACK =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' width='640' height='400'>
-      <rect width='100%' height='100%' fill='#f3f4f6'/>
-      <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#9ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'>No image</text>
-    </svg>`
-  );
+/* ---------- SAME normaliser as the tiles ---------- */
+function ensureImageUrl(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+  if (/^https?:\/\//i.test(raw)) return raw; // already absolute
+  const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  if (!base) return undefined;
+  const key = raw.replace(/^\/+/, "");
+  return `${base}/storage/v1/object/public/${key}`;
+}
 
-export default function EditCountryPage({ params }: { params: { id: string } }) {
+export default function CountryEditPage({
+  params,
+}: {
+  params: { id: string };
+}) {
   const router = useRouter();
+  const client = useMemo(() => supa(), []);
   const isCreate = params.id === "new";
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [world, setWorld] = useState<WorldCountry[]>([]);
-  const [row, setRow] = useState<Country>({
+  const [row, setRow] = useState<CountryRow>({
     id: "" as UUID,
     name: "",
-    code: "",
+    code: null,
     description: "",
-    picture_url: null,
-    created_at: null,
+    picture_url: "",
   });
 
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  // preview uses the SAME normaliser as the tiles
+  const previewSrc = useMemo(
+    () => ensureImageUrl(row.picture_url) ?? "",
+    [row.picture_url]
+  );
 
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!sb) {
+      if (!client) {
         setErr("Supabase client is not configured.");
         setLoading(false);
         return;
       }
-      setLoading(true);
       setErr(null);
+      setLoading(true);
       try {
-        const { data: un, error: unErr } = await sb
-          .from("un_countries")
-          .select("code,name")
-          .order("name");
-        if (unErr) throw unErr;
-        if (!off) setWorld((un || []) as WorldCountry[]);
-
         if (!isCreate) {
-          const { data, error } = await sb
+          const { data, error } = await client
             .from("countries")
-            .select("id,name,code,description,picture_url,created_at")
+            .select("id,name,code,description,picture_url")
             .eq("id", params.id)
             .maybeSingle();
           if (error) throw error;
           if (!data) throw new Error("Country not found.");
-          const r = data as Country;
-          if (!off) {
-            setRow(r);
-            setPreview(publicImage(r.picture_url) || null);
-          }
+          if (off) return;
+          setRow(data as CountryRow);
         } else {
+          // new record defaults
           setRow({
             id: "" as UUID,
             name: "",
-            code: "",
+            code: null,
             description: "",
-            picture_url: null,
-            created_at: null,
+            picture_url: "",
           });
-          setPreview(null);
         }
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
@@ -131,100 +106,47 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
     return () => {
       off = true;
     };
-  }, [isCreate, params.id]);
+  }, [client, isCreate, params.id]);
 
-  const canSave = useMemo(
-    () => !!(row.name || "").trim() && !!(row.code || "").trim(),
-    [row.name, row.code]
-  );
-
-  function update<K extends keyof Country>(k: K, v: Country[K]) {
-    setRow((r) => ({ ...r, [k]: v }));
+  function update<K extends keyof CountryRow>(key: K, val: CountryRow[K]) {
+    setRow((r) => ({ ...r, [key]: val }));
   }
 
-  async function onSave() {
-    if (!sb || !canSave) return;
+  async function handleSave() {
+    if (!client) return;
     setErr(null);
-    setSaving(true);
     try {
-      let picture_url: string | null = row.picture_url ?? null;
-
-      if (file) {
-        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-        const safeCode = (row.code || "xx").toLowerCase();
-        const path = `countries/${safeCode}-${slugify(row.name || "country")}.${ext}`;
-        const { error: upErr } = await sb.storage
-          .from(IMAGE_BUCKET)
-          .upload(path, file, {
-            upsert: true,
-            cacheControl: "3600",
-            contentType: file.type || (ext === "png" ? "image/png" : "image/jpeg"),
-          });
-        if (upErr) throw upErr;
-        const { data: pub } = sb.storage.from(IMAGE_BUCKET).getPublicUrl(path);
-        picture_url = pub?.publicUrl || null;
-      }
-
       const payload = {
-        name: (row.name || "").trim(),
-        code: (row.code || "").trim(),
-        description: (row.description || "") || null,
-        picture_url,
+        name: String(row.name || "").trim(),
+        // keep code as-is (we’re not editing it here)
+        code: row.code ?? null,
+        description: row.description?.trim() || null,
+        picture_url: row.picture_url?.trim() || null, // stored key or full URL
       };
 
       if (isCreate) {
-        const { error } = await sb.from("countries").insert([payload as any]);
+        const { error } = await client.from("countries").insert(payload as any);
         if (error) throw error;
       } else {
-        const { error } = await sb.from("countries").update(payload as any).eq("id", params.id);
+        const { error } = await client
+          .from("countries")
+          .update(payload as any)
+          .eq("id", params.id);
         if (error) throw error;
       }
-
       router.push("/admin/countries");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-    } finally {
-      setSaving(false);
     }
   }
-
-  async function onDelete() {
-    if (!sb || isCreate) return;
-    if (!confirm("Delete this country? This cannot be undone.")) return;
-
-    setErr(null);
-    setDeleting(true);
-    try {
-      const [dest, pu, ops, rts] = await Promise.all([
-        sb.from("destinations").select("id", { count: "exact", head: true }).eq("country_id", params.id),
-        sb.from("pickup_points").select("id", { count: "exact", head: true }).eq("country_id", params.id),
-        sb.from("operators").select("id", { count: "exact", head: true }).eq("country_id", params.id),
-        sb.from("routes").select("id", { count: "exact", head: true }).eq("country_id", params.id),
-      ]);
-      const refs =
-        (dest.count ?? 0) + (pu.count ?? 0) + (ops.count ?? 0) + (rts.count ?? 0);
-      if (refs > 0) throw new Error(`Cannot delete — referenced by ${refs} record(s).`);
-
-      if (row.picture_url) {
-        const info = parsePublicUrl(row.picture_url);
-        if (info) await sb.storage.from(info.bucket).remove([info.path]);
-      }
-      const { error } = await sb.from("countries").delete().eq("id", params.id);
-      if (error) throw error;
-
-      router.push("/admin/countries");
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-      setDeleting(false);
-    }
-  }
-
-  const displaySrc = preview || publicImage(row.picture_url) || FALLBACK;
 
   return (
     <div className="px-4 py-6 mx-auto max-w-3xl space-y-6">
       <header className="flex items-center gap-3">
-        <button className="px-3 py-1 rounded-lg border hover:bg-neutral-50" onClick={() => router.back()}>
+        <button
+          className="px-3 py-1 rounded-lg border hover:bg-neutral-50"
+          onClick={() => router.back()}
+        >
           ← Back
         </button>
         <h1 className="text-2xl font-semibold">
@@ -232,113 +154,101 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
         </h1>
       </header>
 
-      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
+      {err && (
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+          {err}
+        </div>
+      )}
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <div className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              onSave();
-            }}
-          >
-            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-3">
-                <label className="block text-sm">
-                  <span className="text-neutral-700">UN Country *</span>
-                  <select
-                    className="w-full mt-1 border rounded-lg px-3 py-2"
-                    value={row.code || ""}
-                    onChange={(e) => update("code", e.target.value || "")}
-                  >
-                    <option value="">— Choose a country —</option>
-                    {world.map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Left: text fields */}
+            <div className="space-y-3">
+              <label className="block text-sm">
+                <span className="text-neutral-700">Name</span>
+                <input
+                  className="w-full mt-1 border rounded-lg px-3 py-2"
+                  value={row.name}
+                  onChange={(e) => update("name", e.target.value)}
+                  placeholder="Antigua & Barbuda"
+                />
+              </label>
 
-                <label className="block text-sm">
-                  <span className="text-neutral-700">Display name *</span>
-                  <input
-                    className="w-full mt-1 border rounded-lg px-3 py-2"
-                    value={row.name || ""}
-                    onChange={(e) => update("name", e.target.value)}
-                    placeholder="Country name"
-                  />
-                </label>
+              {/* We keep code read-only here (if present) */}
+              {row.code ? (
+                <div className="text-xs text-neutral-600">
+                  Code: <strong>{row.code}</strong>
+                </div>
+              ) : null}
 
-                <label className="block text-sm">
-                  <span className="text-neutral-700">Description</span>
-                  <textarea
-                    className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[100px]"
-                    value={row.description || ""}
-                    onChange={(e) => update("description", e.target.value || "")}
-                    placeholder="Optional description"
-                  />
-                </label>
-              </div>
+              <label className="block text-sm">
+                <span className="text-neutral-700">Description</span>
+                <textarea
+                  className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[120px]"
+                  value={row.description ?? ""}
+                  onChange={(e) => update("description", e.target.value)}
+                  placeholder="Optional description"
+                />
+              </label>
+            </div>
 
-              <div className="space-y-3">
-                <label className="block text-sm">
-                  <span className="text-neutral-700">Photo</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0] ?? null;
-                      setFile(f);
-                      setPreview(f ? URL.createObjectURL(f) : preview);
-                    }}
-                  />
-                </label>
+            {/* Right: image field + preview */}
+            <div className="space-y-3">
+              <label className="block text-sm">
+                <span className="text-neutral-700">Picture URL or storage key</span>
+                <input
+                  className="w-full mt-1 border rounded-lg px-3 py-2"
+                  value={row.picture_url ?? ""}
+                  onChange={(e) => update("picture_url", e.target.value)}
+                  placeholder="images/countries/antigua-and-barbuda.jpg or full https URL"
+                />
+              </label>
 
-                <div className="relative w-full overflow-hidden rounded-lg border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
+              <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {previewSrc ? (
                   <img
-                    src={displaySrc}
-                    alt={row.name || "preview"}
+                    src={previewSrc}
+                    alt={row.name || "Country image"}
                     className="w-full h-48 object-cover"
                     onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = FALLBACK;
+                      // fade the image if it fails so it doesn’t look broken
+                      (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
                     }}
                   />
-                </div>
+                ) : (
+                  <div className="h-48 w-full grid place-items-center text-xs text-neutral-500">
+                    No image
+                  </div>
+                )}
+              </div>
+              <div className="text-xs text-neutral-600">
+                Tip: for Supabase Storage keys, use
+                {" "}
+                <code>images/countries/&lt;file&gt;</code>
+                {" "}— we’ll turn it into a full public URL automatically.
               </div>
             </div>
+          </div>
 
-            <div className="p-4 border-t flex items-center gap-2 justify-end">
-              {!isCreate && (
-                <button
-                  type="button"
-                  className="px-4 py-2 rounded-lg border text-rose-700 border-rose-300 hover:bg-rose-50"
-                  onClick={onDelete}
-                  disabled={deleting}
-                  title={deleting ? "Deleting…" : "Delete"}
-                >
-                  {deleting ? "Deleting…" : "Delete"}
-                </button>
-              )}
-              <button
-                type="button"
-                className="px-4 py-2 rounded-lg border hover:bg-neutral-50"
-                onClick={() => router.back()}
-              >
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 rounded-lg text-white disabled:opacity-60"
-                style={{ backgroundColor: "#2563eb" }}
-                disabled={!canSave || saving}
-              >
-                {saving ? "Saving…" : isCreate ? "Create Country" : "Save Changes"}
-              </button>
-            </div>
-          </form>
+          <div className="p-4 border-t flex items-center gap-2 justify-end">
+            <button
+              className="px-4 py-2 rounded-lg border hover:bg-neutral-50"
+              onClick={() => router.back()}
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 rounded-lg text-white"
+              style={{ backgroundColor: "#2563eb" }}
+              onClick={handleSave}
+            >
+              {isCreate ? "Create Country" : "Save Changes"}
+            </button>
+          </div>
         </div>
       )}
     </div>
