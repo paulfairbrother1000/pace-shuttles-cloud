@@ -48,6 +48,16 @@ function parsePublicUrl(publicUrl: string): { bucket: string; path: string } | n
   }
 }
 
+// inline fallback
+const FALLBACK =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='640' height='400'>
+      <rect width='100%' height='100%' fill='#f3f4f6'/>
+      <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#9ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'>No image</text>
+    </svg>`
+  );
+
 export default function EditCountryPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const isCreate = params.id === "new";
@@ -185,7 +195,6 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
     setErr(null);
     setDeleting(true);
     try {
-      // prevent deleting if referenced anywhere
       const [dest, pu, ops, rts] = await Promise.all([
         sb.from("destinations").select("id", { count: "exact", head: true }).eq("country_id", params.id),
         sb.from("pickup_points").select("id", { count: "exact", head: true }).eq("country_id", params.id),
@@ -196,12 +205,10 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
         (dest.count ?? 0) + (pu.count ?? 0) + (ops.count ?? 0) + (rts.count ?? 0);
       if (refs > 0) throw new Error(`Cannot delete — referenced by ${refs} record(s).`);
 
-      // best-effort image cleanup
       if (row.picture_url) {
         const info = parsePublicUrl(row.picture_url);
         if (info) await sb.storage.from(info.bucket).remove([info.path]);
       }
-
       const { error } = await sb.from("countries").delete().eq("id", params.id);
       if (error) throw error;
 
@@ -211,6 +218,8 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
       setDeleting(false);
     }
   }
+
+  const displaySrc = preview || publicImage(row.picture_url) || FALLBACK;
 
   return (
     <div className="px-4 py-6 mx-auto max-w-3xl space-y-6">
@@ -283,9 +292,7 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
                     onChange={(e) => {
                       const f = e.target.files?.[0] ?? null;
                       setFile(f);
-                      setPreview(
-                        f ? URL.createObjectURL(f) : (publicImage(row.picture_url) || null)
-                      );
+                      setPreview(f ? URL.createObjectURL(f) : preview);
                     }}
                   />
                 </label>
@@ -293,11 +300,11 @@ export default function EditCountryPage({ params }: { params: { id: string } }) 
                 <div className="relative w-full overflow-hidden rounded-lg border">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={preview || publicImage(row.picture_url) || "/placeholder.png"}
+                    src={displaySrc}
                     alt={row.name || "preview"}
                     className="w-full h-48 object-cover"
                     onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = "/placeholder.png";
+                      (e.currentTarget as HTMLImageElement).src = FALLBACK;
                     }}
                   />
                 </div>

@@ -26,6 +26,16 @@ const sb =
       )
     : null;
 
+// inline SVG placeholder (no network requests)
+const FALLBACK =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='640' height='400'>
+      <rect width='100%' height='100%' fill='#f3f4f6'/>
+      <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#9ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'>No image</text>
+    </svg>`
+  );
+
 export default function CountriesAdminTiles() {
   const router = useRouter();
 
@@ -96,7 +106,7 @@ export default function CountriesAdminTiles() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {/* New tile (big touch target) */}
+          {/* New tile */}
           <button
             onClick={() => router.push("/admin/countries/edit/new")}
             className="h-[240px] rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition flex items-center justify-center"
@@ -104,30 +114,35 @@ export default function CountriesAdminTiles() {
             <span className="text-blue-600">+ New Country</span>
           </button>
 
-          {filtered.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => router.push(`/admin/countries/edit/${c.id}`)}
-              className="group rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-left overflow-hidden"
-              title="Edit"
-            >
-              <div className="relative w-full h-[160px] overflow-hidden">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={publicImage(c.picture_url) || "/placeholder.png"}
-                  alt={c.name || "Country"}
-                  className="w-full h-full object-cover group-hover:scale-[1.02] transition"
-                  onError={(e) => ((e.currentTarget as HTMLImageElement).src = "/placeholder.png")}
-                />
-              </div>
-              <div className="p-3">
-                <div className="font-medium">{c.name}</div>
-                <div className="text-xs text-neutral-600 line-clamp-2">
-                  {c.description || "—"}
+          {filtered.map((c) => {
+            const src = publicImage(c.picture_url) || FALLBACK;
+            return (
+              <button
+                key={c.id}
+                onClick={() => router.push(`/admin/countries/edit/${c.id}`)}
+                className="group rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-left overflow-hidden"
+                title="Edit"
+              >
+                <div className="relative w-full h-[160px] overflow-hidden">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={src}
+                    alt={c.name || "Country"}
+                    className="w-full h-full object-cover group-hover:scale-[1.02] transition"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = FALLBACK;
+                    }}
+                  />
                 </div>
-              </div>
-            </button>
-          ))}
+                <div className="p-3">
+                  <div className="font-medium">{c.name}</div>
+                  <div className="text-xs text-neutral-600 line-clamp-2">
+                    {c.description || "—"}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
