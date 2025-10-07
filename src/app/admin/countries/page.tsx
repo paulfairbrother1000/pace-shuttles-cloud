@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-import { publicImage } from "@/lib/publicImage";
 
 type UUID = string;
 
@@ -11,9 +10,10 @@ type CountryRow = {
   id: UUID;
   name: string;
   description: string | null;
-  picture_url: string | null; // stores full public URL or a storage key like "images/countries/foo.jpg"
+  picture_url: string | null; // e.g. "images/countries/antigua-and-barbuda.jpg" OR a full https URL
 };
 
+/* ---------- Supabase browser client ---------- */
 function supa() {
   if (
     typeof window !== "undefined" &&
@@ -28,17 +28,26 @@ function supa() {
   return null;
 }
 
-/** Prefer full public URL; otherwise normalise short storage keys. */
-function imgForCountry(url?: string | null) {
-  const raw = (url || "").trim();
+/* ---------- Image normaliser (self-contained) ---------- */
+function ensureImageUrl(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
   if (!raw) return undefined;
-  if (/^https?:\/\//i.test(raw)) return raw; // already a full URL (e.g., https://.../storage/v1/object/public/images/countries/xxx.jpg)
-  return publicImage(raw) ?? undefined;      // handles "images/countries/xxx.jpg"
+
+  // already absolute
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  // Build from a storage key like "images/countries/foo.jpg"
+  const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  if (!base) return undefined;
+
+  // allow either with or without a leading slash
+  const key = raw.replace(/^\/+/, "");
+  return `${base}/storage/v1/object/public/${key}`;
 }
 
 function truncate(s: string, n = 120) {
-  if (s.length <= n) return s;
-  return s.slice(0, n - 1).trimEnd() + "…";
+  if (!s) return "";
+  return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
 }
 
 export default function AdminCountriesPage() {
@@ -124,13 +133,11 @@ export default function AdminCountriesPage() {
             className="h-56 rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-blue-600"
             title="Create a new country"
           >
-            <div className="h-full w-full grid place-items-center text-blue-600">
-              + New Country
-            </div>
+            <div className="h-full w-full grid place-items-center">+ New Country</div>
           </button>
 
           {filtered.map((row) => {
-            const src = imgForCountry(row.picture_url);
+            const src = ensureImageUrl(row.picture_url); // <— THIS is what the tiles use
             return (
               <div
                 key={row.id}
@@ -140,13 +147,13 @@ export default function AdminCountriesPage() {
               >
                 <div className="relative h-48 w-full overflow-hidden bg-neutral-100">
                   {src ? (
-                    // eslint-disable-next-line @next/next/no-img-element
+                    /* eslint-disable-next-line @next/next/no-img-element */
                     <img
                       src={src}
                       alt={row.name || "Country"}
                       className="absolute inset-0 h-full w-full object-cover"
                       onError={(e) => {
-                        // hide a broken img gracefully
+                        // If something’s off, hide the broken image so the tile stays clean
                         (e.currentTarget as HTMLImageElement).style.opacity = "0";
                       }}
                     />
@@ -156,7 +163,6 @@ export default function AdminCountriesPage() {
                     </div>
                   )}
                 </div>
-
                 <div className="p-4">
                   <div className="font-medium text-lg">{row.name}</div>
                   <div className="text-neutral-600 text-sm">
