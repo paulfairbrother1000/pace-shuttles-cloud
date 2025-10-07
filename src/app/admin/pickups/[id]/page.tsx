@@ -190,18 +190,16 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
     setErr(null);
     setDeleting(true);
     try {
-      // guard: referenced by routes?
       const { count, error: refErr } = await sb
         .from("routes")
         .select("id", { count: "exact", head: true })
         .eq("pickup_id", params.id);
       if (refErr) throw refErr;
-      if ((count ?? 0) > 0) {
-        throw new Error(`Cannot delete — used by ${count} route(s).`);
-      }
+      if ((count ?? 0) > 0) throw new Error(`Cannot delete — used by ${count} route(s).`);
 
       const { error } = await sb.from("pickup_points").delete().eq("id", params.id);
       if (error) throw error;
+
       router.push("/admin/pickups");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -215,16 +213,10 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
         <button className="px-3 py-1 rounded-lg border hover:bg-neutral-50" onClick={() => router.back()}>
           ← Back
         </button>
-        <h1 className="text-2xl font-semibold">
-          {isCreate ? "New Pick-up Point" : "Edit Pick-up Point"}
-        </h1>
+        <h1 className="text-2xl font-semibold">{isCreate ? "New Pick-up Point" : "Edit Pick-up Point"}</h1>
       </header>
 
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
-          {err}
-        </div>
-      )}
+      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
@@ -237,7 +229,6 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
             }}
           >
             <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Basic */}
               <div className="space-y-3">
                 <label className="block text-sm">
                   <span className="text-neutral-700">Name *</span>
@@ -288,7 +279,9 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
                   <select
                     className="w-full mt-1 border rounded-lg px-3 py-2"
                     value={row.transport_type_place_id ?? ""}
-                    onChange={(e) => update("transport_type_place_id", (e.target.value || null) as UUID | null)}
+                    onChange={(e) =>
+                      update("transport_type_place_id", (e.target.value || null) as UUID | null)
+                    }
                     disabled={!row.transport_type_id}
                   >
                     <option value="">— None —</option>
@@ -301,7 +294,6 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
                 </label>
               </div>
 
-              {/* Image + Description */}
               <div className="space-y-3">
                 <label className="block text-sm">
                   <span className="text-neutral-700">Photo</span>
@@ -311,7 +303,9 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
                     onChange={(e) => {
                       const f = e.target.files?.[0] ?? null;
                       setFile(f);
-                      setPreview(f ? URL.createObjectURL(f) : (publicImage(row.picture_url) || null));
+                      setPreview(
+                        f ? URL.createObjectURL(f) : (publicImage(row.picture_url) || null)
+                      );
                     }}
                   />
                 </label>
@@ -338,7 +332,6 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
                 </label>
               </div>
 
-              {/* Address */}
               <div className="space-y-3 md:col-span-2">
                 <div className="grid md:grid-cols-3 gap-3">
                   <label className="block text-sm">
