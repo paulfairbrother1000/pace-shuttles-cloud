@@ -15,15 +15,22 @@ import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
 // --- server-hydrate helpers ---
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "no-store" });
-  const text = await res.text();
+// Unified fetch helper: no cache, status check, useful errors
+async function fetchJSON<T>(input: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, { ...init, cache: "no-store" });
+
+  // Surface HTTP errors explicitly
+  if (!res.ok) {
+    const snippet = (await res.text()).slice(0, 200);
+    throw new Error(`HTTP ${res.status} from ${input}: ${snippet}`);
+  }
+
+  // Robust JSON parse with readable fallback
+  const txt = await res.text();
   try {
-    const json = JSON.parse(text);
-    if (!res.ok) throw new Error(json?.error || res.statusText || "Request failed");
-    return json as T;
+    return JSON.parse(txt) as T;
   } catch {
-    throw new Error(`Fetch failed (${res.status}): ${text?.slice(0, 300)}`);
+    throw new Error(`Non-JSON from ${input}: ${txt.slice(0, 200)}`);
   }
 }
 
