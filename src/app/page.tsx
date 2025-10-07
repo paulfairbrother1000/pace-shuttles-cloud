@@ -14,6 +14,66 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
+/* ---------- Greedy allocator + live-quote fetch ---------- */
+type Party = { size: number };
+
+function allocatePartiesForRemaining(
+  parties: Party[],
+  boats: { vehicle_id: string; cap: number; preferred: boolean }[]
+) {
+  const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
+  const state = boats.map(b => ({
+    id: b.vehicle_id,
+    cap: Math.max(0, Math.floor(b.cap)),
+    used: 0,
+    preferred: !!b.preferred,
+  }));
+  for (const g of groups) {
+    const candidates = state
+      .map(s => ({ id: s.id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
+      .filter(c => c.free >= g.size)
+      .sort((a, b) =>
+        a.preferred === b.preferred ? a.free - b.free : (a.preferred ? -1 : 1)
+      );
+    if (!candidates.length) continue;
+    candidates[0].ref.used += g.size;
+  }
+  const used = state.reduce((s, x) => s + x.used, 0);
+  const cap  = state.reduce((s, x) => s + x.cap, 0);
+  return { remaining: Math.max(0, cap - used) };
+}
+
+const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
+
+async function fetchQuoteOnce(
+  routeId: string,
+  dateISO: string,
+  qty: number,
+  signal?: AbortSignal,
+  vehicleId?: string | null
+): Promise<QuoteOk | QuoteErr> {
+  const sp = new URLSearchParams({
+    route_id: routeId,
+    date: dateISO.slice(0, 10),
+    qty: String(Math.max(1, qty)),
+    diag: DIAG,
+  });
+  if (vehicleId) sp.set("vehicle_id", vehicleId);
+
+  const res = await fetch(`/api/quote?${sp.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+    signal,
+  });
+  const txt = await res.text();
+  try {
+    return JSON.parse(txt) as QuoteOk;
+  } catch {
+    return { error_code: `non_json_${res.status}`, details: txt.slice(0, 160) };
+  }
+}
+
+
 // --- server-hydrate helpers ---
 // Unified fetch helper: no cache, status check, useful errors
 async function fetchJSON<T>(input: string, init?: RequestInit): Promise<T> {
@@ -241,24 +301,7 @@ type QuoteOk = {
 };
 type QuoteErr = { error_code: string; step?: string; details?: string };
 
-/* ---------- API payload types ---------- */
-type HydrateGlobal = {
-  countries: Country[];
-  available_country_ids: string[];
-  available_destinations_by_country: Record<string, string[]>; // country_id -> destination_id[]
-};
 
-type HydrateCountry = {
-  pickups: Pickup[];
-  destinations: Destination[];
-  routes: RouteRow[];
-  transport_types: TransportTypeRow[];
-  assignments: Assignment[];
-  vehicles: Vehicle[];
-  orders: Order[];
-  sold_out_keys: string[];                      // `${route_id}_${ymd}`
-  remaining_by_key_db: Record<string, number>;  // `${route_id}_${ymd}` -> remaining
-};
 /* ============================== MAIN COMPONENT ============================== */
 export default function HomePage() {
   const [hydrated, setHydrated] = useState(false);
@@ -391,23 +434,7 @@ useEffect(() => {
 }, [countryId]);
 
 
-/* ---------- server payload contracts ---------- */
-type HydrateGlobal = {
-  countries: Country[];
-  available_country_ids: string[];
-  available_destinations_by_country: Record<string, string[]>;
-};
-type HydrateCountry = {
-  pickups: Pickup[];
-  destinations: Destination[];
-  routes: RouteRow[];
-  assignments: Assignment[];
-  vehicles: Vehicle[];
-  orders: Order[];
-  transport_types: TransportTypeRow[];
-  sold_out_keys: string[]; // ["routeId_YYYY-MM-DD", ...]
-  remaining_by_key_db: Record<string, number>; // { "routeId_YYYY-MM-DD": 12, ... }
-};
+
 
 /* ---------- Derived: verified routes ---------- */
 const verifiedRoutes = useMemo(() => {
@@ -1250,3 +1277,4 @@ return (
     )}
   </div>
 );
+}
