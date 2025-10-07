@@ -10,11 +10,6 @@
 
 "use client";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TilePicker } from "../components/TilePicker";
