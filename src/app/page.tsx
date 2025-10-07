@@ -1135,7 +1135,7 @@ content = (
     )}
   </div>
 );
-}
+
 // ===== END SECTION 4 =====
 return content;
 }
