@@ -324,6 +324,11 @@ const [orders, setOrders] = useState<Order[]>([]);
 const [soldOutKeys, setSoldOutKeys] = useState<string[]>([]);
 const [remainingByKeyDB, setRemainingByKeyDB] = useState<Record<string, number>>({});
 
+// map: country_id -> [destination_id, ...]
+const [availableDestinationsByCountry, setAvailableDestinationsByCountry] =
+  useState<Record<string, string[]>>({});
+
+
 // name/id lookups for vehicle types
 const transportTypesById = useMemo(() => {
   const m: Record<string, string> = {};
@@ -346,6 +351,7 @@ useEffect(() => {
       const g = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
       if (cancelled) return;
       setCountries(g.countries ?? []);
+      setAvailableDestinationsByCountry(g.available_destinations_by_country ?? {}); // ★ add this
       setMsg(null);
       setHydrated(true);
     } catch (e: any) {
@@ -411,7 +417,6 @@ const verifiedRoutes = useMemo(() => {
 type Occurrence = { id: string; route_id: string; dateISO: string };
 const occurrences: Occurrence[] = useMemo(() => {
   const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
-  const DEFAULT_SEATS = 2;
   const today = startOfDay(new Date());
   const windowStart = startOfMonth(today);
   const windowEnd = endOfMonth(addMonths(today, 5));
@@ -821,12 +826,11 @@ const calendarDays = useMemo(() => {
 }, [calCursor]);
 
 // ===== SECTION 2: Safe globals pulled from hydrate =====
-const availableDestinationsByCountryObj: Record<string, string[]> =
-  // try a few common homes for the payload
-  (globalThis as any).PaceHydrate?.global?.available_destinations_by_country ??
-  (globalThis as any).available_destinations_by_country ??
-  (globalThis as any).availableDestinationsByCountry ??
-  {};
+const availableCountryIdSet = useMemo(
+  () => new Set(Object.keys(availableDestinationsByCountry)),
+  [availableDestinationsByCountry]
+);
+
 
 const availableCountryIdSet = useMemo(
   () => new Set(Object.keys(availableDestinationsByCountryObj)),
@@ -957,7 +961,8 @@ if (!countryId) {
 } else {
   /* Planner UI (country selected) */
   // availableDestinationsByCountry is a plain object, not a Map
-  const allowedDestIds = new Set(availableDestinationsByCountryObj[countryId] ?? []);
+  const allowedDestIds = new Set(availableDestinationsByCountry[countryId] ?? []);
+
 
 
   content = (
