@@ -709,9 +709,12 @@ const calendarDays = useMemo(() => {
 
 /* =========================== RENDER =========================== */
 
+let content: any = null;
+
 if (!countryId) {
+
   const visibleCountries = countries.filter((c) => availableCountryIds.has(c.id));
-  return (
+  content = (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
 
       {hydrated && !supabase && (
@@ -826,7 +829,7 @@ if (!countryId) {
 /* Planner UI (country selected) */
 const allowedDestIds = availableDestinationsByCountry.get(countryId) ?? new Set<string>();
 
-return (
+content = (
   <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
     {hydrated && !supabase && (
       <Banner>
@@ -1132,5 +1135,7 @@ return (
     )}
   </div>
 );
-
+}
 // ===== END SECTION 4 =====
+return content;
+}
