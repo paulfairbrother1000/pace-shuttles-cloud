@@ -845,7 +845,97 @@ if (!countryId) {
         </Banner>
       )}
 
-      {/* ... landing sections unchanged ... */}
+          {/* Landing sections */}
+      <section className="space-y-4">
+        <p className="text-lg">
+          <strong>Pace Shuttle</strong> offers fractional luxury charter and shuttle services to world-class,
+          often inaccessible, luxury destinations.
+        </p>
+      </section>
+
+      <section>
+        <div className="relative w-full overflow-hidden rounded-2xl border">
+          <div className="aspect-[16/10] sm:aspect-[21/9]">
+            <Image
+              src={HERO_IMG_URL}
+              alt="Pace Shuttle — luxury transfers"
+              fill
+              priority
+              className="object-cover"
+              sizes="100vw"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="text-center pt-6">
+        <div className="font-semibold">Pace Shuttles is currently operating in the following countries.</div>
+        <div>Book your dream arrival today</div>
+      </section>
+
+      <section className="mx-auto max-w-5xl">
+        {visibleCountries.length === 0 && (
+          <div className="text-sm text-neutral-600 mb-3">No countries available yet.</div>
+        )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {visibleCountries.map((c) => {
+            const imgUrl = publicImage(c.picture_url);
+            return (
+              <button
+                key={c.id}
+                className="text-left rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hover:shadow-md transition"
+                onClick={() => {
+                  setCountryId(c.id);
+                  setActivePane("destination");
+                  setFilterDateISO(null);
+                  setFilterDestinationId(null);
+                  setFilterPickupId(null);
+                  setFilterTypeName(null);
+                  setCalCursor(startOfMonth(new Date()));
+                }}
+              >
+                <div className="relative w-full aspect-[4/3]">
+                  {imgUrl ? (
+                    <Image
+                      src={imgUrl}
+                      alt={c.name}
+                      fill
+                      unoptimized
+                      className="object-cover"
+                      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-neutral-100" />
+                  )}
+                </div>
+                <div className="p-4">
+                  <div className="font-medium">{c.name}</div>
+                  {c.description && (
+                    <div className="mt-1 text-sm text-neutral-600 line-clamp-3">{c.description}</div>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="pt-10">
+        <a href="/partners" aria-label="Partner with Pace Shuttles">
+          <div className="relative w-full overflow-hidden rounded-2xl border">
+            <div className="aspect-[21/9]">
+              <Image
+                src={FOOTER_CTA_IMG_URL}
+                alt="Partner with Pace Shuttles"
+                fill
+                className="object-cover"
+                sizes="100vw"
+              />
+            </div>
+          </div>
+        </a>
+      </section>
+
     </div>
   );
 }
@@ -862,9 +952,301 @@ return (
         <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. See <code>window.PaceEnv</code> in devtools.
       </Banner>
     )}
+    {msg && (
+      <Banner>
+        <span className="font-medium">Error:</span> {msg}
+      </Banner>
+    )}
 
-    {/* ... the rest of the render (filters, cards, table) remains the same as your original,
-         now powered by the server-hydrated state above ... */}
+    <header className="space-y-2">
+      <h1 className="text-2xl font-semibold">Plan your shuttle</h1>
+      <p className="text-neutral-600">Use the tiles below to filter, then pick a journey.</p>
+    </header>
+
+    <div className="flex items-center gap-2">
+      <button className="rounded-full px-3 py-1 border text-sm" onClick={() => setCountryId("")}>← change country</button>
+    </div>
+
+    {/* Filters */}
+    <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {(["date","destination","pickup","type"] as const).map((k) => (
+          <button
+            key={k}
+            className={`px-3 py-1 rounded-full border ${activePane === k ? "bg-blue-600 text-white" : ""}`}
+            onClick={() => setActivePane((p) => (p === k ? "none" : k))}
+          >
+            {k[0].toUpperCase() + k.slice(1)}
+          </button>
+        ))}
+        {(filterDateISO || filterDestinationId || filterPickupId || filterTypeName) && (
+          <button
+            className="ml-auto px-3 py-1 rounded-full border text-sm"
+            onClick={() => { setFilterDateISO(null); setFilterDestinationId(null); setFilterPickupId(null); setFilterTypeName(null); }}
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {activePane === "date" && (
+        <div className="border-t pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <button className="px-3 py-1 border rounded-lg" onClick={() => setCalCursor(addMonths(calCursor, -1))}>←</button>
+            <div className="text-lg font-medium" suppressHydrationWarning>{monthLabel}</div>
+            <button className="px-3 py-1 border rounded-lg" onClick={() => setCalCursor(addMonths(calCursor, 1))}>→</button>
+          </div>
+          <div className="grid grid-cols-7 gap-2 text-center text-xs text-neutral-600 mb-1">
+            {DOW.map((d) => <div key={d} className="py-1">{d}</div>)}
+          </div>
+          <div className="grid grid-cols-7 gap-2">
+            {calendarDays.map((d, i) => {
+              const selected = filterDateISO === d.iso;
+              const names = namesByDate.get(d.iso) || [];
+              return (
+                <button
+                  key={d.iso + i}
+                  className={`min-h-[112px] text-left p-2 rounded-xl border transition ${
+                    selected ? "bg-blue-600 text-white border-blue-600"
+                    : d.inMonth ? "bg-white hover:shadow-sm"
+                    : "bg-neutral-50 text-neutral-400"
+                  }`}
+                  onClick={() => setFilterDateISO(d.iso)}
+                >
+                  <div className="text-xs opacity-70">{d.label}</div>
+                  <div className="mt-1 space-y-1">
+                    {names.map((n, idx) => (
+                      <div key={idx} className="text-[11px] leading-snug whitespace-normal break-words">{n}</div>
+                    ))}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {filterDateISO && (
+            <div className="mt-3 text-sm text-neutral-700" suppressHydrationWarning>
+              Selected: {new Date(filterDateISO + "T12:00:00").toLocaleDateString()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activePane === "destination" && (
+        <TilePicker
+          title="Choose a destination"
+          items={destinations
+            .filter((d) => allowedDestIds.has(d.id))
+            .map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
+          onChoose={(id) => { setFilterDestinationId(id); setActivePane("none"); }}
+          selectedId={filterDestinationId}
+          includeAll={false}
+        />
+      )}
+
+      {activePane === "pickup" && (
+        <TilePicker
+          title="Choose a pick-up point"
+          items={pickups.map((p) => ({ id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url) }))}
+          onChoose={setFilterPickupId}
+          selectedId={filterPickupId}
+          includeAll={false}
+        />
+      )}
+
+      {activePane === "type" && (
+        <TilePicker
+          title="Choose a vehicle type"
+          items={transportTypeRows.filter((t) => t.is_active !== false).map((t) => ({
+            id: t.name, name: t.name, description: t.description ?? "", image: typeImgSrc(t),
+          }))}
+          onChoose={setFilterTypeName}
+          selectedId={filterTypeName}
+          includeAll={false}
+        />
+      )}
+    </section>
+
+    {/* Require a destination before showing records */}
+    {!filterDestinationId && (
+      <section className="rounded-2xl border border-neutral-200 bg-white p-4">
+        <div className="text-sm">Select a destination to see available journeys.</div>
+      </section>
+    )}
+
+    {/* Mobile-first Journey Cards */}
+    {filterDestinationId && (
+      <section className="md:hidden space-y-3">
+        {loading ? (
+          <div className="p-4 rounded-xl border bg-white">Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-4 rounded-xl border bg-white">No verified routes match your filters.</div>
+        ) : (
+          rows.map((r) => {
+            const pu = pickupById(r.route.pickup_id);
+            const de = destById(r.route.destination_id);
+            const vType = vehicleTypeNameForRoute(r.route.id);
+            const q = quotesByRow[r.key];
+
+            const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+            const hasLivePrice = !!q?.token;
+            const rowSoldOut = preSoldOut || q?.availability === "sold_out";
+
+            const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
+            const selected = seatSelections[r.key] ?? 2;
+            const err = quoteErrByRow[r.key];
+
+            const k = `${r.route.id}_${r.dateISO}`;
+            const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+            const overByCapacity = !rowSoldOut && selected > remaining;
+            const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
+
+            return (
+              <JourneyCard
+                key={r.key}
+                pickupName={pu?.name ?? "—"}
+                pickupImg={publicImage(pu?.picture_url)}
+                destName={de?.name ?? "—"}
+                destImg={publicImage(de?.picture_url)}
+                dateISO={r.dateISO}
+                timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
+                durationMins={r.route.approx_duration_mins ?? undefined}
+                vehicleType={vType}
+                soldOut={rowSoldOut}
+                priceLabel={hasLivePrice && !rowSoldOut ? currencyIntPounds(priceDisplay) : "—"}
+                lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
+                errorMsg={
+                  rowSoldOut ? undefined :
+                  overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.` :
+                  overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` :
+                  err ?? undefined
+                }
+                seats={selected}
+                onSeatsChange={(n) => handleSeatChange(r.key, n)}
+                onContinue={() => handleContinue(r.key, r.route.id)}
+                continueDisabled={rowSoldOut || overByCapacity}
+              />
+            );
+          })
+        )}
+      </section>
+    )}
+
+    {/* Desktop/tablet table */}
+    {filterDestinationId && (
+      <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
+        {loading ? (
+          <div className="p-4">Loading…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-4">No verified routes match your filters.</div>
+        ) : (
+          <table className="w-full">
+            <thead className="bg-neutral-50">
+              <tr>
+                <th className="text-left p-3">Pick-up</th>
+                <th className="text-left p-3">Destination</th>
+                <th className="text-left p-3">Date</th>
+                <th className="text-left p-3">Time</th>
+                <th className="text-left p-3">Duration (mins)</th>
+                <th className="text-left p-3">Vehicle Type</th>
+                <th className="text-right p-3">Seat price</th>
+                <th className="text-left p-3">Seats</th>
+                <th className="text-left p-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const pu = pickupById(r.route.pickup_id);
+                const de = destById(r.route.destination_id);
+                const vType = vehicleTypeNameForRoute(r.route.id);
+                const q = quotesByRow[r.key];
+
+                const preSoldOut = isSoldOut(r.route.id, r.dateISO);
+                const hasLivePrice = !!q?.token;
+                const rowSoldOut = preSoldOut || q?.availability === "sold_out";
+
+                const priceDisplay = (lockedPriceByRow[r.key] ?? q?.displayPounds ?? lastGoodPriceByRow[r.key] ?? 0);
+                const selected = seatSelections[r.key] ?? 2;
+                const err = quoteErrByRow[r.key];
+
+                const k = `${r.route.id}_${r.dateISO}`;
+                const remaining = (remainingByKeyDB.get(k) ?? remainingSeatsByKey.get(k) ?? 0);
+                const overByCapacity = !rowSoldOut && selected > remaining;
+                const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
+                const showLowSeats = !rowSoldOut && remaining > 0 && remaining <= 5;
+
+                return (
+                  <tr key={r.key} className="border-t align-top">
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <div className="relative h-10 w-16 overflow-hidden rounded border">
+                          <Image src={publicImage(pu?.picture_url) || "/placeholder.png"} alt={pu?.name || "Pick-up"} fill unoptimized className="object-cover" sizes="64px" />
+                        </div>
+                        <span>{pu?.name ?? "—"}</span>
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <div className="relative h-10 w-16 overflow-hidden rounded border">
+                          <Image src={publicImage(de?.picture_url) || "/placeholder.png"} alt={de?.name || "Destination"} fill unoptimized className="object-cover" sizes="64px" />
+                        </div>
+                        <span>{de?.name ?? "—"}</span>
+                      </div>
+                    </td>
+                    <td className="p-3" suppressHydrationWarning>{new Date(r.dateISO + "T12:00:00").toLocaleDateString()}</td>
+                    <td className="p-3" suppressHydrationWarning>{hhmmLocalToDisplay(r.route.pickup_time)}</td>
+                    <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
+                    <td className="p-3">{vType}</td>
+                    <td className="p-3 text-right">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="font-semibold">
+                          {rowSoldOut ? "—" : hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
+                        </span>
+                        <span className="text-xs text-neutral-500">
+                          {rowSoldOut ? "Sold out" : hasLivePrice ? "Per ticket (incl. tax & fees)" : (err ? `Quote error: ${err}` : "Awaiting live price")}
+                        </span>
+                        {showLowSeats && !rowSoldOut && (
+                          <div className="text-[11px] text-amber-700 mt-0.5">
+                            Only {remaining} seat{remaining === 1 ? "" : "s"} left
+                          </div>
+                        )}
+                        {!showLowSeats && !overMaxAtPrice && err && !rowSoldOut && (
+                          <div className="text-[11px] text-amber-700 mt-0.5">{err}</div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      <select
+                        className="border rounded-lg px-2 py-1"
+                        value={selected}
+                        onChange={(e) => handleSeatChange(r.key, parseInt(e.target.value))}
+                        disabled={rowSoldOut}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (<option key={n} value={n}>{n}</option>))}
+                      </select>
+                    </td>
+                    <td className="p-3">
+                      <button
+                        className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                        title={
+                          rowSoldOut ? "Sold out"
+                          : overByCapacity ? `Only ${remaining} seat${remaining === 1 ? "" : "s"} left.`
+                          : overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.`
+                          : hasLivePrice ? "Continue" : "Continue (price will be confirmed on next step)"
+                        }
+                        onClick={() => handleContinue(r.key, r.route.id)}
+                        disabled={rowSoldOut || overByCapacity}
+                        style={{ backgroundColor: rowSoldOut || overByCapacity ? "#9ca3af" : "#2563eb" }}
+                      >
+                        {rowSoldOut ? "Sold out" : "Continue"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+    )}
   </div>
 );
-}
