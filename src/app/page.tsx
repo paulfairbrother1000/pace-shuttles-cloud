@@ -722,18 +722,14 @@ const calendarDays = useMemo(() => {
 }, [calCursor]);
 
 // ===== SECTION 2: Safe globals pulled from hydrate =====
-// We don't assume any global exists; fall back to {} so the page never crashes.
 const availableDestinationsByCountryObj: Record<string, string[]> =
-  // if your server hydrate stuck this on window:
-  (typeof window !== "undefined" && (window as any).PaceHydrate?.global?.available_destinations_by_country)
-  // or if something placed it on globalThis with the snake_case name:
-  ?? ((globalThis as any).available_destinations_by_country as Record<string, string[]>|undefined)
-  // or if something placed it on globalThis with the camelCase name:
-  ?? ((globalThis as any).availableDestinationsByCountry as Record<string, string[]>|undefined)
-  // final fallback to empty object:
-  ?? {};
+  // try a few common homes for the payload
+  (globalThis as any).PaceHydrate?.global?.available_destinations_by_country ??
+  (globalThis as any).available_destinations_by_country ??
+  (globalThis as any).availableDestinationsByCountry ??
+  {};
 
-  const availableCountryIds = useMemo(
+const availableCountryIdSet = useMemo(
   () => new Set(Object.keys(availableDestinationsByCountryObj)),
   [availableDestinationsByCountryObj]
 );
@@ -747,7 +743,8 @@ const availableDestinationsByCountryObj: Record<string, string[]> =
 let content: React.ReactNode = null;
 
 if (!countryId) {
-  const visibleCountries = countries.filter((c) => availableCountryIds.has(c.id));
+ const visibleCountries = countries.filter((c) => availableCountryIdSet.has(c.id));
+
   content = (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
 
