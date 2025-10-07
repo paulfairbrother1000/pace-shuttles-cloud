@@ -832,11 +832,6 @@ const availableCountryIdSet = useMemo(
 );
 
 
-const availableCountryIdSet = useMemo(
-  () => new Set(Object.keys(availableDestinationsByCountryObj)),
-  [availableDestinationsByCountryObj]
-);
-
 
 
 // ===== END SECTION 3 =====
