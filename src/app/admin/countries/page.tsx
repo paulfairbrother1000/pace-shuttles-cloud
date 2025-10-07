@@ -1,43 +1,58 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
 type UUID = string;
 
-type Country = {
+type CountryRow = {
   id: UUID;
   name: string;
-  code: string | null;
   description: string | null;
-  picture_url: string | null; // ← used for the tile image
-  created_at: string | null;
+  picture_url: string | null; // stores full public URL or a storage key like "images/countries/foo.jpg"
 };
 
-const supabase =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
+function supa() {
+  if (
+    typeof window !== "undefined" &&
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  ) {
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+  }
+  return null;
+}
 
-const FALLBACK_SVG =
-  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='400'%3E%3Crect width='100%25' height='100%25' fill='%23f3f4f6'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%239ca3af' font-family='system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif' font-size='16'%3ENo image%3C/text%3E%3C/svg%3E";
+/** Prefer full public URL; otherwise normalise short storage keys. */
+function imgForCountry(url?: string | null) {
+  const raw = (url || "").trim();
+  if (!raw) return undefined;
+  if (/^https?:\/\//i.test(raw)) return raw; // already a full URL (e.g., https://.../storage/v1/object/public/images/countries/xxx.jpg)
+  return publicImage(raw) ?? undefined;      // handles "images/countries/xxx.jpg"
+}
 
-export default function AdminCountriesTilesPage() {
-  const [rows, setRows] = useState<Country[]>([]);
+function truncate(s: string, n = 120) {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1).trimEnd() + "…";
+}
+
+export default function AdminCountriesPage() {
+  const router = useRouter();
+  const client = useMemo(() => supa(), []);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<CountryRow[]>([]);
   const [q, setQ] = useState("");
 
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!supabase) {
+      if (!client) {
         setErr("Supabase client is not configured.");
         setLoading(false);
         return;
@@ -45,12 +60,13 @@ export default function AdminCountriesTilesPage() {
       setLoading(true);
       setErr(null);
       try {
-        const { data, error } = await supabase
+        const { data, error } = await client
           .from("countries")
-          .select("id,name,code,description,picture_url,created_at")
-          .order("name");
+          .select("id,name,description,picture_url")
+          .order("name", { ascending: true });
         if (error) throw error;
-        if (!off) setRows((data || []) as Country[]);
+        if (off) return;
+        setRows((data || []) as CountryRow[]);
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
@@ -60,21 +76,21 @@ export default function AdminCountriesTilesPage() {
     return () => {
       off = true;
     };
-  }, []);
+  }, [client]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
     return rows.filter(
       (r) =>
-        r.name?.toLowerCase().includes(s) ||
+        r.name.toLowerCase().includes(s) ||
         (r.description ?? "").toLowerCase().includes(s)
     );
   }, [rows, q]);
 
   return (
     <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
-      <header className="flex flex-wrap items-center gap-3">
+      <header className="flex items-center gap-3">
         <h1 className="text-2xl font-semibold">Admin • Countries</h1>
         <div className="ml-auto flex items-center gap-2">
           <input
@@ -84,8 +100,8 @@ export default function AdminCountriesTilesPage() {
             onChange={(e) => setQ(e.target.value)}
           />
           <button
-            className="px-4 py-2 rounded-full bg-blue-600 text-white text-sm"
-            onClick={() => (window.location.href = "/admin/countries/edit/new")}
+            className="rounded-full px-4 py-2 bg-blue-600 text-white text-sm"
+            onClick={() => router.push("/admin/countries/edit/new")}
           >
             New Country
           </button>
@@ -98,67 +114,60 @@ export default function AdminCountriesTilesPage() {
         </div>
       )}
 
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {/* New tile */}
-        <button
-          className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-left"
-          onClick={() => (window.location.href = "/admin/countries/edit/new")}
-        >
-          <div className="h-[180px] bg-neutral-100 rounded-t-2xl grid place-items-center text-neutral-400">
-            + New Country
-          </div>
-          <div className="p-3 text-neutral-500 text-sm">Create a new country</div>
-        </button>
+      {loading ? (
+        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* New tile */}
+          <button
+            onClick={() => router.push("/admin/countries/edit/new")}
+            className="h-56 rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-blue-600"
+            title="Create a new country"
+          >
+            <div className="h-full w-full grid place-items-center text-blue-600">
+              + New Country
+            </div>
+          </button>
 
-        {/* Data tiles */}
-        {loading ? (
-          <div className="col-span-full p-4 rounded-2xl border bg-white shadow">
-            Loading…
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="col-span-full p-4 rounded-2xl border bg-white shadow">
-            No countries found.
-          </div>
-        ) : (
-          filtered.map((c) => {
-            const imgSrc =
-              publicImage(c.picture_url || undefined) ?? FALLBACK_SVG;
-
+          {filtered.map((row) => {
+            const src = imgForCountry(row.picture_url);
             return (
               <div
-                key={c.id}
-                className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden hover:shadow-md transition"
+                key={row.id}
+                className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden hover:shadow-md transition cursor-pointer"
+                onClick={() => router.push(`/admin/countries/edit/${row.id}`)}
+                title="Edit country"
               >
-                <button
-                  className="block w-full text-left"
-                  onClick={() =>
-                    (window.location.href = `/admin/countries/edit/${c.id}`)
-                  }
-                >
-                  <div className="relative w-full h-[180px] overflow-hidden bg-neutral-100">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                <div className="relative h-48 w-full overflow-hidden bg-neutral-100">
+                  {src ? (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={imgSrc}
-                      alt={c.name || "Country"}
-                      className="w-full h-full object-cover"
+                      src={src}
+                      alt={row.name || "Country"}
+                      className="absolute inset-0 h-full w-full object-cover"
                       onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = FALLBACK_SVG;
+                        // hide a broken img gracefully
+                        (e.currentTarget as HTMLImageElement).style.opacity = "0";
                       }}
                     />
-                  </div>
-
-                  <div className="p-3 space-y-1">
-                    <div className="font-medium">{c.name}</div>
-                    <div className="text-sm text-neutral-600 line-clamp-2">
-                      {c.description || "—"}
+                  ) : (
+                    <div className="h-full w-full grid place-items-center text-sm text-neutral-400">
+                      No image
                     </div>
+                  )}
+                </div>
+
+                <div className="p-4">
+                  <div className="font-medium text-lg">{row.name}</div>
+                  <div className="text-neutral-600 text-sm">
+                    {row.description ? truncate(row.description) : "—"}
                   </div>
-                </button>
+                </div>
               </div>
             );
-          })
-        )}
-      </section>
+          })}
+        </div>
+      )}
     </div>
   );
 }
