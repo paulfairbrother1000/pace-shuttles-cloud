@@ -5,12 +5,17 @@ import { createServerClient } from "@supabase/ssr";
 
 type Row<T extends object> = T & { [k: string]: any };
 
+// src/app/api/home-hydrate/route.ts
+export const runtime = "nodejs";       // ensure Node runtime
+export const dynamic = "force-dynamic"; // don’t accidentally static-cache
+
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const countryId = searchParams.get("country_id");
 
-    const cookieStore = await cookies();
+    const cookieStore =  cookies();
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, // anon OK for read with RLS
