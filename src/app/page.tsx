@@ -70,16 +70,7 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- Unified fetch helper (no-cache, JSON safe) ---------- */
-async function fetchJSON<T>(input: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, { cache: "no-store", ...init });
-  const txt = await res.text();
-  try {
-    return JSON.parse(txt) as T;
-  } catch {
-    throw new Error(`Non-JSON from ${input}: ${txt.slice(0, 200)}`);
-  }
-}
+
 
 /* ---------- Image URL normalizer (for Supabase public storage) ---------- */
 function publicImage(input?: string | null): string | undefined {
