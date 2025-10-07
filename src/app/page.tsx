@@ -291,6 +291,112 @@ type HydrateCountry = {
 
 export default function Page() {
 
+// ===== SECTION 1: State + hydrate loader (MISSING BEFORE) =====
+
+// constants
+const DEFAULT_SEATS = 2;
+
+// ui state
+const [hydrated, setHydrated] = useState(false);
+const [loading, setLoading] = useState(true);
+const [msg, setMsg] = useState<string | null>(null);
+
+const [countryId, setCountryId] = useState<string>("");
+const [activePane, setActivePane] =
+  useState<"none" | "date" | "destination" | "pickup" | "type">("none");
+
+const [filterDateISO, setFilterDateISO] = useState<string | null>(null);
+const [filterDestinationId, setFilterDestinationId] = useState<string | null>(null);
+const [filterPickupId, setFilterPickupId] = useState<string | null>(null);
+const [filterTypeName, setFilterTypeName] = useState<string | null>(null);
+
+const [calCursor, setCalCursor] = useState<Date>(startOfMonth(new Date()));
+
+// data sets (these were undefined before)
+const [countries, setCountries] = useState<Country[]>([]);
+const [pickups, setPickups] = useState<Pickup[]>([]);
+const [destinations, setDestinations] = useState<Destination[]>([]);
+const [routes, setRoutes] = useState<RouteRow[]>([]);
+const [transportTypeRows, setTransportTypeRows] = useState<TransportTypeRow[]>([]);
+const [assignments, setAssignments] = useState<Assignment[]>([]);
+const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+const [orders, setOrders] = useState<Order[]>([]);
+const [soldOutKeys, setSoldOutKeys] = useState<string[]>([]);
+const [remainingByKeyDB, setRemainingByKeyDB] = useState<Record<string, number>>({});
+
+// name/id lookups for vehicle types
+const transportTypesById = useMemo(() => {
+  const m: Record<string, string> = {};
+  for (const t of transportTypeRows) m[String(t.id)] = t.name;
+  return m;
+}, [transportTypeRows]);
+
+const transportTypesByName = useMemo(() => {
+  const m: Record<string, string> = {};
+  for (const t of transportTypeRows) m[t.name.toLowerCase()] = t.name;
+  return m;
+}, [transportTypeRows]);
+
+/** initial global hydrate: countries + allowed destinations map */
+useEffect(() => {
+  let cancelled = false;
+  (async () => {
+    try {
+      setLoading(true);
+      const g = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
+      if (cancelled) return;
+      setCountries(g.countries ?? []);
+      setMsg(null);
+      setHydrated(true);
+    } catch (e: any) {
+      if (!cancelled) setMsg(e?.message ?? "Failed to load");
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+  })();
+  return () => { cancelled = true; };
+}, []);
+
+/** country-scoped hydrate whenever a country is selected */
+useEffect(() => {
+  if (!countryId) {
+    // clear country-scoped data when user goes back
+    setPickups([]); setDestinations([]); setRoutes([]);
+    setTransportTypeRows([]); setAssignments([]); setVehicles([]);
+    setOrders([]); setSoldOutKeys([]); setRemainingByKeyDB({});
+    return;
+  }
+
+  let cancelled = false;
+  (async () => {
+    try {
+      setLoading(true);
+      const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(countryId)}`);
+      if (cancelled) return;
+      setPickups(data.pickups ?? []);
+      setDestinations(data.destinations ?? []);
+      setRoutes(data.routes ?? []);
+      setTransportTypeRows(data.transport_types ?? []);
+      setAssignments(data.assignments ?? []);
+      setVehicles(data.vehicles ?? []);
+      setOrders(data.orders ?? []);
+      setSoldOutKeys(data.sold_out_keys ?? []);
+      setRemainingByKeyDB(data.remaining_by_key_db ?? {});
+      setMsg(null);
+    } catch (e: any) {
+      if (!cancelled) setMsg(e?.message ?? "Failed to load country data");
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+  })();
+
+  return () => { cancelled = true; };
+}, [countryId]);
+
+
+
+
+
 // ===== SECTION 3: Derived data, pricing, handlers, calendar helpers =====
 
 /* ---------- Derived: verified routes ---------- */
@@ -1006,7 +1112,11 @@ if (!countryId) {
               const err = quoteErrByRow[r.key];
 
               const k = `${r.route.id}_${r.dateISO}`;
-              const remaining = (remainingByKeyDB[k as keyof typeof remainingByKeyDB] ?? remainingSeatsByKey.get(k) ?? 0);
+              const remaining =
+  (remainingByKeyDB as Record<string, number>)[k] ??
+  remainingSeatsByKey.get(k) ??
+  0;
+
               const overByCapacity = !rowSoldOut && selected > remaining;
               const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
 
