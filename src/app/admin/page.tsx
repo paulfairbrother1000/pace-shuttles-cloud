@@ -89,11 +89,17 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
-  cap: number;
   preferred: boolean;
+
+  // capacity & policy
+  min: number;          // vehicle min seats
+  max: number;          // vehicle max seats (cap)
+
+  // optional ranking helpers
   operator_id?: UUID | null;
-  min?: number | null;
+  price_cents?: number | null; // keep null for now; wire real prices later
 };
+
 
 type DetailedAlloc = {
   byBoat: Map<
@@ -115,126 +121,227 @@ function boatTieBreak(a: Boat, b: Boat) {
   return a.vehicle_id.localeCompare(b.vehicle_id);
 }
 
-function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
-  // Sort parties largest first
-  const groups = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
+ffunction allocateDetailed(
+  parties: Party[],
+  boats: Boat[],
+  opts?: { horizon?: "T24" | "T72" | ">72h" | "past" }
+): DetailedAlloc {
+  const horizon = opts?.horizon ?? ">72h";
 
-  // Working state per boat
-  const state = boats.map(b => ({
-    ...b,
-    cap: Math.max(0, Math.floor(Number(b.cap) || 0)),
-    used: 0,
-    min: b.min == null ? null : Math.max(0, Math.floor(Number(b.min) || 0)),
-  }));
+  // Sort boats: cheapest first (unknown prices = same tier), then preferred within same operator,
+  // then deterministic by id.
+  const boatRank = (a: Boat, b: Boat) => {
+    const pa = a.price_cents ?? 0;
+    const pb = b.price_cents ?? 0;
+    if (pa !== pb) return pa - pb;
+
+    // same "price tier" — apply preferred only within the same operator
+    const sameOp = (a.operator_id ?? null) === (b.operator_id ?? null);
+    if (sameOp && a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+
+    return String(a.vehicle_id).localeCompare(String(b.vehicle_id));
+  };
+
+  const boatsSorted = [...boats].sort(boatRank);
+
+  // Working state
+  type W = {
+    def: Boat;
+    used: number;
+    groups: { order_id: UUID; size: number }[];
+  };
+  const work = new Map<UUID, W>();
+  boatsSorted.forEach(b =>
+    work.set(b.vehicle_id, { def: b, used: 0, groups: [] })
+  );
 
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
+  const bump = (boatId: UUID, order_id: UUID, size: number) => {
+    const w = work.get(boatId)!;
+    w.used += size;
+    w.groups.push({ order_id, size });
+
+    const cur = byBoat.get(boatId) ?? { seats: 0, orders: [] };
+    cur.seats += size;
+    cur.orders.push({ order_id, size });
+    byBoat.set(boatId, cur);
+  };
+
+  const remaining: Party[] = [...parties]
+    .filter(p => p.size > 0)
+    .sort((a, b) => b.size - a.size);
+
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  // Phase 1: greedy placement (we don't yet have per-seat prices here; we honor preferred within same operator)
-  for (const g of groups) {
-    const candidates = state
-      .map(s => ({ ref: s, free: s.cap - s.used }))
-      .filter(c => c.free >= g.size)
-      .sort((a, b) => {
-        if (a.free !== b.free) return a.free - b.free;
-        return boatTieBreak(a.ref, b.ref);
+  // Phase A — seed vehicles to MIN in price order
+  {
+    const next: Party[] = [];
+    for (const g of remaining) {
+      const candidate = boatsSorted.find(b => {
+        const w = work.get(b.vehicle_id)!;
+        const free = b.max - w.used;
+        return w.used < b.min && free >= g.size;
       });
-
-    if (!candidates.length) {
-      unassigned.push({ order_id: g.order_id, size: g.size });
-      continue;
-    }
-
-    const chosen = candidates[0].ref;
-    chosen.used += g.size;
-
-    const cur = byBoat.get(chosen.vehicle_id) ?? { seats: 0, orders: [] };
-    cur.seats += g.size;
-    cur.orders.push({ order_id: g.order_id, size: g.size });
-    byBoat.set(chosen.vehicle_id, cur);
-  }
-
-  // Phase 2: rebalance to satisfy ≥ min with at most one (min-1)
-  // Build chips (movable orders) per boat, smallest first
-  type Chip = { boat: typeof state[number]; size: number; order_id: UUID };
-  const chipsByBoat = new Map<string, Chip[]>();
-  for (const s of state) {
-    const entry = byBoat.get(s.vehicle_id);
-    const chips = (entry?.orders ?? [])
-      .map(o => ({ boat: s, size: o.size, order_id: o.order_id }))
-      .sort((a, b) => a.size - b.size);
-    chipsByBoat.set(s.vehicle_id, chips);
-  }
-
-  function tryMove(donor: typeof state[number], receiver: typeof state[number]) {
-    const donorChips = chipsByBoat.get(donor.vehicle_id) ?? [];
-    const chip = donorChips.find(c => c.size <= (receiver.cap - receiver.used));
-    if (!chip) return false;
-
-    donor.used -= chip.size;
-    receiver.used += chip.size;
-
-    // update byBoat map
-    const dEntry = byBoat.get(donor.vehicle_id)!;
-    const rEntry = byBoat.get(receiver.vehicle_id) ?? { seats: 0, orders: [] };
-
-    const idx = dEntry.orders.findIndex(o => o.order_id === chip.order_id && o.size === chip.size);
-    if (idx >= 0) dEntry.orders.splice(idx, 1);
-    dEntry.seats -= chip.size;
-    if (dEntry.seats <= 0) byBoat.delete(donor.vehicle_id);
-    else byBoat.set(donor.vehicle_id, dEntry);
-
-    rEntry.orders.push({ order_id: chip.order_id, size: chip.size });
-    rEntry.seats += chip.size;
-    byBoat.set(receiver.vehicle_id, rEntry);
-
-    // update chips caches
-    chipsByBoat.set(
-      donor.vehicle_id,
-      donorChips.filter(c => !(c.order_id === chip.order_id && c.size === chip.size))
-    );
-    const recvChips = chipsByBoat.get(receiver.vehicle_id) ?? [];
-    recvChips.push({ boat: receiver, size: chip.size, order_id: chip.order_id });
-    recvChips.sort((a, b) => a.size - b.size);
-    chipsByBoat.set(receiver.vehicle_id, recvChips);
-
-    return true;
-  }
-
-  function constraintsOK() {
-    let minMinus1Count = 0;
-    for (const s of state) {
-      if (s.used <= 0 || s.min == null) continue;
-      if (s.used < s.min - 1) return false;
-      if (s.used === s.min - 1) minMinus1Count++;
-      if (minMinus1Count > 1) return false;
-    }
-    return true;
-  }
-
-  let moved = true;
-  while (!constraintsOK() && moved) {
-    moved = false;
-    // donors: above min; needers: below min
-    const needers = state
-      .filter(s => s.used > 0 && s.min != null && s.used < s.min)
-      .sort((a, b) => (a.min! - a.used) - (b.min! - b.used));
-    const donors = state
-      .filter(s => s.min != null && s.used > s.min!)
-      .sort((a, b) => (b.used - b.min!) - (a.used - a.min!));
-
-    for (const n of needers) {
-      for (const d of donors) {
-        if (d.used <= (d.min ?? 0)) continue;
-        if (tryMove(d, n)) { moved = true; if (constraintsOK()) break; }
+      if (candidate) {
+        bump(candidate.vehicle_id, g.order_id, g.size);
+      } else {
+        next.push(g);
       }
-      if (constraintsOK()) break;
     }
+    remaining.length = 0;
+    remaining.push(...next);
   }
 
-  const total = groups.reduce((s, p) => s + p.size, 0);
+  // Phase B — after all seeded to MIN, fill cheapest-first up to MAX
+  {
+    const next: Party[] = [];
+    for (const g of remaining) {
+      const candidate = boatsSorted.find(b => {
+        const w = work.get(b.vehicle_id)!;
+        const free = b.max - w.used;
+        return free >= g.size;
+      });
+      if (candidate) {
+        bump(candidate.vehicle_id, g.order_id, g.size);
+      } else {
+        next.push(g);
+      }
+    }
+    remaining.length = 0;
+    remaining.push(...next);
+  }
+
+  // Anything still left cannot fit
+  for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
+
+  // T-72 rebalancer:
+  // Ensure all ACTIVE boats are >= min, allowing at most ONE to be min-1.
+  if (horizon === "T72") {
+    // Helper to count under-min boats
+    const active = () => [...work.values()].filter(w => w.used > 0);
+    const underMin = () => active().filter(w => w.used < w.def.min);
+    const overMin = () => active().filter(w => w.used > w.def.min);
+
+    // Try to move smallest fitting group from donor (>min) to receiver (<min)
+    const tryMove = (donor: W, receiver: W) => {
+      const free = receiver.def.max - receiver.used;
+      if (free <= 0) return false;
+
+      // pick the smallest group that helps us reach min, prefer exact hit
+      const sorted = [...donor.groups].sort((a, b) => a.size - b.size);
+      let pick: { order_id: UUID; size: number } | null = null;
+      let exact = false;
+
+      for (const g of sorted) {
+        if (g.size > free) continue;
+        const donorWouldBe = donor.used - g.size;
+        if (donorWouldBe < donor.def.min) continue; // don't push donor below min
+
+        const recvWouldBe = receiver.used + g.size;
+        if (recvWouldBe === receiver.def.min) {
+          pick = g; exact = true; break;
+        }
+        // keep a candidate that fits
+        pick = pick ?? g;
+      }
+      if (!pick) return false;
+
+      // move pick
+      donor.used -= pick.size;
+      receiver.used += pick.size;
+
+      // remove from donor groups & add to receiver groups
+      const idx = donor.groups.findIndex(x => x.order_id === pick!.order_id && x.size === pick!.size);
+      if (idx >= 0) donor.groups.splice(idx, 1);
+      receiver.groups.push(pick);
+
+      // update byBoat map
+      const dMap = byBoat.get(donor.def.vehicle_id)!;
+      const rMap = byBoat.get(receiver.def.vehicle_id) ?? { seats: 0, orders: [] };
+      dMap.seats -= pick.size;
+      const boIdx = dMap.orders.findIndex(x => x.order_id === pick!.order_id && x.size === pick!.size);
+      if (boIdx >= 0) dMap.orders.splice(boIdx, 1);
+      rMap.seats += pick.size;
+      rMap.orders.push(pick);
+      byBoat.set(receiver.def.vehicle_id, rMap);
+
+      return true;
+    };
+
+    // First, raise receivers to min where possible
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // receiver with largest deficit first
+      const receivers = underMin().sort((a, b) => (b.def.min - b.used) - (a.def.min - a.used));
+      if (!receivers.length) break;
+
+      for (const recv of receivers) {
+        // donors: highest surplus first
+        const donors = overMin().sort((a, b) => (b.used - b.def.min) - (a.used - a.def.min));
+        for (const don of donors) {
+          if (tryMove(don, recv)) { changed = true; break; }
+        }
+      }
+    }
+
+    // Now ensure we have at most ONE under-min boat; release extras by merging them into others if possible
+    let under = underMin().sort((a, b) => a.used - b.used); // smallest first
+    while (under.length > 1) {
+      const src = under[0]; // try to empty this one
+      let movedAnything = false;
+
+      // prefer targets already >= min
+      const targets = active()
+        .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
+        .sort((a, b) => {
+          const aPref = a.used >= a.def.min ? 0 : 1;
+          const bPref = b.used >= b.def.min ? 0 : 1;
+          if (aPref !== bPref) return aPref - bPref;
+          // more free capacity first
+          return (b.def.max - b.used) - (a.def.max - a.used);
+        });
+
+      for (const g of [...src.groups].sort((a, b) => a.size - b.size)) {
+        for (const tgt of targets) {
+          const free = tgt.def.max - tgt.used;
+          if (g.size > free) continue;
+
+          // move g from src to tgt (tgt may become >min, that's fine)
+          src.used -= g.size;
+          tgt.used += g.size;
+
+          const idx = src.groups.findIndex(x => x.order_id === g.order_id && x.size === g.size);
+          if (idx >= 0) src.groups.splice(idx, 1);
+          tgt.groups.push(g);
+
+          const sMap = byBoat.get(src.def.vehicle_id)!;
+          const tMap = byBoat.get(tgt.def.vehicle_id) ?? { seats: 0, orders: [] };
+          sMap.seats -= g.size;
+          const boIdx = sMap.orders.findIndex(x => x.order_id === g.order_id && x.size === g.size);
+          if (boIdx >= 0) sMap.orders.splice(boIdx, 1);
+          tMap.seats += g.size;
+          tMap.orders.push(g);
+          byBoat.set(tgt.def.vehicle_id, tMap);
+
+          movedAnything = true;
+          break;
+        }
+      }
+
+      if (!movedAnything) break; // can’t merge further
+      under = underMin().sort((a, b) => a.used - b.used);
+    }
+
+    // Allow exactly one boat to be min-1 (if total demand tight)
+    // (No extra work needed here; the above steps already minimise receivers under min.
+    // We simply don't force the last under-min up to min if total pax insufficient.)
+  }
+
+  const total = parties.reduce((s, p) => s + (p.size || 0), 0);
   return { byBoat, unassigned, total };
 }
+
 
 /* ---------- Page ---------- */
 export default function AdminPage() {
@@ -472,22 +579,26 @@ export default function AdminPage() {
       // Candidate boats
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
       const boats: Boat[] = rvaArr
-        .map(x => {
-          const v = vehicleById.get(x.vehicle_id);
-          if (!v || v.active === false) return null;
-          const cap = Number(v?.maxseats ?? 0);
-          return {
-            vehicle_id: x.vehicle_id,
-            cap: Number.isFinite(cap) ? cap : 0,
-            preferred: !!x.preferred,
-            operator_id: v.operator_id ?? null,
-            min: v?.minseats != null ? Number(v.minseats) : null,
-          };
-        })
-        .filter(Boolean) as Boat[];
+  .map(x => {
+    const v = vehicleById.get(x.vehicle_id);
+    if (!v || v.active === false) return null;
+    const min = Number(v?.minseats ?? 0);
+    const max = Number(v?.maxseats ?? 0);
+    return {
+      vehicle_id: x.vehicle_id,
+      preferred: !!x.preferred,
+      min: Number.isFinite(min) ? min : 0,
+      max: Number.isFinite(max) ? max : 0,
+      operator_id: v.operator_id ?? null,
+      price_cents: null, // placeholder until we wire real price
+    };
+  })
+  .filter(Boolean) as Boat[];
+
 
       let previewAlloc = allocateDetailed(parties, boats);
-      const maxTotal = boats.reduce((s, b) => s + b.cap, 0);
+      const maxTotal = boats.reduce((s, b) => s + b.max, 0);
+
 
       // If locked, build from persisted rows
       const locked = locksByJourney.get(j.id) ?? [];
