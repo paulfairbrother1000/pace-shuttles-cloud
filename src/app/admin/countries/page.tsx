@@ -1,4 +1,3 @@
-// /src/app/admin/countries/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -27,6 +26,7 @@ const sb =
       )
     : null;
 
+/* inline SVG fallback (avoids 404s for /placeholder.png) */
 const FALLBACK =
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
@@ -44,33 +44,52 @@ function slugify(s: string) {
     .replace(/(^-|-$)/g, "");
 }
 
-/** Pick the best URL:
- * 1) stored picture_url (normalized)
- * 2) try conventional keys under images/countries with .jpg/.jpeg/.png
- *    - countries/{code}-{slug(name)}.{ext}
- *    - countries/{code}.{ext}
- *    - countries/{slug(name)}.{ext}  (handles rows with no code)
+/** Choose the best image URL for a country.
+ * Tries, in order:
+ *  1) stored picture_url (normalized)
+ *  2) images/countries/{code}-{slug}.{jpg|jpeg|png}  (tries 2- and 3-letter codes)
+ *  3) images/countries/{code}.{ext}
+ *  4) images/countries/{slug}.{ext}
  */
 function bestCountryImage(c: Country): string {
+  // 1) explicit URL in DB (normalize if it's a storage key)
   const explicit = publicImage(c.picture_url) || c.picture_url || "";
   if (explicit) return explicit;
 
-  const code = (c.code || "").toLowerCase();
+  const codeRaw = (c.code || "").trim().toLowerCase();
+  const codes = Array.from(
+    new Set(
+      [
+        codeRaw, // whatever is stored
+        codeRaw.slice(0, 2), // alpha-2
+        codeRaw.slice(0, 3), // alpha-3
+      ].filter(Boolean)
+    )
+  );
+
   const slug = slugify(c.name || "");
   const exts = [".jpg", ".jpeg", ".png"];
 
-  const keys: string[] = [];
+  // 2) code + slug
   for (const ext of exts) {
-    if (code && slug) keys.push(`countries/${code}-${slug}${ext}`);
-    if (code) keys.push(`countries/${code}${ext}`);
-    if (slug) keys.push(`countries/${slug}${ext}`);
+    for (const cd of codes) {
+      const u = publicImage(`countries/${cd}-${slug}${ext}`);
+      if (u) return u;
+    }
   }
-
-  // return the first normalized candidate; browser will 404 gracefully and we swap to FALLBACK onError
-  for (const k of keys) {
-    const u = publicImage(k);
+  // 3) code alone
+  for (const ext of exts) {
+    for (const cd of codes) {
+      const u = publicImage(`countries/${cd}${ext}`);
+      if (u) return u;
+    }
+  }
+  // 4) slug alone
+  for (const ext of exts) {
+    const u = publicImage(`countries/${slug}${ext}`);
     if (u) return u;
   }
+
   return "";
 }
 
@@ -137,14 +156,16 @@ export default function CountriesAdminTiles() {
       </header>
 
       {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+          {err}
+        </div>
       )}
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {/* New tile */}
+          {/* New */}
           <button
             onClick={() => router.push("/admin/countries/edit/new")}
             className="h-[240px] rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition flex items-center justify-center"
@@ -167,8 +188,7 @@ export default function CountriesAdminTiles() {
                     src={initialSrc}
                     alt={c.name || "Country"}
                     className="w-full h-full object-cover group-hover:scale-[1.02] transition"
-                    // Expose the computed URL for quick manual check
-                    title={initialSrc}
+                    title={initialSrc /* hover to inspect which URL was chosen */}
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).src = FALLBACK;
                     }}
