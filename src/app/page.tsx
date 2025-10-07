@@ -541,22 +541,35 @@ const [seatSelections, setSeatSelections] = useState<Record<string, number>>({})
 const [lastGoodPriceByRow, setLastGoodPriceByRow] = useState<Record<string, number>>({});
 const [lockedPriceByRow, setLockedPriceByRow] = useState<Record<string, number>>({});
 const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+// Dedup quote fetches per row (qty|pinned signature)
+const inFlightRef = useRef<Map<string, string>>(new Map());
+
 
 useEffect(() => {
-  if (!rows.length) {
-    if (Object.keys(quotesByRow).length || Object.keys(quoteErrByRow).length) {
-      setQuotesByRow({});
-      setQuoteErrByRow({});
+  if (!rows.length || loading || !inventoryReady) {
+    // Clear if no rows
+    if (!rows.length) {
+      if (Object.keys(quotesByRow).length || Object.keys(quoteErrByRow).length) {
+        setQuotesByRow({});
+        setQuoteErrByRow({});
+      }
     }
     return;
   }
-  if (loading || !inventoryReady) return;
 
   const ac = new AbortController();
+  const inFlight = inFlightRef.current;
+
   (async () => {
     await Promise.all(rows.map(async (r) => {
       const qty = seatSelections[r.key] ?? DEFAULT_SEATS;
       const pinned = quotesByRow[r.key]?.vehicle_id ?? null;
+
+      // dedupe: same inputs already being fetched
+      const sig = `${qty}|${pinned ?? ""}`;
+      if (inFlight.get(r.key) === sig) return;
+      inFlight.set(r.key, sig);
+
       const preSoldOut = isSoldOut(r.route.id, r.dateISO);
       if (preSoldOut) {
         setQuotesByRow((p) => ({
@@ -571,25 +584,35 @@ useEffect(() => {
           },
         }));
         setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
+        inFlight.delete(r.key);
         return;
       }
+
       try {
         const json = await fetchQuoteOnce(r.route.id, r.dateISO, qty, ac.signal, pinned);
         if ("error_code" in json) {
-          const extra = json.step || json.details ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})` : "";
+          const extra = json.step || json.details
+            ? ` (${json.step ?? ""}${json.step && json.details ? ": " : ""}${json.details ?? ""})`
+            : "";
           setQuotesByRow((p) => ({ ...p, [r.key]: null }));
           setQuoteErrByRow((p) => ({ ...p, [r.key]: `${json.error_code}${extra}` }));
           return;
         }
-        const unitMinor = (json.unit_cents ?? null) != null ? Number(json.unit_cents) : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
+
+        const unitMinor = (json.unit_cents ?? null) != null
+          ? Number(json.unit_cents)
+          : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
+
         if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
           setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
         } else {
           setQuoteErrByRow((p) => ({ ...p, [r.key]: null }));
         }
+
         const computed = Math.ceil(unitMinor / 100);
         const locked = lockedPriceByRow[r.key];
         const toShow = (locked != null) ? locked : computed;
+
         setQuotesByRow((p) => ({
           ...p,
           [r.key]: {
@@ -601,17 +624,21 @@ useEffect(() => {
             max_qty_at_price: json.max_qty_at_price ?? null,
           },
         }));
+
         setLastGoodPriceByRow((p) => ({ ...p, [r.key]: toShow }));
         setLockedPriceByRow((p) => (locked != null ? p : { ...p, [r.key]: toShow }));
       } catch (e: any) {
         setQuotesByRow((p) => ({ ...p, [r.key]: null }));
         setQuoteErrByRow((p) => ({ ...p, [r.key]: e?.message ?? "network" }));
+      } finally {
+        inFlight.delete(r.key);
       }
     }));
   })();
 
   return () => ac.abort();
-}, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading, lastGoodPriceByRow, lockedPriceByRow, quotesByRow, quoteErrByRow]);
+// ⬇️ Only *inputs* that should trigger a fresh round
+}, [rows, seatSelections, soldOutKeys, remainingByKeyDB, inventoryReady, loading]);
 
 const handleSeatChange = async (rowKey: string, n: number) => {
   setSeatSelections((prev) => ({ ...prev, [rowKey]: n }));
