@@ -288,6 +288,9 @@ type HydrateCountry = {
   sold_out_keys: string[];                      // `${route_id}_${ymd}`
   remaining_by_key_db: Record<string, number>;  // `${route_id}_${ymd}` -> remaining
 };
+
+export default function Page() {
+
 // ===== SECTION 3: Derived data, pricing, handlers, calendar helpers =====
 
 /* ---------- Derived: verified routes ---------- */
