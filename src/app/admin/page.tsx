@@ -64,14 +64,36 @@ function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
   const dep = new Date(tsISO);
   if (dep <= now) return "past";
   const h = (dep.getTime() - now.getTime()) / (1000 * 60 * 60);
-  if (h <= 24) return "T24";
-  if (h <= 72) return "T72";
+  if (h < 24) return "T24";
+  if (h < 72) return "T72";
   return ">72h";
+}
+
+function isT72orT24(h: "T24" | "T72" | ">72h" | "past") {
+  return h === "T24" || h === "T72";
+}
+
+function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
+  const dep = new Date(tsISO);
+  const now = new Date();
+  const depKey = dep.toDateString();
+  const nowKey = now.toDateString();
+  if (depKey === nowKey) return "today";
+  const tmr = new Date(now);
+  tmr.setDate(tmr.getDate() + 1);
+  if (depKey === tmr.toDateString()) return "tomorrow";
+  return null;
 }
 
 /* ---------- Allocation (preview) ---------- */
 type Party = { order_id: UUID; size: number };
-type Boat = { vehicle_id: UUID; cap: number; preferred: boolean };
+type Boat = {
+  vehicle_id: UUID;
+  cap: number;
+  preferred: boolean;
+  operator_id?: UUID | null;
+  min?: number | null;
+};
 
 type DetailedAlloc = {
   byBoat: Map<
@@ -85,52 +107,132 @@ type DetailedAlloc = {
   total: number;
 };
 
-function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
-  // Biggest groups first
-  const sorted = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
+/** Preferred only wins within same operator; otherwise deterministic id tiebreak */
+function boatTieBreak(a: Boat, b: Boat) {
+  if ((a.operator_id || null) === (b.operator_id || null)) {
+    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+  }
+  return a.vehicle_id.localeCompare(b.vehicle_id);
+}
 
+function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
+  // Sort parties largest first
+  const groups = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
+
+  // Working state per boat
   const state = boats.map(b => ({
-    vehicle_id: b.vehicle_id,
+    ...b,
     cap: Math.max(0, Math.floor(Number(b.cap) || 0)),
     used: 0,
-    preferred: !!b.preferred,
+    min: b.min == null ? null : Math.max(0, Math.floor(Number(b.min) || 0)),
   }));
 
-  const byBoat = new Map<
-    UUID,
-    { seats: number; orders: { order_id: UUID; size: number }[] }
-  >();
+  const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  for (const g of sorted) {
+  // Phase 1: greedy placement (we don't yet have per-seat prices here; we honor preferred within same operator)
+  for (const g of groups) {
     const candidates = state
-      .map(s => ({
-        id: s.vehicle_id,
-        free: s.cap - s.used,
-        preferred: s.preferred,
-        ref: s,
-      }))
+      .map(s => ({ ref: s, free: s.cap - s.used }))
       .filter(c => c.free >= g.size)
       .sort((a, b) => {
-        if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
         if (a.free !== b.free) return a.free - b.free;
-        return a.id.localeCompare(b.id);
+        return boatTieBreak(a.ref, b.ref);
       });
 
     if (!candidates.length) {
       unassigned.push({ order_id: g.order_id, size: g.size });
       continue;
     }
-    const chosen = candidates[0];
-    chosen.ref.used += g.size;
 
-    const cur = byBoat.get(chosen.id) ?? { seats: 0, orders: [] };
+    const chosen = candidates[0].ref;
+    chosen.used += g.size;
+
+    const cur = byBoat.get(chosen.vehicle_id) ?? { seats: 0, orders: [] };
     cur.seats += g.size;
     cur.orders.push({ order_id: g.order_id, size: g.size });
-    byBoat.set(chosen.id, cur);
+    byBoat.set(chosen.vehicle_id, cur);
   }
 
-  const total = sorted.reduce((s, p) => s + p.size, 0);
+  // Phase 2: rebalance to satisfy ≥ min with at most one (min-1)
+  // Build chips (movable orders) per boat, smallest first
+  type Chip = { boat: typeof state[number]; size: number; order_id: UUID };
+  const chipsByBoat = new Map<string, Chip[]>();
+  for (const s of state) {
+    const entry = byBoat.get(s.vehicle_id);
+    const chips = (entry?.orders ?? [])
+      .map(o => ({ boat: s, size: o.size, order_id: o.order_id }))
+      .sort((a, b) => a.size - b.size);
+    chipsByBoat.set(s.vehicle_id, chips);
+  }
+
+  function tryMove(donor: typeof state[number], receiver: typeof state[number]) {
+    const donorChips = chipsByBoat.get(donor.vehicle_id) ?? [];
+    const chip = donorChips.find(c => c.size <= (receiver.cap - receiver.used));
+    if (!chip) return false;
+
+    donor.used -= chip.size;
+    receiver.used += chip.size;
+
+    // update byBoat map
+    const dEntry = byBoat.get(donor.vehicle_id)!;
+    const rEntry = byBoat.get(receiver.vehicle_id) ?? { seats: 0, orders: [] };
+
+    const idx = dEntry.orders.findIndex(o => o.order_id === chip.order_id && o.size === chip.size);
+    if (idx >= 0) dEntry.orders.splice(idx, 1);
+    dEntry.seats -= chip.size;
+    if (dEntry.seats <= 0) byBoat.delete(donor.vehicle_id);
+    else byBoat.set(donor.vehicle_id, dEntry);
+
+    rEntry.orders.push({ order_id: chip.order_id, size: chip.size });
+    rEntry.seats += chip.size;
+    byBoat.set(receiver.vehicle_id, rEntry);
+
+    // update chips caches
+    chipsByBoat.set(
+      donor.vehicle_id,
+      donorChips.filter(c => !(c.order_id === chip.order_id && c.size === chip.size))
+    );
+    const recvChips = chipsByBoat.get(receiver.vehicle_id) ?? [];
+    recvChips.push({ boat: receiver, size: chip.size, order_id: chip.order_id });
+    recvChips.sort((a, b) => a.size - b.size);
+    chipsByBoat.set(receiver.vehicle_id, recvChips);
+
+    return true;
+  }
+
+  function constraintsOK() {
+    let minMinus1Count = 0;
+    for (const s of state) {
+      if (s.used <= 0 || s.min == null) continue;
+      if (s.used < s.min - 1) return false;
+      if (s.used === s.min - 1) minMinus1Count++;
+      if (minMinus1Count > 1) return false;
+    }
+    return true;
+  }
+
+  let moved = true;
+  while (!constraintsOK() && moved) {
+    moved = false;
+    // donors: above min; needers: below min
+    const needers = state
+      .filter(s => s.used > 0 && s.min != null && s.used < s.min)
+      .sort((a, b) => (a.min! - a.used) - (b.min! - b.used));
+    const donors = state
+      .filter(s => s.min != null && s.used > s.min!)
+      .sort((a, b) => (b.used - b.min!) - (a.used - a.min!));
+
+    for (const n of needers) {
+      for (const d of donors) {
+        if (d.used <= (d.min ?? 0)) continue;
+        if (tryMove(d, n)) { moved = true; if (constraintsOK()) break; }
+      }
+      if (constraintsOK()) break;
+    }
+  }
+
+  const total = groups.reduce((s, p) => s + p.size, 0);
   return { byBoat, unassigned, total };
 }
 
@@ -311,6 +413,7 @@ export default function AdminPage() {
     depDate: string;
     depTime: string;
     horizon: "T24" | "T72" | ">72h" | "past";
+    contextDay?: "today" | "tomorrow" | null;
     isLocked: boolean;
     perBoat: UiBoat[];
     totals: {
@@ -357,6 +460,7 @@ export default function AdminPage() {
       const dep = new Date(j.departure_ts);
       const dateISO = toDateISO(dep);
       const horizon = horizonFor(j.departure_ts);
+      const ctxDay = todayTomorrowLabel(j.departure_ts);
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
       const parties: Party[] = oArr
@@ -376,11 +480,13 @@ export default function AdminPage() {
             vehicle_id: x.vehicle_id,
             cap: Number.isFinite(cap) ? cap : 0,
             preferred: !!x.preferred,
+            operator_id: v.operator_id ?? null,
+            min: v?.minseats != null ? Number(v.minseats) : null,
           };
         })
         .filter(Boolean) as Boat[];
 
-      const previewAlloc = allocateDetailed(parties, boats);
+      let previewAlloc = allocateDetailed(parties, boats);
       const maxTotal = boats.reduce((s, b) => s + b.cap, 0);
 
       // If locked, build from persisted rows
@@ -393,10 +499,7 @@ export default function AdminPage() {
 
       if (isLocked) {
         // Build per-boat view from saved rows
-        const groupByVeh = new Map<
-          UUID,
-          { seats: number; groups: number[] }
-        >();
+        const groupByVeh = new Map<UUID, { seats: number; groups: number[] }>();
         for (const row of locked) {
           const cur = groupByVeh.get(row.vehicle_id) ?? { seats: 0, groups: [] };
           cur.seats += Number(row.seats || 0);
@@ -424,23 +527,30 @@ export default function AdminPage() {
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
 
-        // Include boats with zero today so ops still see them
-        for (const b of boats) {
-          if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
-          const v = vehicleById.get(b.vehicle_id);
-          perBoat.push({
-            vehicle_id: b.vehicle_id,
-            vehicle_name: v?.name ?? "Unknown",
-            operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
-            db: 0,
-            min: v?.minseats != null ? Number(v.minseats) : null,
-            max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
-            groups: [],
-          });
+        // Include boats with zero today so ops still see them (>72h only)
+        if (!isT72orT24(horizon)) {
+          for (const b of boats) {
+            if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
+            const v = vehicleById.get(b.vehicle_id);
+            perBoat.push({
+              vehicle_id: b.vehicle_id,
+              vehicle_name: v?.name ?? "Unknown",
+              operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+              db: 0,
+              min: v?.minseats != null ? Number(v.minseats) : null,
+              max: v?.maxseats != null ? Number(v.maxseats) : null,
+              preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
+              groups: [],
+            });
+          }
+        } else {
+          // At T-72/T-24: hide zero-customer boats
+          for (let i = perBoat.length - 1; i >= 0; i--) {
+            if (perBoat[i].db <= 0) perBoat.splice(i, 1);
+          }
         }
       } else {
-        // Use preview allocation
+        // Use preview allocation; at T-72/T-24 the allocator already rebalanced to min constraints
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
@@ -458,13 +568,21 @@ export default function AdminPage() {
           });
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
+
+        // At T-72/T-24: hide zero-customer boats (release)
+        if (isT72orT24(horizon)) {
+          for (let i = perBoat.length - 1; i >= 0; i--) {
+            if (perBoat[i].db <= 0) perBoat.splice(i, 1);
+          }
+        }
       }
 
-      // Sort: preferred first, then by vehicle name
+      // Sort: by operator name, then within same operator preferred first, then vehicle name
       perBoat.sort((a, b) => {
-        const ap = a.preferred ? 0 : 1;
-        const bp = b.preferred ? 0 : 1;
-        if (ap !== bp) return ap - bp;
+        const ao = a.operator_name || "";
+        const bo = b.operator_name || "";
+        if (ao !== bo) return ao.localeCompare(bo);
+        if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
@@ -475,6 +593,7 @@ export default function AdminPage() {
         depDate: dep.toLocaleDateString(),
         depTime: dep.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         horizon,
+        contextDay: ctxDay,
         isLocked,
         perBoat,
         totals: {
@@ -539,7 +658,6 @@ export default function AdminPage() {
         [];
 
       if (row.previewAlloc && row.parties && row.boats) {
-        // Save preview as the official allocation
         for (const [vehId, data] of row.previewAlloc.byBoat.entries()) {
           for (const o of data.orders) {
             allocToSave.push({
@@ -677,6 +795,18 @@ export default function AdminPage() {
                   ) : (
                     <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
                       Past
+                    </span>
+                  )}
+
+                  {/* Context awareness */}
+                  {row.contextDay === "today" && (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs">
+                      Runs Today
+                    </span>
+                  )}
+                  {row.contextDay === "tomorrow" && (
+                    <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-xs">
+                      Runs Tomorrow
                     </span>
                   )}
 
