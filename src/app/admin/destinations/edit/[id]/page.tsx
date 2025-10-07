@@ -67,6 +67,49 @@ function emptyDest(): DestinationRow {
   };
 }
 
+/** Turn a storage key or partial path into a full public image URL. */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
+
+  // already absolute
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      // unify public object path with cache-busting param
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      if (m) {
+        const full = `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`;
+        return full;
+      }
+      return raw;
+    } catch {
+      return undefined;
+    }
+  }
+
+const previewSrc = useMemo(() => publicImage(row.picture_url) ?? "", [row.picture_url]);
+
+
+  // stored as /storage/v1/object/public/...
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
+
+  // stored as "images/foo.jpg" or "bucket/foo.jpg" or just "foo.jpg"
+  const key = raw.replace(/^\/+/, "");
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+  }
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+}
+
+
 function toYMD(d: string | Date | null | undefined) {
   if (!d) return "";
   const dt = typeof d === "string" ? new Date(d) : d;
@@ -334,19 +377,24 @@ export default function DestinationEditPage({
                 />
               </label>
               {row.picture_url ? (
-                <div className="relative w-full overflow-hidden rounded-lg border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={row.picture_url}
-                    alt={row.name || "Destination image"}
-                    className="w-full h-48 object-cover"
-                  />
-                </div>
-              ) : (
-                <div className="text-xs text-neutral-500">
-                  Add a picture URL to preview it here.
-                </div>
-              )}
+  <div className="relative w-full overflow-hidden rounded-lg border">
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img
+      src={previewSrc}
+      alt={row.name || "Destination image"}
+      className="w-full h-48 object-cover"
+      onError={(e) => {
+        // show a subtle fallback if the URL still can’t load
+        (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+      }}
+    />
+  </div>
+) : (
+  <div className="text-xs text-neutral-500">
+    Add a picture URL or a storage key (e.g. <code>images/foo.jpg</code>) to preview it here.
+  </div>
+)}
+
 
               <label className="block text-sm">
                 <span className="text-neutral-700">Website URL</span>
