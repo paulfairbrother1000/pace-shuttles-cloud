@@ -721,6 +721,25 @@ const calendarDays = useMemo(() => {
   return days.slice(0, 42);
 }, [calCursor]);
 
+// ===== SECTION 2: Safe globals pulled from hydrate =====
+// We don't assume any global exists; fall back to {} so the page never crashes.
+const availableDestinationsByCountryObj: Record<string, string[]> =
+  // if your server hydrate stuck this on window:
+  (typeof window !== "undefined" && (window as any).PaceHydrate?.global?.available_destinations_by_country)
+  // or if something placed it on globalThis with the snake_case name:
+  ?? ((globalThis as any).available_destinations_by_country as Record<string, string[]>|undefined)
+  // or if something placed it on globalThis with the camelCase name:
+  ?? ((globalThis as any).availableDestinationsByCountry as Record<string, string[]>|undefined)
+  // final fallback to empty object:
+  ?? {};
+
+  const availableCountryIds = useMemo(
+  () => new Set(Object.keys(availableDestinationsByCountryObj)),
+  [availableDestinationsByCountryObj]
+);
+
+
+
 // ===== END SECTION 3 =====
 // ===== SECTION 4: Render =====
 /* =========================== RENDER =========================== */
@@ -842,7 +861,8 @@ if (!countryId) {
 } else {
   /* Planner UI (country selected) */
   // availableDestinationsByCountry is a plain object, not a Map
-  const allowedDestIds = new Set(availableDestinationsByCountry[countryId] ?? []);
+  const allowedDestIds = new Set(availableDestinationsByCountryObj[countryId] ?? []);
+
 
   content = (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
