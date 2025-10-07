@@ -12,6 +12,16 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
+import { createBrowserClient } from "@supabase/ssr";
+
+// Browser-only Supabase client (safe no-op on the server)
+const supabase = (() => {
+  if (typeof window === "undefined") return null;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  return url && anon ? createBrowserClient(url, anon) : null;
+})();
+
 
 const LOGIN_PATH = "/login";
 
