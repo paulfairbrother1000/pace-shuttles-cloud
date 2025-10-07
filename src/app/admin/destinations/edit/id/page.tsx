@@ -1,21 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createBrowserClient } from "@supabase/ssr";
 
 type UUID = string;
-type Country = { id: UUID; name: string };
 
 type Destination = {
-  id?: UUID;
+  id: UUID;
   name: string;
   description: string | null;
-  country_id: UUID | null;
   picture_url: string | null;
   url: string | null;
-  // NOTE: no is_active field here to match your DB
+  country_id: UUID | null;
 };
+
+type Country = { id: UUID; name: string };
 
 const supabase =
   typeof window !== "undefined" &&
@@ -27,27 +28,32 @@ const supabase =
       )
     : null;
 
-export default function EditDestinationPage() {
-  const params = useParams<{ id: string }>();
+export default function DestinationEditPage({
+  params,
+}: {
+  params: { id: string };
+}) {
   const router = useRouter();
-  const id = params?.id;
-  const isNew = !id || id === "new";
+  const isCreate = params.id === "new";
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
   const [countries, setCountries] = useState<Country[]>([]);
 
   const [form, setForm] = useState<Destination>({
+    id: "" as UUID,
     name: "",
     description: "",
-    country_id: null,
     picture_url: "",
     url: "",
+    country_id: null,
   });
 
   useEffect(() => {
     let off = false;
+
     (async () => {
       if (!supabase) {
         setErr("Supabase not configured");
@@ -57,67 +63,81 @@ export default function EditDestinationPage() {
       setErr(null);
       setLoading(true);
 
-      const [cQ, dQ] = await Promise.all([
-        supabase.from("countries").select("id,name").order("name", { ascending: true }),
-        isNew
-          ? Promise.resolve({ data: null, error: null } as any)
-          : supabase
-              .from("destinations")
-              .select("id,name,description,country_id,picture_url,url") // ← no is_active
-              .eq("id", id)
-              .single(),
-      ]);
+      try {
+        // Load countries (for dropdown)
+        const { data: cData, error: cErr } = await supabase
+          .from("countries")
+          .select("id,name")
+          .order("name", { ascending: true });
+        if (cErr) throw cErr;
+        if (!off) setCountries((cData || []) as Country[]);
 
-      if (off) return;
+        if (!isCreate) {
+          const { data, error } = await supabase
+            .from("destinations")
+            .select("id,name,description,picture_url,url,country_id")
+            .eq("id", params.id)
+            .maybeSingle();
 
-      if (cQ.error) setErr(cQ.error.message);
-      setCountries((cQ.data || []) as Country[]);
+          if (error) throw error;
+          if (!data) throw new Error("Destination not found");
 
-      if (!isNew) {
-        if (dQ.error) setErr(dQ.error.message);
-        if (dQ.data) setForm(dQ.data as Destination);
+          if (!off)
+            setForm({
+              id: data.id,
+              name: data.name ?? "",
+              description: data.description ?? "",
+              picture_url: data.picture_url ?? "",
+              url: data.url ?? "",
+              country_id: data.country_id ?? null,
+            });
+        }
+      } catch (e: any) {
+        if (!off) setErr(e?.message ?? String(e));
+      } finally {
+        if (!off) setLoading(false);
       }
-
-      setLoading(false);
     })();
+
     return () => {
       off = true;
     };
-  }, [id, isNew]);
+  }, [isCreate, params.id]);
 
-  async function save() {
+  async function handleSave() {
     if (!supabase) return;
     setSaving(true);
     setErr(null);
     try {
-      if (isNew) {
-        const { data, error } = await supabase
+      if (isCreate) {
+        const ins = await supabase
           .from("destinations")
           .insert({
-            name: form.name.trim(),
+            name: form.name || null,
             description: form.description || null,
             picture_url: form.picture_url || null,
-            country_id: form.country_id || null,
             url: form.url || null,
+            country_id: form.country_id || null,
           })
           .select("id")
           .single();
-        if (error) throw error;
-        router.replace(`/admin/destinations/edit/${data.id}`);
+        if (ins.error) throw ins.error;
+        // Go back to list
+        router.push("/admin/destinations");
       } else {
-        const { error } = await supabase
+        const upd = await supabase
           .from("destinations")
           .update({
-            name: form.name.trim(),
+            name: form.name || null,
             description: form.description || null,
             picture_url: form.picture_url || null,
-            country_id: form.country_id || null,
             url: form.url || null,
+            country_id: form.country_id || null,
           })
-          .eq("id", id);
-        if (error) throw error;
+          .eq("id", params.id);
+        if (upd.error) throw upd.error;
+        router.push("/admin/destinations");
       }
-      router.refresh();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
@@ -125,30 +145,29 @@ export default function EditDestinationPage() {
     }
   }
 
-  async function remove() {
-    if (!supabase || isNew) return;
-    if (!confirm("Delete this destination? This cannot be undone.")) return;
-    const { error } = await supabase.from("destinations").delete().eq("id", id);
-    if (error) {
-      setErr(error.message);
-      return;
-    }
-    router.push("/admin/destinations");
-  }
+  const title = isCreate ? "New Destination" : "Edit Destination";
 
   return (
     <div className="px-6 py-6 mx-auto max-w-[800px] space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          {isNew ? "New Destination" : "Edit Destination"}
-        </h1>
-        <button
-          onClick={() => history.back()}
-          className="px-3 py-1.5 rounded-full border"
-        >
-          ← Back
-        </button>
-      </div>
+      <header className="flex items-center gap-3">
+        <h1 className="text-2xl font-semibold">{title}</h1>
+        <div className="ml-auto flex items-center gap-2">
+          <Link
+            href="/admin/destinations"
+            className="px-3 py-1.5 rounded-lg border"
+          >
+            Back
+          </Link>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-white"
+            style={{ backgroundColor: saving ? "#9ca3af" : "#2563eb" }}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </header>
 
       {err && (
         <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
@@ -160,95 +179,74 @@ export default function EditDestinationPage() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : (
         <form
-          className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            save();
+            handleSave();
           }}
+          className="space-y-4"
         >
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <label className="block">
-              <div className="text-sm mb-1">Name</div>
-              <input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required
-                className="w-full border rounded-lg px-3 py-2"
-              />
-            </label>
-
-            <label className="block">
-              <div className="text-sm mb-1">Country</div>
-              <select
-                value={form.country_id || ""}
-                onChange={(e) =>
-                  setForm({ ...form, country_id: e.target.value || null })
-                }
-                className="w-full border rounded-lg px-3 py-2"
-              >
-                <option value="">—</option>
-                {countries.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Name</label>
+            <input
+              className="w-full border rounded-lg px-3 py-2"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              required
+            />
           </div>
 
-          <label className="block">
-            <div className="text-sm mb-1">Picture URL</div>
-            <input
-              value={form.picture_url || ""}
-              onChange={(e) =>
-                setForm({ ...form, picture_url: e.target.value })
-              }
-              placeholder="https://… or /storage/v1/object/public/…"
-              className="w-full border rounded-lg px-3 py-2"
-            />
-          </label>
-
-          <label className="block">
-            <div className="text-sm mb-1">Website URL</div>
-            <input
-              value={form.url || ""}
-              onChange={(e) => setForm({ ...form, url: e.target.value })}
-              placeholder="https://…"
-              className="w-full border rounded-lg px-3 py-2"
-            />
-          </label>
-
-          <label className="block">
-            <div className="text-sm mb-1">Description</div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Description</label>
             <textarea
+              className="w-full border rounded-lg px-3 py-2 min-h-[120px]"
               value={form.description || ""}
               onChange={(e) =>
-                setForm({ ...form, description: e.target.value })
+                setForm((f) => ({ ...f, description: e.target.value }))
               }
-              rows={5}
-              className="w-full border rounded-lg px-3 py-2"
             />
-          </label>
+          </div>
 
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-4 py-2 rounded-lg text-white"
-              style={{ backgroundColor: "#2563eb", opacity: saving ? 0.7 : 1 }}
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Image URL</label>
+            <input
+              className="w-full border rounded-lg px-3 py-2"
+              value={form.picture_url || ""}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, picture_url: e.target.value }))
+              }
+              placeholder="/images/destinations/xx.jpg or full URL"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-sm font-medium">External URL</label>
+            <input
+              className="w-full border rounded-lg px-3 py-2"
+              value={form.url || ""}
+              onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
+              placeholder="https://…"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Country</label>
+            <select
+              className="w-full border rounded-lg px-3 py-2"
+              value={form.country_id || ""}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  country_id: e.target.value ? (e.target.value as UUID) : null,
+                }))
+              }
             >
-              {saving ? "Saving…" : "Save"}
-            </button>
-
-            {!isNew && (
-              <button
-                type="button"
-                onClick={remove}
-                className="px-4 py-2 rounded-lg border border-rose-600 text-rose-700"
-              >
-                Delete
-              </button>
-            )}
+              <option value="">— none —</option>
+              {countries.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
           </div>
         </form>
       )}
