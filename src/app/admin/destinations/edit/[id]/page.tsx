@@ -93,9 +93,6 @@ function publicImage(input?: string | null): string | undefined {
     }
   }
 
-const previewSrc = useMemo(() => publicImage(row.picture_url) ?? "", [row.picture_url]);
-
-
   // stored as /storage/v1/object/public/...
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -108,7 +105,6 @@ const previewSrc = useMemo(() => publicImage(row.picture_url) ?? "", [row.pictur
   }
   return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
-
 
 function toYMD(d: string | Date | null | undefined) {
   if (!d) return "";
@@ -139,6 +135,12 @@ export default function DestinationEditPage({
   const [row, setRow] = useState<DestinationRow>(() => emptyDest());
   const [arrivalChoice, setArrivalChoice] = useState<number | null>(null); // destination_arrival.id
   const selectedArrival = arrivalTypes.find((a) => a.id === arrivalChoice);
+
+  // derived: image preview src
+  const imgSrc = useMemo(
+    () => publicImage((row?.picture_url as string | undefined) || "") || "",
+    [row?.picture_url]
+  );
 
   // Preload lookups + (optionally) existing row
   useEffect(() => {
@@ -376,25 +378,24 @@ export default function DestinationEditPage({
                   placeholder="https://…"
                 />
               </label>
-              {row.picture_url ? (
-  <div className="relative w-full overflow-hidden rounded-lg border">
-    {/* eslint-disable-next-line @next/next/no-img-element */}
-    <img
-      src={previewSrc}
-      alt={row.name || "Destination image"}
-      className="w-full h-48 object-cover"
-      onError={(e) => {
-        // show a subtle fallback if the URL still can’t load
-        (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
-      }}
-    />
-  </div>
-) : (
-  <div className="text-xs text-neutral-500">
-    Add a picture URL or a storage key (e.g. <code>images/foo.jpg</code>) to preview it here.
-  </div>
-)}
 
+              {row.picture_url ? (
+                <div className="relative w-full overflow-hidden rounded-lg border">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imgSrc}
+                    alt={row.name || "Destination image"}
+                    className="w-full h-48 object-cover"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="text-xs text-neutral-500">
+                  Add a picture URL or a storage key (e.g. <code>images/foo.jpg</code>) to preview it here.
+                </div>
+              )}
 
               <label className="block text-sm">
                 <span className="text-neutral-700">Website URL</span>
