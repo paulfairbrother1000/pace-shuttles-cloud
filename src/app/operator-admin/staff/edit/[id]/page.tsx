@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
@@ -14,15 +13,16 @@ const sb = createBrowserClient(
 /* ---------- Types ---------- */
 type PsUser = {
   id: string;
-  site_admin?: boolean | null;
   operator_admin?: boolean | null;
   operator_id?: string | null;
   operator_name?: string | null;
+  site_admin?: boolean | null;
 };
 
 type Operator = { id: string; name: string };
 type JourneyType = { id: string; name: string };
 type OperatorTypeRel = { operator_id: string; journey_type_id: string };
+
 type StaffRow = {
   id: string;
   operator_id: string;
@@ -35,11 +35,17 @@ type StaffRow = {
   created_at: string | null;
   updated_at: string | null;
   jobrole: string | null;
-  type_id: string | null;
+  type_id: string | null;        // legacy single
+  type_ids: string[] | null;     // NEW multi
+  pronoun: "he" | "she" | "they" | null; // NEW
 };
 
-/* ---------- Img helpers ---------- */
+/* ---------- Helpers ---------- */
+function cls(...a: (string | false | null | undefined)[]) {
+  return a.filter(Boolean).join(" ");
+}
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+
 async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
@@ -49,15 +55,30 @@ async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | nul
   return data?.signedUrl ?? null;
 }
 
-export default function StaffEditPage() {
+function leadRoleForTypeName(name: string): "Pilot" | "Driver" | "Captain" {
+  const n = name.toLowerCase();
+  if (n.includes("heli")) return "Pilot";
+  if (n.includes("bus") || n.includes("limo")) return "Driver";
+  return "Captain";
+}
+
+function roleOptionsForTypes(selectedTypeIds: string[], journeyTypes: JourneyType[]) {
+  const names = selectedTypeIds
+    .map((id) => journeyTypes.find((t) => t.id === id)?.name || "")
+    .filter(Boolean);
+  const leadRoles = new Set(names.map(leadRoleForTypeName));
+  return Array.from(new Set<string>([...leadRoles, "Crew", "Admin"]));
+}
+
+/* ===================================================================== */
+
+export default function EditStaffPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const isNew = !params?.id || params.id === "new";
+  const isNew = params.id === "new";
 
   /* ps_user */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
-  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
-
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -66,100 +87,118 @@ export default function StaffEditPage() {
       setPsUser(null);
     }
   }, []);
+  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
 
-  /* Lookups */
+  /* lookups */
   const [operators, setOperators] = useState<Operator[]>([]);
   const [journeyTypes, setJourneyTypes] = useState<JourneyType[]>([]);
-  const [rels, setRels] = useState<OperatorTypeRel[]>([]);
+  const [opTypeRels, setOpTypeRels] = useState<OperatorTypeRel[]>([]);
 
-  /* Form */
-  const [editingId, setEditingId] = useState<string | null>(isNew ? null : params.id);
-  const [operatorId, setOperatorId] = useState<string>("");
-  const [typeId, setTypeId] = useState<string>("");
-  const [jobRole, setJobRole] = useState<string>("");
-  const [first, setFirst] = useState<string>("");
-  const [last, setLast] = useState<string>("");
-  const [status, setStatus] = useState<string>("Active");
-  const [licenses, setLicenses] = useState<string>("");
-  const [notes, setNotes] = useState<string>("");
+  /* form state */
+  const [staffId, setStaffId] = useState<string | null>(null);
+  const [operatorId, setOperatorId] = useState("");
+  const [typeIds, setTypeIds] = useState<string[]>([]);
+  const [jobRole, setJobRole] = useState("");
+  const [pronoun, setPronoun] = useState<"he" | "she" | "they">("they");
+  const [status, setStatus] = useState("Active");
+  const [first, setFirst] = useState("");
+  const [last, setLast] = useState("");
+  const [licenses, setLicenses] = useState("");
+  const [notes, setNotes] = useState("");
   const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
+  /* ui */
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  /* Load lookups + record */
+  /* derived: allowed types for selected operator */
+  const allowedTypes = useMemo(() => {
+    if (!operatorId) return [] as JourneyType[];
+    const allowed = new Set(
+      opTypeRels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)
+    );
+    return journeyTypes.filter((t) => allowed.has(t.id));
+  }, [operatorId, opTypeRels, journeyTypes]);
+
+  /* load lookups + existing row (if editing) */
   useEffect(() => {
     let off = false;
     (async () => {
-      const [ops, jts, ot] = await Promise.all([
+      const [ops, jts, rels] = await Promise.all([
         sb.from("operators").select("id,name").order("name"),
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
       ]);
-      if (ops.error || jts.error || ot.error) {
-        setMsg(
-          ops.error?.message ||
-            jts.error?.message ||
-            ot.error?.message ||
-            "Load failed"
-        );
-      }
       if (off) return;
-      setOperators((ops.data as Operator[]) || []);
-      setJourneyTypes((jts.data as JourneyType[]) || []);
-      setRels((ot.data as OperatorTypeRel[]) || []);
+      if (ops.data) setOperators(ops.data as Operator[]);
+      if (jts.data) setJourneyTypes(jts.data as JourneyType[]);
+      if (rels.data) setOpTypeRels(rels.data as OperatorTypeRel[]);
+    })();
+    return () => {
+      off = true;
+    };
+  }, []);
 
-      if (isNew) {
-        // preselect operator for op-admins
-        if (isOpAdmin && psUser?.operator_id) setOperatorId(psUser.operator_id);
-        setLoading(false);
-        return;
-      }
-
-      const { data, error } = await sb
-        .from("operator_staff")
-        .select("*")
-        .eq("id", params.id)
-        .single();
-
+  /* if editing, load row */
+  useEffect(() => {
+    if (isNew) {
+      // operator lock for op-admins
+      if (isOpAdmin && psUser?.operator_id) setOperatorId(psUser.operator_id);
+      return;
+    }
+    let off = false;
+    (async () => {
+      const { data, error } = await sb.from("operator_staff").select("*").eq("id", params.id).single();
+      if (off) return;
       if (error || !data) {
-        setMsg(error?.message || "Could not load staff.");
-        setLoading(false);
+        setMsg(error?.message ?? "Could not load staff.");
         return;
       }
-
       const s = data as StaffRow;
-      setEditingId(s.id);
+      setStaffId(s.id);
       setOperatorId(s.operator_id);
-      setTypeId(s.type_id ?? "");
+      const arr = s.type_ids && s.type_ids.length ? s.type_ids : (s.type_id ? [s.type_id] : []);
+      setTypeIds(arr);
       setJobRole(s.jobrole ?? "");
+      setPronoun((s.pronoun as any) || "they");
+      setStatus(s.status ?? "Active");
       setFirst(s.first_name ?? "");
       setLast(s.last_name ?? "");
-      setStatus(s.status ?? "Active");
       setLicenses(s.licenses ?? "");
       setNotes(s.notes ?? "");
-      setPreviewUrl(await resolveStorageUrl(s.photo_url));
-      setLoading(false);
+      setPhotoUrl(await resolveStorageUrl(s.photo_url || null));
+      setMsg(`Editing: ${s.first_name} ${s.last_name}`);
     })();
-    return () => { off = true; };
-  }, [isNew, params?.id, isOpAdmin, psUser?.operator_id]);
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.id, isNew]);
 
-  /* Allowed types for selected operator */
-  const allowedTypeIds = useMemo(
-    () => new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)),
-    [rels, operatorId]
-  );
-  const allowedTypes = useMemo(
-    () => journeyTypes.filter((jt) => allowedTypeIds.has(jt.id)),
-    [journeyTypes, allowedTypeIds]
-  );
+  /* auto-select single type if only one allowed for operator */
+  useEffect(() => {
+    if (!operatorId) return;
+    const allowed = allowedTypes.map((t) => t.id);
+    if (allowed.length === 1) {
+      setTypeIds((prev) => (prev.length ? prev : [allowed[0]]));
+    } else {
+      setTypeIds((prev) => prev.filter((id) => allowed.includes(id)));
+    }
+  }, [operatorId, allowedTypes]);
 
-  async function uploadPhotoIfAny(staffId: string) {
+  const lockedOperatorName =
+    isOpAdmin && psUser?.operator_id
+      ? psUser?.operator_name ||
+        operators.find((o) => o.id === psUser.operator_id)?.name ||
+        psUser.operator_id
+      : "";
+
+  async function uploadPhotoIfAny(id: string) {
     if (!photoFile) return null;
     const safe = photoFile.name.replace(/[^\w.\-]+/g, "_");
-    const path = `staff/${staffId}/${Date.now()}-${safe}`;
+    const path = `staff/${id}/${Date.now()}-${safe}`;
     const { error } = await sb.storage
       .from("images")
       .upload(path, photoFile, { cacheControl: "3600", upsert: true, contentType: photoFile.type || "image/*" });
@@ -179,18 +218,20 @@ export default function StaffEditPage() {
         isOpAdmin && psUser?.operator_id ? psUser.operator_id : operatorId;
 
       if (!effectiveOperatorId) return setMsg("Please choose an Operator.");
-      if (!typeId) return setMsg("Please select a Vehicle Type.");
+      if (typeIds.length === 0) return setMsg("Please select at least one Vehicle Type.");
       if (!jobRole) return setMsg("Please select a Role.");
       if (!first.trim() || !last.trim()) return setMsg("Please enter first and last name.");
 
       setSaving(true);
 
-      if (!editingId) {
+      if (isNew) {
         // CREATE
         const payload = {
           operator_id: effectiveOperatorId,
-          type_id: typeId,
+          type_id: typeIds[0] || null,   // legacy single
+          type_ids: typeIds,             // NEW multi
           jobrole: jobRole,
+          pronoun,
           first_name: first.trim(),
           last_name: last.trim(),
           status,
@@ -213,222 +254,316 @@ export default function StaffEditPage() {
         if (id && photoFile) {
           const path = await uploadPhotoIfAny(id);
           if (path) {
-            await fetch(`/api/operator/staff/${id}`, {
+            const patch = await fetch(`/api/operator/staff/${id}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json", Accept: "application/json" },
               body: JSON.stringify({ photo_url: path }),
             });
+            if (!patch.ok) {
+              const body = await patch.json().catch(() => ({}));
+              setMsg(body?.error || `Photo save failed (${patch.status})`);
+            }
           }
         }
+
+        setSaving(false);
         router.push("/operator-admin/staff");
       } else {
         // UPDATE
-        const id = editingId;
-        const toUpdate: Record<string, any> = {
+        const id = staffId || (params.id as string);
+        const path = await uploadPhotoIfAny(id);
+        const payload: Record<string, any> = {
           operator_id: effectiveOperatorId,
-          type_id: typeId,
+          type_id: typeIds[0] || null,
+          type_ids: typeIds,
           jobrole: jobRole,
+          pronoun,
           first_name: first.trim(),
           last_name: last.trim(),
           status,
           licenses: licenses.trim() || null,
           notes: notes.trim() || null,
         };
-        if (photoFile) {
-          const path = await uploadPhotoIfAny(id);
-          if (path) toUpdate.photo_url = path;
-        }
+        if (path) payload.photo_url = path;
+
         const res = await fetch(`/api/operator/staff/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(toUpdate),
+          body: JSON.stringify(payload),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           setSaving(false);
           return setMsg(body?.error || `Update failed (${res.status})`);
         }
+
+        setSaving(false);
         router.push("/operator-admin/staff");
       }
     } catch (err: any) {
-      setMsg(err?.message ?? String(err));
-    } finally {
       setSaving(false);
+      setMsg(err?.message ?? String(err));
     }
   }
 
   async function onDelete() {
-    if (!editingId) return;
+    if (isNew) return;
     if (!confirm("Delete this staff member?")) return;
-    const res = await fetch(`/api/operator/staff/${editingId}`, {
-      method: "DELETE",
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      return setMsg(body?.error || `Delete failed (${res.status})`);
+    try {
+      setDeleting(true);
+      const id = staffId || (params.id as string);
+      const res = await fetch(`/api/operator/staff/${id}`, {
+        method: "DELETE",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setDeleting(false);
+        return setMsg(body?.error || `Delete failed (${res.status})`);
+      }
+      setDeleting(false);
+      router.push("/operator-admin/staff");
+    } catch (err: any) {
+      setDeleting(false);
+      setMsg(err?.message ?? String(err));
     }
-    router.push("/operator-admin/staff");
   }
 
+  const roleChoices = roleOptionsForTypes(typeIds, journeyTypes);
+
   return (
-    <div className="space-y-6">
+    <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
-        <Link href="/operator-admin/staff" className="rounded-full px-3 py-1 border text-sm">
+        <button
+          className="rounded-full border px-3 py-1.5 text-sm"
+          onClick={() => router.push("/operator-admin/staff")}
+        >
           ← Back
-        </Link>
+        </button>
         <h1 className="text-2xl font-semibold">{isNew ? "New Staff" : "Edit Staff"}</h1>
-        <div className="ml-auto">
-          {!isNew && (
-            <button onClick={onDelete} className="rounded-full px-4 py-2 border text-sm">
-              Delete
-            </button>
-          )}
-        </div>
+        {!isNew && (
+          <button
+            className="ml-auto rounded-full border px-3 py-1.5 text-sm"
+            onClick={onDelete}
+            disabled={deleting}
+          >
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+        )}
       </div>
 
-      {msg && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          {msg}
-        </div>
-      )}
+      {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      <section className="rounded-2xl border bg-white p-5 shadow">
-        {loading ? (
-          <div>Loading…</div>
-        ) : (
-          <form onSubmit={onSave} className="space-y-6">
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Operator *</label>
-                {isOpAdmin ? (
-                  <div className="rounded-full border px-3 py-2 text-sm bg-neutral-50">
-                    {psUser?.operator_name ?? psUser?.operator_id}
-                  </div>
-                ) : (
-                  <select
-                    className="w-full border rounded-lg px-3 py-2"
-                    value={operatorId}
-                    onChange={(e) => {
-                      setOperatorId(e.target.value);
-                      setTypeId("");
-                    }}
-                  >
-                    <option value="">— Select —</option>
-                    {operators.map((o) => (
-                      <option key={o.id} value={o.id}>{o.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Vehicle Type *</label>
+      <section className="rounded-2xl border bg-white p-5 shadow space-y-5">
+        <form onSubmit={onSave} className="space-y-5">
+          {/* Operator + Types + Role */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Operator *</label>
+              {isOpAdmin ? (
+                <div className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm bg-neutral-50">
+                  <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                  {lockedOperatorName}
+                </div>
+              ) : (
                 <select
                   className="w-full border rounded-lg px-3 py-2"
-                  value={typeId}
-                  onChange={(e) => setTypeId(e.target.value)}
-                  disabled={!operatorId && !isOpAdmin}
+                  value={operatorId}
+                  onChange={(e) => {
+                    setOperatorId(e.target.value);
+                    setTypeIds([]);
+                    setJobRole("");
+                  }}
                 >
                   <option value="">— Select —</option>
-                  {allowedTypes.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
+                  {operators.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
                   ))}
                 </select>
-              </div>
-
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Role *</label>
-                <input
-                  className="w-full border rounded-lg px-3 py-2"
-                  placeholder="e.g., Captain"
-                  value={jobRole}
-                  onChange={(e) => setJobRole(e.target.value)}
-                />
-              </div>
+              )}
             </div>
-
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Status</label>
-                <select
-                  className="w-full border rounded-lg px-3 py-2"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value)}
-                >
-                  <option value="Active">Active</option>
-                  <option value="Inactive">Inactive</option>
-                  <option value="OnLeave">OnLeave</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">First Name *</label>
-                <input className="w-full border rounded-lg px-3 py-2" value={first} onChange={(e) => setFirst(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Last Name *</label>
-                <input className="w-full border rounded-lg px-3 py-2" value={last} onChange={(e) => setLast(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Licenses / Certs</label>
-                <input className="w-full border rounded-lg px-3 py-2" value={licenses} onChange={(e) => setLicenses(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Photo</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={async (e) => {
-                    const f = e.target.files?.[0] || null;
-                    setPhotoFile(f);
-                    setPreviewUrl(f ? URL.createObjectURL(f) : previewUrl);
-                  }}
-                />
-                <p className="text-xs text-neutral-500 mt-1">
-                  Stored in <code>images/staff/&lt;staffId&gt;/</code>
-                </p>
-              </div>
-            </div>
-
-            {previewUrl && (
-              <div>
-                <label className="block text-sm text-neutral-600 mb-1">Preview</label>
-                <div className="h-36 w-36 border rounded overflow-hidden">
-                  <img src={previewUrl} alt="preview" className="h-full w-full object-cover" />
-                </div>
-              </div>
-            )}
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Notes</label>
-              <textarea className="w-full border rounded-lg px-3 py-2" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <label className="block text-sm text-neutral-600 mb-1">
+                Vehicle Type{allowedTypes.length > 1 ? "s" : ""} *
+              </label>
+              <div
+                className={cls(
+                  "flex flex-wrap gap-2",
+                  !operatorId && "opacity-50 pointer-events-none"
+                )}
+              >
+                {allowedTypes.map((t) => {
+                  const active = typeIds.includes(t.id);
+                  return (
+                    <button
+                      type="button"
+                      key={t.id}
+                      onClick={() =>
+                        setTypeIds((prev) =>
+                          active ? prev.filter((x) => x !== t.id) : [...prev, t.id]
+                        )
+                      }
+                      className={cls(
+                        "px-3 py-1 rounded-full border text-sm",
+                        active ? "bg-black text-white border-black" : "bg-white"
+                      )}
+                    >
+                      {t.name}
+                    </button>
+                  );
+                })}
+              </div>
+              {!operatorId && (
+                <p className="text-xs text-neutral-500 mt-1">
+                  Choose an Operator to see allowed types.
+                </p>
+              )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={
-                  saving ||
-                  (!isOpAdmin && !operatorId) ||
-                  !typeId ||
-                  !jobRole ||
-                  !first.trim() ||
-                  !last.trim()
-                }
-                className="inline-flex rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Role *</label>
+              <select
+                className="w-full border rounded-lg px-3 py-2"
+                value={jobRole}
+                onChange={(e) => setJobRole(e.target.value)}
+                disabled={typeIds.length === 0}
               >
-                {saving ? "Saving…" : editingId ? "Update Staff" : "Create Staff"}
-              </button>
-              <Link href="/operator-admin/staff" className="inline-flex rounded-full px-4 py-2 border text-sm">
-                Cancel
-              </Link>
-              {msg && <span className="text-sm text-neutral-600">{msg}</span>}
+                <option value="">— Select —</option>
+                {roleChoices.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
             </div>
-          </form>
-        )}
+          </div>
+
+          {/* Status + Pronoun + Names */}
+          <div className="grid md:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Status</label>
+              <select
+                className="w-full border rounded-lg px-3 py-2"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+                <option value="OnLeave">OnLeave</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Pronoun *</label>
+              <select
+                className="w-full border rounded-lg px-3 py-2"
+                value={pronoun}
+                onChange={(e) => setPronoun(e.target.value as any)}
+              >
+                <option value="he">he</option>
+                <option value="she">she</option>
+                <option value="they">they</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">First Name *</label>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                value={first}
+                onChange={(e) => setFirst(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Last Name *</label>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                value={last}
+                onChange={(e) => setLast(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Licenses + Photo */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Licenses / Certs</label>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                value={licenses}
+                onChange={(e) => setLicenses(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Photo</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setPhotoFile(f);
+                  if (f) setPhotoUrl(URL.createObjectURL(f));
+                }}
+              />
+              <p className="text-xs text-neutral-500 mt-1">
+                Stored in <code>images/staff/&lt;staffId&gt;/</code>
+              </p>
+            </div>
+          </div>
+
+          {/* Preview */}
+          {photoUrl && (
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Preview</label>
+              <div className="h-36 w-56 border rounded overflow-hidden bg-neutral-50">
+                <img src={photoUrl} alt="preview" className="h-full w-full object-cover object-center" />
+              </div>
+            </div>
+          )}
+
+          {/* Notes */}
+          <div>
+            <label className="block text-sm text-neutral-600 mb-1">Notes</label>
+            <textarea
+              className="w-full border rounded-lg px-3 py-2"
+              rows={5}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={
+                saving ||
+                !(isOpAdmin ? true : !!operatorId) ||
+                typeIds.length === 0 ||
+                !jobRole ||
+                !first.trim() ||
+                !last.trim()
+              }
+              className="inline-flex rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
+            >
+              {saving ? "Saving…" : isNew ? "Create Staff" : "Update Staff"}
+            </button>
+            <button
+              type="button"
+              className="inline-flex rounded-full px-4 py-2 border text-sm"
+              onClick={() => router.push("/operator-admin/staff")}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            {msg && <span className="text-sm text-neutral-600">{msg}</span>}
+          </div>
+        </form>
       </section>
     </div>
   );
