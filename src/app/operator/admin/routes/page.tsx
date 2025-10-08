@@ -1,13 +1,9 @@
 import { redirect } from "next/navigation";
 
-type Search = { [key: string]: string | string[] | undefined };
-
 export default function Page({
-  params,
   searchParams,
 }: {
-  params: { id: string };
-  searchParams: Search;
+  searchParams: Record<string, string | string[] | undefined>;
 }) {
   const qs = new URLSearchParams(
     Object.entries(searchParams).flatMap(([k, v]) =>
@@ -15,6 +11,5 @@ export default function Page({
     ) as [string, string][]
   ).toString();
 
-  redirect(`/operator-admin/routes/${params.id}${qs ? `?${qs}` : ""}`);
+  redirect(`/operator-admin/routes${qs ? `?${qs}` : ""}`);
 }
- 
