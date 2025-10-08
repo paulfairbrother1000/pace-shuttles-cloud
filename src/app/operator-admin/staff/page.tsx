@@ -4,6 +4,29 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+
+function StaffTileImage({ src, alt }: { src: string; alt: string }) {
+  const [objPos, setObjPos] = useState<"50% 50%" | "50% 20%" | "50% 8%">("50% 50%");
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="w-full h-44 sm:h-52 rounded-t-2xl object-cover"
+      style={{ objectPosition: objPos }}
+      onLoad={(e) => {
+        const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+        // Heuristic:
+        // very portrait => show a lot more top; slightly portrait => show some more top; otherwise center
+        if (h > w * 1.35) setObjPos("50% 8%");
+        else if (h > w * 1.05) setObjPos("50% 20%");
+        else setObjPos("50% 50%");
+      }}
+    />
+  );
+}
+
+
 /* ---------- Supabase (browser) ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -238,12 +261,11 @@ export default function OperatorStaffTilesPage() {
             >
               <div className="h-40 w-full bg-neutral-100 overflow-hidden grid place-items-center">
                 {thumbs[r.id] ? (
-                  <img
-                    src={thumbs[r.id]!}
-                    alt={`${r.first_name} ${r.last_name}`}
-                      className="w-full h-44 sm:h-52 rounded-t-2xl object-cover"
-                        style={{ objectPosition: "50% 20%" }} // center horizontally, show more top vertically
-                  />
+<StaffTileImage
+  src={thumbs[r.id] ?? ""}
+  alt={`${r.first_name} ${r.last_name}`}
+/>
+
                 ) : (
                   <span className="text-neutral-400 text-sm">No image</span>
                 )}
