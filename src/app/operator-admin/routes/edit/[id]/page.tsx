@@ -5,7 +5,7 @@ import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* ---------- Same publicImage helper you use on Destinations ---------- */
+/* ---------- Same publicImage helper used across admin ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -81,13 +81,23 @@ type Assignment = {
 type OpTypeRel = { operator_id: string; journey_type_id: string };
 
 type RouteRow = {
-  id: UUID;
+  id: string;
   route_name: string | null;
   name: string | null;
+  country_id: string | null;
+  pickup_id: string | null;
+  destination_id: string | null;
+  approx_duration_mins: number | null;
+  approximate_distance_miles: number | null;
+  pickup_time: string | null;
   frequency: string | null;
+  is_active: boolean | null;
+  journey_type_id: string | null;
+  transport_type: string | null;
+  season_from: string | null;
+  season_to: string | null;
   pickup?: { name: string; picture_url: string | null } | null;
   destination?: { name: string; picture_url: string | null } | null;
-  // (We omit optional timing columns to avoid 400s if they don't exist)
 };
 
 export default function OperatorRouteDetailPage() {
@@ -108,7 +118,7 @@ export default function OperatorRouteDetailPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ps_user + operator lock (query param wins)
+  // read ps_user; op=? wins; otherwise lock to operator_admin operator
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -122,7 +132,7 @@ export default function OperatorRouteDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // lookups + route (only safe columns -> no 400 in console)
+  // Lookups + Route (select EXACTLY the same columns as site-admin editor)
   useEffect(() => {
     let off = false;
     (async () => {
@@ -130,8 +140,9 @@ export default function OperatorRouteDetailPage() {
       setLoading(true);
       setMsg(null);
 
-      const [ops, r, rels] = await Promise.all([
+      const [ops, rels, r] = await Promise.all([
         sb.from("operators").select("id,name").order("name"),
+        sb.from("operator_transport_types").select("operator_id,journey_type_id"),
         sb
           .from("routes")
           .select(
@@ -139,14 +150,24 @@ export default function OperatorRouteDetailPage() {
             id,
             route_name,
             name,
+            country_id,
+            pickup_id,
+            destination_id,
+            approx_duration_mins,
+            approximate_distance_miles,
+            pickup_time,
             frequency,
+            is_active,
+            journey_type_id,
+            transport_type,
+            season_from,
+            season_to,
             pickup:pickup_id ( name, picture_url ),
             destination:destination_id ( name, picture_url )
           `
           )
           .eq("id", params.id)
           .single(),
-        sb.from("operator_transport_types").select("operator_id,journey_type_id"),
       ]);
 
       if (off) return;
@@ -154,26 +175,13 @@ export default function OperatorRouteDetailPage() {
       if (ops.data) setOperators((ops.data as Operator[]) || []);
       if (rels.data) setOpTypeRels((rels.data as OpTypeRel[]) || []);
 
-      if (r.data) {
-        const row = r.data as any;
-        const routeRow: RouteRow = {
-          id: row.id,
-          route_name: row.route_name ?? null,
-          name: row.name ?? null,
-          frequency: row.frequency ?? null,
-          pickup: row.pickup
-            ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
-            : null,
-          destination: row.destination
-            ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
-            : null,
-        };
-        setRoute(routeRow);
-      } else if (r.error) {
-        setMsg(r.error.message);
+      if (r.error || !r.data) {
+        setMsg(r.error?.message ?? "Route not found");
+      } else {
+        setRoute(r.data as unknown as RouteRow);
       }
 
-      // Only pull assignments for this route
+      // Only assignments for this route
       const asn = await sb
         .from("route_vehicle_assignments")
         .select("route_id,vehicle_id,is_active,preferred")
@@ -183,12 +191,10 @@ export default function OperatorRouteDetailPage() {
 
       setLoading(false);
     })();
-    return () => {
-      off = true;
-    };
+    return () => { off = true; };
   }, [params.id]);
 
-  // Load vehicles for the selected operator
+  // Load vehicles for chosen operator
   useEffect(() => {
     if (!sb || !operatorId) return;
     let off = false;
@@ -205,25 +211,21 @@ export default function OperatorRouteDetailPage() {
         setVehicles((data as Vehicle[]) || []);
       }
     })();
-    return () => {
-      off = true;
-    };
+    return () => { off = true; };
   }, [operatorId]);
 
-  // Allowed journey types for the selected operator
-  const allowedTypeIds = useMemo(() => {
-    if (!operatorId) return new Set<string>();
-    return new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id));
-  }, [opTypeRels, operatorId]);
-
-  // Filter vehicles so operator can only assign within their allowed journey types
+  // Allowed journey types for selected operator → filter vehicles
+  const allowedTypeIds = useMemo(
+    () => new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id)),
+    [opTypeRels, operatorId]
+  );
   const vehiclesFiltered = useMemo(
     () => vehicles.filter(v => !v.type_id || allowedTypeIds.has(v.type_id)),
     [vehicles, allowedTypeIds]
   );
 
-  const preferred = assignments.find((a) => a.preferred);
-  const assignedIds = new Set(assignments.map((a) => a.vehicle_id));
+  const preferred = assignments.find(a => a.preferred);
+  const assignedIds = new Set(assignments.map(a => a.vehicle_id));
 
   async function reloadAssignments() {
     const { data, error } = await sb!
@@ -285,17 +287,14 @@ export default function OperatorRouteDetailPage() {
   const lockedOperatorName =
     isOpAdmin && psUser?.operator_id
       ? psUser?.operator_name ||
-        operators.find((o) => o.id === psUser.operator_id)?.name ||
+        operators.find(o => o.id === psUser.operator_id)?.name ||
         psUser.operator_id
       : "";
 
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
-        <button
-          className="rounded-full border px-3 py-1.5 text-sm"
-          onClick={() => router.push("/operator-admin/routes")}
-        >
+        <button className="rounded-full border px-3 py-1.5 text-sm" onClick={() => router.push("/operator-admin/routes")}>
           ← Back
         </button>
         <h1 className="text-2xl font-semibold">
@@ -305,7 +304,7 @@ export default function OperatorRouteDetailPage() {
 
       {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      {/* Images + basic facts (frequency only since other fields are not guaranteed) */}
+      {/* Images + facts pulled from the same fields as site-admin */}
       <section className="rounded-2xl border bg-white shadow overflow-hidden">
         <div className="grid grid-cols-2 gap-0">
           <div className="relative aspect-[16/7]">
@@ -317,9 +316,7 @@ export default function OperatorRouteDetailPage() {
                 unoptimized
                 className="object-cover"
               />
-            ) : (
-              <div className="absolute inset-0 bg-neutral-100" />
-            )}
+            ) : <div className="absolute inset-0 bg-neutral-100" />}
           </div>
           <div className="relative aspect-[16/7]">
             {publicImage(route?.destination?.picture_url) ? (
@@ -330,9 +327,7 @@ export default function OperatorRouteDetailPage() {
                 unoptimized
                 className="object-cover"
               />
-            ) : (
-              <div className="absolute inset-0 bg-neutral-100" />
-            )}
+            ) : <div className="absolute inset-0 bg-neutral-100" />}
           </div>
         </div>
 
@@ -343,15 +338,19 @@ export default function OperatorRouteDetailPage() {
           </div>
           <div>
             <div className="text-neutral-500">Pickup time (local)</div>
-            <div className="font-medium">—</div>
+            <div className="font-medium">{route?.pickup_time || "—"}</div>
           </div>
           <div>
             <div className="text-neutral-500">Duration</div>
-            <div className="font-medium">—</div>
+            <div className="font-medium">
+              {route?.approx_duration_mins != null ? `${route.approx_duration_mins} mins` : "—"}
+            </div>
           </div>
           <div>
             <div className="text-neutral-500">Distance</div>
-            <div className="font-medium">—</div>
+            <div className="font-medium">
+              {route?.approximate_distance_miles != null ? `${route.approximate_distance_miles} mi` : "—"}
+            </div>
           </div>
         </div>
       </section>
@@ -373,9 +372,7 @@ export default function OperatorRouteDetailPage() {
             >
               <option value="">— Select —</option>
               {operators.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
+                <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
           )}
@@ -384,7 +381,9 @@ export default function OperatorRouteDetailPage() {
         {!operatorId ? (
           <div className="text-sm text-neutral-500">Choose an Operator to assign vehicles.</div>
         ) : vehiclesFiltered.length === 0 ? (
-          <div className="text-sm text-neutral-500">No active vehicles for this operator (or none for the allowed journey types).</div>
+          <div className="text-sm text-neutral-500">
+            No active vehicles for this operator (or none for the allowed journey types).
+          </div>
         ) : (
           <>
             <div className="flex flex-wrap gap-2">
@@ -422,7 +421,7 @@ export default function OperatorRouteDetailPage() {
             <div className="text-sm">
               Preferred:&nbsp;
               <span className="font-medium">
-                {preferred ? vehiclesFiltered.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
+                {preferred ? vehiclesFiltered.find(v => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
               </span>
             </div>
           </>
