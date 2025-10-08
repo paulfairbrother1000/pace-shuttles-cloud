@@ -8,7 +8,7 @@ export async function GET() {
     const data = await resend.emails.send({
       from: "Pace Shuttles <hello@paceshuttles.com>",
       to: "paul.fairbrother@beyondservicemanagement.com",
-      subject: "Test email from Pace Shuttles - Welcome!",
+      subject: "Test email from Pace Shuttles - Welcome!!",
       html: `
         <div style="font-family:sans-serif;padding:20px;">
           <h2>🚀 It works!</h2>
