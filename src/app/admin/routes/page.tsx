@@ -1,4 +1,3 @@
-// app/admin/routes/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -29,11 +28,9 @@ type Row = {
   frequency: string | null;
   is_active: boolean | null;
 
-  // linked type + legacy label
   journey_type_id: string | null;
   transport_type: string | null;
 
-  // season
   season_from: string | null;
   season_to: string | null;
 };
@@ -45,6 +42,41 @@ function toNum(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 const placeholder = "/placeholder.png";
+
+/** Public image normalizer (same as Home) */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      if (m) {
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
+      }
+      return raw;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
+  const key = raw.replace(/^\/+/, "");
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+  }
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+}
 
 /** Pickup | Destination split image collage (left=pickup, right=destination) */
 function CollageThumb({
@@ -58,19 +90,13 @@ function CollageThumb({
   className?: string;
   alt?: string;
 }) {
+  const left = publicImage(pickupImg) || placeholder;
+  const right = publicImage(destImg) || placeholder;
   return (
     <div className={`relative overflow-hidden rounded-xl shadow-sm ${className}`}>
       <div className="grid grid-cols-2 h-full w-full">
-        <img
-          src={pickupImg || placeholder}
-          alt={alt || "Pick-up image"}
-          className="h-full w-full object-cover"
-        />
-        <img
-          src={destImg || placeholder}
-          alt={alt || "Destination image"}
-          className="h-full w-full object-cover"
-        />
+        <img src={left} alt={alt || "Pick-up image"} className="h-full w-full object-cover" />
+        <img src={right} alt={alt || "Destination image"} className="h-full w-full object-cover" />
       </div>
       <div className="pointer-events-none absolute inset-y-0 left-1/2 w-[1px] bg-white/70 mix-blend-overlay" />
     </div>
@@ -102,6 +128,7 @@ function TileGrid<T extends { id: string; name: string; picture_url?: string | n
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {items.map((it) => {
             const active = selectedId === it.id;
+            const img = publicImage(it.picture_url) || placeholder;
             return (
               <button
                 key={it.id}
@@ -111,11 +138,7 @@ function TileGrid<T extends { id: string; name: string; picture_url?: string | n
                 }`}
               >
                 <div className="aspect-[16/9] w-full overflow-hidden">
-                  <img
-                    src={it.picture_url || placeholder}
-                    alt={it.name}
-                    className="h-full w-full object-cover"
-                  />
+                  <img src={img} alt={it.name} className="h-full w-full object-cover" />
                 </div>
                 <div className="p-3">
                   <div className="font-medium">{it.name}</div>
@@ -235,6 +258,7 @@ export default function RoutesPage() {
     }
     setRows((data as Row[]) || []);
   }
+
   function resetForm() {
     setEditingId(null);
     setCountryId("");
@@ -268,31 +292,26 @@ export default function RoutesPage() {
     setFrequency(data.frequency ?? "");
     setIsActive(data.is_active ?? true);
 
-    // Journey type + season
     setJourneyTypeId(data.journey_type_id ?? "");
     setSeasonFrom(data.season_from ?? "");
     setSeasonTo(data.season_to ?? "");
     setMsg(`Editing: ${data.route_name || data.name || id}`);
   }
 
-  /* ---------- SAVE via API (same payload contract) ---------- */
+  /* ---------- SAVE via API ---------- */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
     try {
       setMsg(null);
 
-      // must-have fields for both create & update
       if (!countryId || !pickupId || !destinationId) {
         setMsg("Please select Country, Pick-up and Destination.");
         return;
       }
-
-      // Require Journey Type on create only
       if (!editingId && !journeyTypeId) {
         setMsg("Please select a Journey Type.");
         return;
       }
-
       if (seasonFrom && seasonTo && new Date(seasonFrom) > new Date(seasonTo)) {
         setMsg("Season To must be on or after Season From.");
         return;
@@ -311,14 +330,11 @@ export default function RoutesPage() {
         frequency: frequency || null,
         is_active: isActive,
 
-        // persist the auto-generated name
         route_name: derivedRouteName || null,
 
-        // Journey type + legacy text kept in sync
         journey_type_id: journeyTypeId || null,
         transport_type: jtName === "—" ? null : jtName,
 
-        // Season window
         season_from: seasonFrom || null,
         season_to: seasonTo || null,
       };
@@ -375,10 +391,13 @@ export default function RoutesPage() {
 
   const nameFor = (id: string | null | undefined, list: { id: string; name: string }[]) =>
     (id && list.find((x) => x.id === id)?.name) || "—";
+
   const imgPickup = (id: string | null | undefined) =>
-    (id && pickups.find((p) => p.id === id)?.picture_url) || null;
+    publicImage((id && pickups.find((p) => p.id === id)?.picture_url) || undefined) || undefined;
+
   const imgDest = (id: string | null | undefined) =>
-    (id && destinations.find((d) => d.id === id)?.picture_url) || null;
+    publicImage((id && destinations.find((d) => d.id === id)?.picture_url) || undefined) || undefined;
+
   return (
     <div className="space-y-8">
       <header>
@@ -389,7 +408,7 @@ export default function RoutesPage() {
       {/* Form */}
       <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow">
         <form onSubmit={onSave} className="space-y-5">
-          {/* Country (sticky first step) */}
+          {/* Country / Pickup / Destination */}
           <div className="grid md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Country *</label>
@@ -403,55 +422,33 @@ export default function RoutesPage() {
               </select>
             </div>
 
-            {/* Desktop selects */}
-            <div className="hidden md:block">
+            <div>
               <label className="block text-sm text-neutral-600 mb-1">Pick-up Point *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={pickupId} onChange={(e) => setPickupId(e.target.value)} disabled={!countryId}>
                 <option value="">— Select —</option>
                 {filteredPickups.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
-            <div className="hidden md:block">
+
+            <div>
               <label className="block text-sm text-neutral-600 mb-1">Destination *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!countryId}>
                 <option value="">— Select —</option>
                 {filteredDestinations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             </div>
+          </div>
 
-            {/* Collage preview (desktop) */}
-            <div className="hidden md:flex items-end">
+          {/* Collage preview */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="md:col-span-3">
               <CollageThumb
-                pickupImg={pickup?.picture_url}
-                destImg={destination?.picture_url}
+                pickupImg={pickup?.picture_url || null}
+                destImg={destination?.picture_url || null}
                 className="h-24 w-full"
                 alt={derivedRouteName || "Route collage"}
               />
             </div>
-          </div>
-
-          {/* Mobile tile pickers */}
-          <div className="md:hidden space-y-6">
-            <TileGrid
-              title="Choose a pick-up point *"
-              items={filteredPickups}
-              selectedId={pickupId}
-              onSelect={setPickupId}
-              emptyHint={countryId ? "No pick-up points in this country yet." : "Pick a country first."}
-            />
-            <TileGrid
-              title="Choose a destination *"
-              items={filteredDestinations}
-              selectedId={destinationId}
-              onSelect={setDestinationId}
-              emptyHint={countryId ? "No destinations in this country yet." : "Pick a country first."}
-            />
-            <CollageThumb
-              pickupImg={pickup?.picture_url}
-              destImg={destination?.picture_url}
-              className="aspect-[16/9] w-full"
-              alt={derivedRouteName || "Route collage"}
-            />
           </div>
 
           {/* Derived route name + metrics */}
@@ -537,6 +534,7 @@ export default function RoutesPage() {
           </div>
         </form>
       </section>
+
       {/* List */}
       <section className="space-y-3">
         <div className="flex gap-2">
@@ -548,49 +546,7 @@ export default function RoutesPage() {
           />
         </div>
 
-        {/* Mobile cards */}
-        <div className="md:hidden space-y-3">
-          {loading ? (
-            <div className="rounded-xl border bg-white p-4">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="rounded-xl border bg-white p-4">No routes yet.</div>
-          ) : (
-            filtered.map((r) => (
-              <div key={r.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-                <CollageThumb
-                  pickupImg={imgPickup(r.pickup_id)}
-                  destImg={imgDest(r.destination_id)}
-                  className="aspect-[16/9] w-full"
-                  alt={`${nameFor(r.pickup_id, pickups)} → ${nameFor(r.destination_id, destinations)}`}
-                />
-                <div className="p-3 space-y-1">
-                  <div className="font-medium">{r.route_name || r.name || "—"}</div>
-                  <div className="text-sm text-neutral-600">
-                    {countryName(r.country_id)} · {journeyTypeName(r.journey_type_id) !== "—"
-                      ? journeyTypeName(r.journey_type_id)
-                      : (r.transport_type ?? "—")}
-                  </div>
-                  <div className="text-xs text-neutral-600">
-                    {r.frequency || "—"} · {r.approx_duration_mins ?? "—"} mins · {r.approximate_distance_miles ?? "—"} mi
-                  </div>
-                  <div className="pt-2 flex gap-2">
-                    <button className="px-3 py-1 rounded-full border" onClick={() => loadOne(r.id)}>Edit</button>
-                    <button
-                      className="px-3 py-1 rounded-full border"
-                      onClick={() => onRemove(r)}
-                      disabled={deletingId === r.id}
-                    >
-                      {deletingId === r.id ? "Deleting…" : "Delete"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Desktop table */}
-        <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
+        <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow">
           {loading ? (
             <div className="p-4">Loading…</div>
           ) : filtered.length === 0 ? (
