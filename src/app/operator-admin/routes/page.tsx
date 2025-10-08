@@ -27,7 +27,7 @@ type RouteRow = {
   destination?: { name: string; picture_url: string | null } | null;
 };
 
-/* ---------- SAME normalizer as Destinations page ---------- */
+/* ---------- SAME publicImage helper used on Destinations ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -47,10 +47,8 @@ function publicImage(input?: string | null): string | undefined {
           ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
           : `${raw}?v=5`;
       }
-      return raw; // already a full non-storage url
-    } catch {
-      /* ignore and fallthrough */
-    }
+      return raw;
+    } catch {}
   }
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -149,9 +147,8 @@ export default function OperatorRoutesTilesPage() {
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    const base = routes; // routes are global; filtering by operator happens in the detail/assignment page
-    if (!s) return base;
-    return base.filter((r) =>
+    if (!s) return routes;
+    return routes.filter((r) =>
       `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`.toLowerCase().includes(s)
     );
   }, [routes, q]);
@@ -196,7 +193,7 @@ export default function OperatorRoutesTilesPage() {
           onChange={(e) => setQ(e.target.value)}
         />
       </header>
- 
+
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {loading ? (
           <div className="col-span-full p-4">Loading…</div>
@@ -208,16 +205,18 @@ export default function OperatorRoutesTilesPage() {
           filtered.map((r) => {
             const pImg = publicImage(r.pickup?.picture_url);
             const dImg = publicImage(r.destination?.picture_url);
-            const href = `/operator-admin/routes/${r.id}?op=${encodeURIComponent(
+
+            // ✅ FIX: point to edit path (like Vehicles)
+            const href = `/operator-admin/routes/edit/${r.id}?op=${encodeURIComponent(
               isOpAdmin ? (psUser?.operator_id || "") : operatorId
             )}`;
+
             return (
               <Link
                 key={r.id}
                 href={href}
                 className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden"
               >
-                {/* Two images area */}
                 <div className="relative w-full aspect-[16/7] grid grid-cols-2">
                   <div className="relative">
                     {pImg ? (
@@ -228,13 +227,7 @@ export default function OperatorRoutesTilesPage() {
                   </div>
                   <div className="relative">
                     {dImg ? (
-                      <Image
-                        src={dImg}
-                        alt={r.destination?.name || "Destination"}
-                        fill
-                        unoptimized
-                        className="object-cover"
-                      />
+                      <Image src={dImg} alt={r.destination?.name || "Destination"} fill unoptimized className="object-cover" />
                     ) : (
                       <div className="absolute inset-0 bg-neutral-100" />
                     )}
