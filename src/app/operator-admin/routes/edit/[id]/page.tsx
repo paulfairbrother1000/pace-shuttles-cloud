@@ -5,6 +5,50 @@ import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+/* ---------- Helpers: same as Destinations page ---------- */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
+
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      if (m) {
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
+      }
+      return raw;
+    } catch { /* ignore */ }
+  }
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
+  const key = raw.replace(/^\/+/, "");
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+  }
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+}
+
+/* ---------- Supabase ---------- */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
+
 /* ---------- Types ---------- */
 type UUID = string;
 
@@ -14,7 +58,6 @@ type PsUser = {
   operator_id?: string | null;
   operator_name?: string | null;
 };
-
 type Operator = { id: UUID; name: string };
 
 type Vehicle = {
@@ -40,56 +83,11 @@ type RouteRow = {
   frequency: string | null;
   pickup?: { name: string; picture_url: string | null } | null;
   destination?: { name: string; picture_url: string | null } | null;
+  // Optional details (only if your schema has them)
   pickup_time_local?: string | null;
   duration_mins?: number | null;
   distance_miles?: number | null;
 };
-
-/* ---------- SAME publicImage helper as Destinations/tiles ---------- */
-function publicImage(input?: string | null): string | undefined {
-  const raw = (input || "").trim();
-  if (!raw) return undefined;
-
-  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
-  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
-  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
-  if (!supaHost) return undefined;
-
-  if (/^https?:\/\//i.test(raw)) {
-    try {
-      const u = new URL(raw);
-      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
-      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
-      if (m) {
-        return (isLocal || u.hostname !== supaHost)
-          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
-          : `${raw}?v=5`;
-      }
-      return raw;
-    } catch {
-      /* ignore */
-    }
-  }
-  if (raw.startsWith("/storage/v1/object/public/")) {
-    return `https://${supaHost}${raw}?v=5`;
-  }
-  const key = raw.replace(/^\/+/, "");
-  if (key.startsWith(`${bucket}/`)) {
-    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
-  }
-  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
-}
-
-/* ---------- Supabase ---------- */
-const sb =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
 
 export default function OperatorRouteDetailPage() {
   const router = useRouter();
@@ -98,23 +96,20 @@ export default function OperatorRouteDetailPage() {
   const opFromQuery = search.get("op") || "";
 
   const [psUser, setPsUser] = useState<PsUser | null>(null);
-  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
-
   const [operators, setOperators] = useState<Operator[]>([]);
-  const [operatorId, setOperatorId] = useState<string>(""); // for vehicle assignment
+  const [operatorId, setOperatorId] = useState<string>(""); // vehicle context
   const [route, setRoute] = useState<RouteRow | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // ps_user + operator lock
+  // ps_user + operator lock (query param wins)
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
       const u = raw ? (JSON.parse(raw) as PsUser) : null;
       setPsUser(u);
-      // initial operator context: op query param wins, then operator_admin lock
       if (opFromQuery) setOperatorId(opFromQuery);
       else if (u?.operator_admin && u.operator_id) setOperatorId(u.operator_id);
     } catch {
@@ -123,7 +118,7 @@ export default function OperatorRouteDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // lookups + route
+  // lookups + route (with fallback if a column like pickup_time_local doesn't exist)
   useEffect(() => {
     let off = false;
     (async () => {
@@ -131,9 +126,31 @@ export default function OperatorRouteDetailPage() {
       setLoading(true);
       setMsg(null);
 
-      const [ops, r, a] = await Promise.all([
-        sb.from("operators").select("id,name").order("name"),
-        sb
+      const ops = await sb.from("operators").select("id,name").order("name");
+      if (!off && ops.data) setOperators((ops.data as Operator[]) || []);
+
+      // Try rich select first…
+      let routeRes = await sb
+        .from("routes")
+        .select(
+          `
+          id,
+          route_name,
+          name,
+          frequency,
+          pickup_time_local,
+          duration_mins,
+          distance_miles,
+          pickup:pickup_id ( name, picture_url ),
+          destination:destination_id ( name, picture_url )
+        `
+        )
+        .eq("id", params.id)
+        .single();
+
+      // If the DB complains about a missing column, retry with minimal fields
+      if (routeRes.error && /does not exist/i.test(routeRes.error.message)) {
+        routeRes = await sb
           .from("routes")
           .select(
             `
@@ -141,56 +158,55 @@ export default function OperatorRouteDetailPage() {
             route_name,
             name,
             frequency,
-            pickup_time_local,
-            duration_mins,
-            distance_miles,
             pickup:pickup_id ( name, picture_url ),
             destination:destination_id ( name, picture_url )
           `
           )
           .eq("id", params.id)
-          .single(),
-        sb
-          .from("route_vehicle_assignments")
-          .select("route_id,vehicle_id,is_active,preferred")
-          .eq("is_active", true),
-      ]);
-
-      if (off) return;
-
-      if (ops.data) setOperators((ops.data as Operator[]) || []);
-      if (r.data) {
-        const row = r.data as any;
-        const routeRow: RouteRow = {
-          id: row.id,
-          route_name: row.route_name ?? null,
-          name: row.name ?? null,
-          frequency: row.frequency ?? null,
-          pickup_time_local: row.pickup_time_local ?? null,
-          duration_mins: row.duration_mins ?? null,
-          distance_miles: row.distance_miles ?? null,
-          pickup: row.pickup
-            ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
-            : null,
-          destination: row.destination
-            ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
-            : null,
-        };
-        setRoute(routeRow);
-      } else if (r.error) {
-        setMsg(r.error.message);
+          .single();
       }
 
-      if (a.data) setAssignments((a.data as Assignment[]) || []);
+      if (!off) {
+        if (routeRes.data) {
+          const row = routeRes.data as any;
+          const r: RouteRow = {
+            id: row.id,
+            route_name: row.route_name ?? null,
+            name: row.name ?? null,
+            frequency: row.frequency ?? null,
+            pickup_time_local: row.pickup_time_local ?? null,
+            duration_mins: row.duration_mins ?? null,
+            distance_miles: row.distance_miles ?? null,
+            pickup: row.pickup
+              ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
+              : null,
+            destination: row.destination
+              ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
+              : null,
+          };
+          setRoute(r);
+        } else if (routeRes.error) {
+          setMsg(routeRes.error.message);
+        }
+      }
 
-      setLoading(false);
+      // Only pull assignments for this route
+      const asn = await sb
+        .from("route_vehicle_assignments")
+        .select("route_id,vehicle_id,is_active,preferred")
+        .eq("route_id", params.id)
+        .eq("is_active", true);
+
+      if (!off && asn.data) setAssignments((asn.data as Assignment[]) || []);
+
+      if (!off) setLoading(false);
     })();
     return () => {
       off = true;
     };
   }, [params.id]);
 
-  // load vehicles for current operator context
+  // Load vehicles for the operator context
   useEffect(() => {
     if (!sb || !operatorId) return;
     let off = false;
@@ -211,34 +227,33 @@ export default function OperatorRouteDetailPage() {
     };
   }, [operatorId]);
 
-  const assignmentsByRoute = useMemo(() => {
-    const allowedVehicleIds = new Set(vehicles.map((v) => v.id));
-    const filtered = assignments.filter((a) => allowedVehicleIds.has(a.vehicle_id) && a.route_id === params.id);
-    return filtered;
-  }, [assignments, vehicles, params.id]);
+  // Derive assignment sets
+  const preferred = assignments.find((a) => a.preferred);
+  const assignedIds = new Set(assignments.map((a) => a.vehicle_id));
 
   async function reloadAssignments() {
     const { data, error } = await sb!
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
+      .eq("route_id", params.id)
       .eq("is_active", true);
     if (!error) setAssignments((data as Assignment[]) || []);
   }
 
-  async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
+  async function toggleAssign(vehicleId: string, currentlyAssigned: boolean) {
     try {
       if (currentlyAssigned) {
         const { error } = await sb!
           .from("route_vehicle_assignments")
           .update({ is_active: false, preferred: false })
-          .eq("route_id", routeId)
+          .eq("route_id", params.id)
           .eq("vehicle_id", vehicleId);
         if (error) throw error;
       } else {
         const { error } = await sb!
           .from("route_vehicle_assignments")
           .upsert(
-            { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: false },
+            { route_id: params.id, vehicle_id: vehicleId, is_active: true, preferred: false },
             { onConflict: "route_id,vehicle_id" }
           );
         if (error) throw error;
@@ -249,19 +264,19 @@ export default function OperatorRouteDetailPage() {
     }
   }
 
-  async function setPreferred(routeId: string, vehicleId: string) {
+  async function setPreferred(vehicleId: string) {
     try {
       const { error: clearErr } = await sb!
         .from("route_vehicle_assignments")
         .update({ preferred: false })
-        .eq("route_id", routeId)
+        .eq("route_id", params.id)
         .eq("preferred", true);
       if (clearErr) throw clearErr;
 
       const { error: upErr } = await sb!
         .from("route_vehicle_assignments")
         .upsert(
-          { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: true },
+          { route_id: params.id, vehicle_id: vehicleId, is_active: true, preferred: true },
           { onConflict: "route_id,vehicle_id" }
         );
       if (upErr) throw upErr;
@@ -272,6 +287,7 @@ export default function OperatorRouteDetailPage() {
     }
   }
 
+  const isOpAdmin = Boolean(psUser?.operator_admin && psUser.operator_id);
   const lockedOperatorName =
     isOpAdmin && psUser?.operator_id
       ? psUser?.operator_name ||
@@ -279,13 +295,13 @@ export default function OperatorRouteDetailPage() {
         psUser.operator_id
       : "";
 
-  const preferred = assignmentsByRoute.find((a) => a.preferred);
-  const assignedIds = new Set(assignmentsByRoute.map((a) => a.vehicle_id));
-
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
-        <button className="rounded-full border px-3 py-1.5 text-sm" onClick={() => router.push("/operator-admin/routes")}>
+        <button
+          className="rounded-full border px-3 py-1.5 text-sm"
+          onClick={() => router.push("/operator-admin/routes")}
+        >
           ← Back
         </button>
         <h1 className="text-2xl font-semibold">
@@ -395,7 +411,7 @@ export default function OperatorRouteDetailPage() {
                     <button
                       className="outline-none"
                       title={assigned ? "Unassign" : "Assign to route"}
-                      onClick={() => toggleAssign(params.id, v.id, assigned)}
+                      onClick={() => toggleAssign(v.id, assigned)}
                     >
                       {v.name} ({v.minseats}–{v.maxseats})
                     </button>
@@ -404,7 +420,7 @@ export default function OperatorRouteDetailPage() {
                         isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
                       }`}
                       title="Mark as preferred"
-                      onClick={() => setPreferred(params.id, v.id)}
+                      onClick={() => setPreferred(v.id)}
                     >
                       ★
                     </button>
