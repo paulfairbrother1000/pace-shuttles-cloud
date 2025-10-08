@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { createBrowserClient } from "@supabase/ssr";
+import Link from "next/link";
 
-/* ---------- Supabase ---------- */
+/* ---------- Supabase (browser) ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -17,61 +17,82 @@ type PsUser = {
   operator_id?: string | null;
   operator_name?: string | null;
 };
+
 type Operator = { id: string; name: string };
+
 type RouteRow = {
   id: string;
   route_name: string | null;
   name: string | null;
   frequency: string | null;
-  pickup?: { name: string; picture_url: string | null } | null;
-  destination?: { name: string; picture_url: string | null } | null;
+  pickup: { name: string; picture_url: string | null } | null;
+  destination: { name: string; picture_url: string | null } | null;
 };
-type Vehicle = { id: string; name: string; minseats: number; maxseats: number; active: boolean | null };
 
-/* ---------- Image helpers ---------- */
+type ThumbMap = Record<
+  string,
+  { pickupUrl: string | null; destUrl: string | null }
+>;
+
+/* ---------- Helpers ---------- */
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
-async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
+
+/** Always return a browser-loadable URL.
+ * We use signed URLs so this works with private buckets. */
+async function signedUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
-  // Try public first
-  const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
-  if (pub) return pub;
-  // Signed fallback
-  const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  const { data, error } = await sb.storage
+    .from("images")
+    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365); // 1 year
+  if (error) return null;
   return data?.signedUrl ?? null;
 }
 
-export default function OperatorRoutesTilesPage() {
-  /* ps_user + operator context */
-  const [psUser, setPsUser] = useState<PsUser | null>(null);
-  const [operators, setOperators] = useState<Operator[]>([]);
-  const [operatorId, setOperatorId] = useState<string>("");
+function matches(s: string, q: string) {
+  return s.toLowerCase().includes(q.toLowerCase());
+}
 
-  /* data */
+/* ===================================================================== */
+
+export default function OperatorRoutesTilesPage() {
+  /* ps_user (locks operator for operator admins) */
+  const [psUser, setPsUser] = useState<PsUser | null>(null);
+  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
+
+  /* Operator context */
+  const [operators, setOperators] = useState<Operator[]>([]);
+  const [operatorId, setOperatorId] = useState("");
+
+  /* Data */
   const [routes, setRoutes] = useState<RouteRow[]>([]);
+  const [thumbs, setThumbs] = useState<ThumbMap>({});
   const [loading, setLoading] = useState(true);
+
+  /* UI */
   const [q, setQ] = useState("");
 
-  /* resolved image urls (id -> {pickup?, dest?}) */
-  const [imgMap, setImgMap] = useState<Record<string, { p?: string | null; d?: string | null }>>({});
-
-  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
-  const lockedOperatorName =
-    (operatorLocked &&
-      (psUser?.operator_name || operators.find(o => o.id === psUser!.operator_id!)?.name)) || "";
-
+  /* Read ps_user + preselect operator for operator admins */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
       const u = raw ? (JSON.parse(raw) as PsUser) : null;
       setPsUser(u);
-      if (u?.operator_admin && u.operator_id) setOperatorId(u.operator_id);
+      if (u?.operator_admin && u.operator_id) {
+        setOperatorId((cur) => cur || u.operator_id!);
+      }
     } catch {
       setPsUser(null);
     }
   }, []);
 
-  /* lookups + routes */
+  const lockedOperatorName =
+    (operatorLocked &&
+      (psUser?.operator_name ||
+        operators.find((o) => o.id === psUser!.operator_id!)?.name)) ||
+    "";
+
+  /* Load operators + routes (with pickup/destination + picture_url) */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -81,34 +102,45 @@ export default function OperatorRoutesTilesPage() {
         sb.from("operators").select("id,name").order("name"),
         sb
           .from("routes")
-          .select(`
+          .select(
+            `
             id,
             route_name,
             name,
             frequency,
             pickup:pickup_id ( name, picture_url ),
             destination:destination_id ( name, picture_url )
-          `)
+          `
+          )
           .eq("is_active", true)
           .order("created_at", { ascending: false }),
       ]);
 
       if (off) return;
 
-      setOperators((ops.data as Operator[]) || []);
-      const rows: RouteRow[] = ((r.data as any[]) || []).map((row) => ({
-        id: row.id,
-        route_name: row.route_name ?? null,
-        name: row.name ?? null,
-        frequency: row.frequency ?? null,
-        pickup: row.pickup
-          ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
-          : null,
-        destination: row.destination
-          ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
-          : null,
-      }));
-      setRoutes(rows);
+      if (ops.data) setOperators((ops.data as Operator[]) || []);
+      if (r.data) {
+        const rows: RouteRow[] = ((r.data as any[]) || []).map((row) => ({
+          id: row.id,
+          route_name: row.route_name ?? null,
+          name: row.name ?? null,
+          frequency: row.frequency ?? null,
+          pickup: row.pickup
+            ? {
+                name: String(row.pickup.name),
+                picture_url: row.pickup.picture_url ?? null,
+              }
+            : null,
+          destination: row.destination
+            ? {
+                name: String(row.destination.name),
+                picture_url: row.destination.picture_url ?? null,
+              }
+            : null,
+        }));
+        setRoutes(rows);
+      }
+
       setLoading(false);
     })();
     return () => {
@@ -116,36 +148,41 @@ export default function OperatorRoutesTilesPage() {
     };
   }, []);
 
-  /* resolve all tile images */
+  /* Resolve signed URLs for each tile (pickup + destination) */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const entries = await Promise.all(
         routes.map(async (r) => {
-          const p = await resolveStorageUrl(r.pickup?.picture_url ?? null);
-          const d = await resolveStorageUrl(r.destination?.picture_url ?? null);
-          return [r.id, { p, d }] as const;
+          const pickupUrl = await signedUrl(r.pickup?.picture_url ?? null);
+          const destUrl = await signedUrl(r.destination?.picture_url ?? null);
+          return [r.id, { pickupUrl, destUrl }] as const;
         })
       );
-      if (!cancelled) setImgMap(Object.fromEntries(entries));
+      if (!cancelled) setThumbs(Object.fromEntries(entries));
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [routes]);
 
+  /* Filter (client-side) */
   const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
+    const s = q.trim();
     if (!s) return routes;
-    return routes.filter((r) =>
-      (r.route_name || r.name || "").toLowerCase().includes(s) ||
-      (r.pickup?.name || "").toLowerCase().includes(s) ||
-      (r.destination?.name || "").toLowerCase().includes(s)
+    return routes.filter(
+      (r) =>
+        matches(r.route_name || r.name || "", s) ||
+        matches(r.pickup?.name || "", s) ||
+        matches(r.destination?.name || "", s) ||
+        matches(r.frequency || "", s)
     );
   }, [routes, q]);
 
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center gap-3">
-        <label className="text-sm text-neutral-700">Operator</label>
+        <div className="text-sm text-neutral-700">Operator</div>
         {operatorLocked ? (
           <div className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm bg-neutral-50">
             <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
@@ -159,65 +196,73 @@ export default function OperatorRoutesTilesPage() {
           >
             <option value="">— Select —</option>
             {operators.map((o) => (
-              <option key={o.id} value={o.id}>{o.name}</option>
+              <option key={o.id} value={o.id}>
+                {o.name}
+              </option>
             ))}
           </select>
         )}
 
         <input
-          className="ml-auto border rounded-lg px-3 py-2"
+          className="ml-auto border rounded-lg px-3 py-2 w-64"
           placeholder="Search routes…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
       </div>
 
+      {/* Tiles */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {loading ? (
           <div className="p-4">Loading…</div>
         ) : !operatorId ? (
-          <div className="p-4">Choose an Operator to manage assignments.</div>
+          <div className="p-4 col-span-full">
+            {operatorLocked
+              ? "No operator is linked to this account."
+              : "Choose an Operator to manage assignments."}
+          </div>
         ) : filtered.length === 0 ? (
-          <div className="p-4">No routes.</div>
+          <div className="p-4 col-span-full">No routes.</div>
         ) : (
           filtered.map((r) => {
-            const imgs = imgMap[r.id] || {};
+            const t = thumbs[r.id] || { pickupUrl: null, destUrl: null };
             const title = r.route_name || r.name || "Route";
+            const sub = `${r.pickup?.name ?? "—"} • ${r.destination?.name ?? "—"}`;
+
             return (
               <Link
                 key={r.id}
-                href={`/operator-admin/routes/${r.id}?op=${operatorId}`}
-                className="block rounded-2xl border bg-white overflow-hidden shadow hover:shadow-md transition"
+                href={`/operator-admin/routes/${r.id}?op=${encodeURIComponent(
+                  operatorId
+                )}`}
+                className="block rounded-2xl overflow-hidden border bg-white shadow hover:shadow-md transition"
               >
-                {/* split collage */}
-                <div className="grid grid-cols-2 h-40 sm:h-48">
-                  <div
-                    className="bg-neutral-100"
-                    style={{
-                      backgroundImage: imgs.p ? `url(${imgs.p})` : undefined,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center",
+                {/* collage */}
+                <div className="relative h-40 sm:h-48 w-full flex">
+                  <img
+                    src={t.pickupUrl ?? ""}
+                    alt={r.pickup?.name || "pickup"}
+                    className="w-1/2 h-full object-cover"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.opacity = "0.2";
                     }}
-                    aria-label={r.pickup?.name || ""}
                   />
-                  <div
-                    className="bg-neutral-100"
-                    style={{
-                      backgroundImage: imgs.d ? `url(${imgs.d})` : undefined,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center",
+                  <img
+                    src={t.destUrl ?? ""}
+                    alt={r.destination?.name || "destination"}
+                    className="w-1/2 h-full object-cover"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.opacity = "0.2";
                     }}
-                    aria-label={r.destination?.name || ""}
                   />
                 </div>
 
-                <div className="p-3">
-                  <div className="font-medium truncate">{title}</div>
-                  <div className="text-sm text-neutral-600 truncate">
-                    {(r.pickup?.name || "—")} • {(r.destination?.name || "—")}
-                  </div>
+                {/* caption */}
+                <div className="p-3 space-y-1">
+                  <div className="font-medium">{title}</div>
+                  <div className="text-sm text-neutral-600 truncate">{sub}</div>
                   {r.frequency && (
-                    <div className="mt-2 inline-flex rounded-full border px-2 py-0.5 text-xs">
+                    <div className="mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-xs">
                       {r.frequency}
                     </div>
                   )}

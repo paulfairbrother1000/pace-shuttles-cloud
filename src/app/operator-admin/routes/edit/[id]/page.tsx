@@ -1,21 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useSearchParams, useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* ---------- Supabase ---------- */
+/* ---------- Supabase (browser) ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 /* ---------- Types ---------- */
-type PsUser = { id: string; operator_admin?: boolean | null; operator_id?: string | null; operator_name?: string | null };
-type Operator = { id: string; name: string };
-type Vehicle = { id: string; name: string; minseats: number; maxseats: number; active: boolean | null; operator_id: string | null };
-type Assignment = { route_id: string; vehicle_id: string; is_active: boolean; preferred: boolean };
+type PsUser = {
+  id: string;
+  operator_admin?: boolean | null;
+  operator_id?: string | null;
+  operator_name?: string | null;
+};
+
 type RouteRow = {
   id: string;
   route_name: string | null;
@@ -24,231 +26,336 @@ type RouteRow = {
   pickup_time: string | null;
   approx_duration_mins: number | null;
   approximate_distance_miles: number | null;
-  pickup?: { name: string; picture_url: string | null } | null;
-  destination?: { name: string; picture_url: string | null } | null;
+  pickup: { name: string; picture_url: string | null } | null;
+  destination: { name: string; picture_url: string | null } | null;
 };
 
-/* ---------- Image helpers ---------- */
+type Vehicle = {
+  id: string;
+  name: string;
+  minseats: number | string;
+  maxseats: number | string;
+  active: boolean | null;
+  operator_id: string | null;
+};
+
+type Assignment = {
+  route_id: string;
+  vehicle_id: string;
+  is_active: boolean;
+  preferred: boolean;
+};
+
+/* ---------- Helpers ---------- */
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
-async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
+async function signedUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
-  const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
-  if (pub) return pub;
-  const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  const { data } = await sb.storage
+    .from("images")
+    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
   return data?.signedUrl ?? null;
 }
 
-export default function OperatorRouteDetailPage() {
-  const params = useParams<{ id: string }>();
+/* ===================================================================== */
+
+export default function OperatorRouteDetailsPage({
+  params,
+}: {
+  params: { id: string };
+}) {
   const search = useSearchParams();
-  const urlOp = search.get("op") || "";
+  const preselectedOp = search.get("op") || "";
 
   /* ps_user */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
+  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
+
+  /* Operator context (we keep the op from the tiles page) */
+  const [operatorId, setOperatorId] = useState(preselectedOp);
+
+  /* Data */
+  const [route, setRoute] = useState<RouteRow | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [pickupUrl, setPickupUrl] = useState<string | null>(null);
+  const [destUrl, setDestUrl] = useState<string | null>(null);
+
+  /* UI */
+  const [msg, setMsg] = useState<string | null>(null);
+
+  /* Read ps_user once */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
       const u = raw ? (JSON.parse(raw) as PsUser) : null;
       setPsUser(u);
-    } catch { setPsUser(null); }
+      if (!preselectedOp && u?.operator_admin && u.operator_id) {
+        setOperatorId(u.operator_id);
+      }
+    } catch {
+      setPsUser(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
-  const initialOperatorId = operatorLocked ? (psUser?.operator_id || "") : urlOp;
-
-  /* operator + vehicles */
-  const [operators, setOperators] = useState<Operator[]>([]);
-  const [operatorId, setOperatorId] = useState<string>(initialOperatorId);
-
-  const [route, setRoute] = useState<RouteRow | null>(null);
-  const [pUrl, setPUrl] = useState<string | null>(null);
-  const [dUrl, setDUrl] = useState<string | null>(null);
-
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  /* load operators + route */
+  /* Load the route (with pickup/destination + pictures) */
   useEffect(() => {
     let off = false;
     (async () => {
-      setLoading(true);
-      const [ops, r] = await Promise.all([
-        sb.from("operators").select("id,name").order("name"),
-        sb
-          .from("routes")
-          .select(`
-            id,
-            route_name,
-            name,
-            frequency,
-            pickup_time,
-            approx_duration_mins,
-            approximate_distance_miles,
-            pickup:pickup_id ( name, picture_url ),
-            destination:destination_id ( name, picture_url )
-          `)
-          .eq("id", params.id)
-          .single(),
-      ]);
+      setMsg(null);
+      const { data, error } = await sb
+        .from("routes")
+        .select(
+          `
+          id,
+          route_name,
+          name,
+          frequency,
+          pickup_time,
+          approx_duration_mins,
+          approximate_distance_miles,
+          pickup:pickup_id ( name, picture_url ),
+          destination:destination_id ( name, picture_url )
+        `
+        )
+        .eq("id", params.id)
+        .single();
+
       if (off) return;
 
-      setOperators((ops.data as Operator[]) || []);
-
-      if (!r.error && r.data) {
-        const row = r.data as any;
-        const mapped: RouteRow = {
-          id: row.id,
-          route_name: row.route_name ?? null,
-          name: row.name ?? null,
-          frequency: row.frequency ?? null,
-          pickup_time: row.pickup_time ?? null,
-          approx_duration_mins: row.approx_duration_mins ?? null,
-          approximate_distance_miles: row.approximate_distance_miles ?? null,
-          pickup: row.pickup ? { name: row.pickup.name, picture_url: row.pickup.picture_url } : null,
-          destination: row.destination ? { name: row.destination.name, picture_url: row.destination.picture_url } : null,
-        };
-        setRoute(mapped);
-
-        const [rp, rd] = await Promise.all([
-          resolveStorageUrl(mapped.pickup?.picture_url ?? null),
-          resolveStorageUrl(mapped.destination?.picture_url ?? null),
-        ]);
-        setPUrl(rp);
-        setDUrl(rd);
+      if (error || !data) {
+        setMsg(error?.message || "Route not found.");
+        setRoute(null);
+        return;
       }
-      setLoading(false);
+
+      const r: RouteRow = {
+        id: data.id,
+        route_name: data.route_name ?? null,
+        name: data.name ?? null,
+        frequency: data.frequency ?? null,
+        pickup_time: data.pickup_time ?? null,
+        approx_duration_mins: data.approx_duration_mins ?? null,
+        approximate_distance_miles: data.approximate_distance_miles ?? null,
+        pickup: data.pickup
+          ? {
+              name: String(data.pickup.name),
+              picture_url: data.pickup.picture_url ?? null,
+            }
+          : null,
+        destination: data.destination
+          ? {
+              name: String(data.destination.name),
+              picture_url: data.destination.picture_url ?? null,
+            }
+          : null,
+      };
+
+      setRoute(r);
+
+      // images
+      const [p, d] = await Promise.all([
+        signedUrl(r.pickup?.picture_url ?? null),
+        signedUrl(r.destination?.picture_url ?? null),
+      ]);
+      setPickupUrl(p);
+      setDestUrl(d);
     })();
-    return () => { off = true; };
+    return () => {
+      off = true;
+    };
   }, [params.id]);
 
-  /* load vehicles for operatorId + assignments for route */
+  /* Load vehicles for the operator in context */
   useEffect(() => {
     if (!operatorId) return;
     let off = false;
     (async () => {
-      const [vs, asn] = await Promise.all([
-        sb.from("vehicles").select("id,name,minseats,maxseats,active,operator_id").eq("operator_id", operatorId).eq("active", true).order("name"),
-        sb.from("route_vehicle_assignments").select("route_id,vehicle_id,is_active,preferred").eq("route_id", params.id),
-      ]);
-      if (!off) {
-        setVehicles((vs.data as Vehicle[]) || []);
-        setAssignments(((asn.data as Assignment[]) || []).filter(a => a.is_active));
-      }
+      const { data, error } = await sb
+        .from("vehicles")
+        .select("id,name,minseats,maxseats,active,operator_id")
+        .eq("operator_id", operatorId)
+        .eq("active", true)
+        .order("name");
+      if (off) return;
+      if (error) setMsg(error.message);
+      setVehicles((data as Vehicle[]) || []);
     })();
-    return () => { off = true; };
-  }, [operatorId, params.id]);
+    return () => {
+      off = true;
+    };
+  }, [operatorId]);
 
-  const assignedIds = useMemo(() => new Set(assignments.map(a => a.vehicle_id)), [assignments]);
-  const preferred = useMemo(() => assignments.find(a => a.preferred), [assignments]);
-
+  /* Load current assignments for this route */
   async function reloadAssignments() {
-    const { data } = await sb
+    const { data, error } = await sb
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
-      .eq("route_id", params.id);
-    setAssignments(((data as Assignment[]) || []).filter(a => a.is_active));
+      .eq("route_id", params.id)
+      .eq("is_active", true);
+    if (error) setMsg(error.message);
+    setAssignments((data as Assignment[]) || []);
   }
+  useEffect(() => {
+    reloadAssignments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.id]);
 
-  async function toggleAssign(vehicleId: string, currentlyAssigned: boolean) {
-    if (!route) return;
-    if (currentlyAssigned) {
-      await sb.from("route_vehicle_assignments")
-        .update({ is_active: false, preferred: false })
-        .eq("route_id", route.id)
-        .eq("vehicle_id", vehicleId);
-    } else {
-      await sb.from("route_vehicle_assignments")
-        .upsert({ route_id: route.id, vehicle_id: vehicleId, is_active: true, preferred: false }, { onConflict: "route_id,vehicle_id" });
+  const preferred = useMemo(
+    () => assignments.find((a) => a.preferred),
+    [assignments]
+  );
+  const assignedIds = useMemo(
+    () => new Set(assignments.map((a) => a.vehicle_id)),
+    [assignments]
+  );
+
+  /* Actions */
+  async function toggleAssign(vehicleId: string, assigned: boolean) {
+    try {
+      if (assigned) {
+        const { error } = await sb
+          .from("route_vehicle_assignments")
+          .update({ is_active: false, preferred: false })
+          .eq("route_id", params.id)
+          .eq("vehicle_id", vehicleId);
+        if (error) throw error;
+      } else {
+        const { error } = await sb
+          .from("route_vehicle_assignments")
+          .upsert(
+            {
+              route_id: params.id,
+              vehicle_id: vehicleId,
+              is_active: true,
+              preferred: false,
+            },
+            { onConflict: "route_id,vehicle_id" }
+          );
+        if (error) throw error;
+      }
+      await reloadAssignments();
+    } catch (e: any) {
+      setMsg(e.message ?? "Unable to update.");
     }
-    await reloadAssignments();
   }
 
   async function setPreferred(vehicleId: string) {
-    if (!route) return;
-    await sb.from("route_vehicle_assignments").update({ preferred: false }).eq("route_id", route.id).eq("preferred", true);
-    await sb.from("route_vehicle_assignments").upsert(
-      { route_id: route.id, vehicle_id: vehicleId, is_active: true, preferred: true },
-      { onConflict: "route_id,vehicle_id" }
-    );
-    await reloadAssignments();
+    try {
+      const { error: clearErr } = await sb
+        .from("route_vehicle_assignments")
+        .update({ preferred: false })
+        .eq("route_id", params.id)
+        .eq("preferred", true);
+      if (clearErr) throw clearErr;
+
+      const { error } = await sb
+        .from("route_vehicle_assignments")
+        .upsert(
+          {
+            route_id: params.id,
+            vehicle_id: vehicleId,
+            is_active: true,
+            preferred: true,
+          },
+          { onConflict: "route_id,vehicle_id" }
+        );
+      if (error) throw error;
+
+      await reloadAssignments();
+    } catch (e: any) {
+      setMsg(e.message ?? "Unable to set preferred.");
+    }
   }
 
-  const title = route?.route_name || route?.name || "Route";
+  /* Render */
+  if (!route) {
+    return (
+      <div className="p-4">
+        <h1 className="text-2xl font-semibold">Route</h1>
+        <p className="mt-2 text-neutral-600">{msg || "Loading…"}</p>
+      </div>
+    );
+  }
+
+  const title = route.route_name || route.name || "Route";
+  const sub = `${route.pickup?.name ?? "—"} → ${route.destination?.name ?? "—"}`;
 
   return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center gap-3">
-        <Link href={`/operator-admin/routes${operatorId ? `?op=${operatorId}` : ""}`} className="rounded-full border px-3 py-1">
-          ← Back
-        </Link>
-        <h1 className="text-xl font-semibold">{title}</h1>
-      </div>
+    <div className="p-4 space-y-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold">{title}</h1>
+        <p className="text-neutral-600">{sub}</p>
+      </header>
 
-      {/* collage + meta */}
-      <div className="rounded-2xl border bg-white overflow-hidden shadow">
-        <div className="grid grid-cols-2 h-64 sm:h-80">
-          <div
-            className="bg-neutral-100"
-            style={{
-              backgroundImage: pUrl ? `url(${pUrl})` : undefined,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
+      {/* Collage */}
+      <div className="rounded-2xl overflow-hidden border bg-white shadow">
+        <div className="flex h-64 w-full">
+          <img
+            src={pickupUrl ?? ""}
+            alt={route.pickup?.name || "pickup"}
+            className="w-1/2 h-full object-cover"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.opacity = "0.2";
             }}
-            aria-label={route?.pickup?.name || ""}
           />
-          <div
-            className="bg-neutral-100"
-            style={{
-              backgroundImage: dUrl ? `url(${dUrl})` : undefined,
-              backgroundSize: "cover",
-              backgroundPosition: "center",
+          <img
+            src={destUrl ?? ""}
+            alt={route.destination?.name || "destination"}
+            className="w-1/2 h-full object-cover"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.opacity = "0.2";
             }}
-            aria-label={route?.destination?.name || ""}
           />
         </div>
 
-        <div className="p-4 grid sm:grid-cols-4 gap-4 text-sm text-neutral-700">
+        <div className="grid grid-cols-2 gap-4 p-4 text-sm text-neutral-700">
           <div>
             <div className="text-neutral-500">Frequency</div>
-            <div>{route?.frequency || "—"}</div>
+            <div>{route.frequency ?? "—"}</div>
           </div>
           <div>
             <div className="text-neutral-500">Pickup time (local)</div>
-            <div>{route?.pickup_time || "—"}</div>
+            <div>{route.pickup_time ?? "—"}</div>
           </div>
           <div>
             <div className="text-neutral-500">Duration</div>
-            <div>{route?.approx_duration_mins ? `${route.approx_duration_mins} mins` : "—"}</div>
+            <div>{route.approx_duration_mins ?? "—"} mins</div>
           </div>
           <div>
             <div className="text-neutral-500">Distance</div>
-            <div>{route?.approximate_distance_miles ?? "—"} {route?.approximate_distance_miles ? "mi" : ""}</div>
+            <div>{route.approximate_distance_miles ?? "—"} mi</div>
           </div>
         </div>
       </div>
 
-      {/* operator context (only if not locked AND no op in url) */}
-      {!initialOperatorId && !operatorLocked && (
-        <div className="rounded-2xl border bg-white shadow p-4 flex items-center gap-3">
-          <label className="text-sm text-neutral-700">Operator</label>
-          <select className="border rounded-lg px-3 py-2" value={operatorId} onChange={(e) => setOperatorId(e.target.value)}>
-            <option value="">— Select —</option>
-            {operators.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-          </select>
-        </div>
-      )}
-
-      {/* vehicles */}
-      <div className="rounded-2xl border bg-white shadow p-4">
-        {!operatorId ? (
-          <div>Select an operator to assign vehicles.</div>
-        ) : vehicles.length === 0 ? (
-          <div>No active vehicles for this operator.</div>
+      {/* Operator context (locked if op admin). We DO NOT force re-selection. */}
+      <div className="rounded-2xl border bg-white shadow p-4 flex items-center gap-3">
+        <div className="text-sm text-neutral-600">Operator</div>
+        {operatorLocked ? (
+          <div className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm bg-neutral-50">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+            {psUser?.operator_name || psUser?.operator_id}
+          </div>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            {vehicles.map((v) => {
+          <div className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm bg-neutral-50">
+            {operatorId || "—"}
+          </div>
+        )}
+        {msg && <span className="ml-auto text-sm text-neutral-600">{msg}</span>}
+      </div>
+
+      {/* Assignment controls */}
+      <section className="rounded-2xl border bg-white shadow p-4 space-y-3">
+        <div className="text-sm text-neutral-600">Select vehicles</div>
+        <div className="flex flex-wrap gap-2">
+          {vehicles.length === 0 ? (
+            <span className="text-sm text-neutral-500">
+              No active vehicles for this operator.
+            </span>
+          ) : (
+            vehicles.map((v) => {
               const assigned = assignedIds.has(v.id);
               const isPref = preferred?.vehicle_id === v.id;
               return (
@@ -258,24 +365,41 @@ export default function OperatorRouteDetailPage() {
                     assigned ? "bg-black text-white border-black" : "bg-white"
                   }`}
                 >
-                  <button onClick={() => toggleAssign(v.id, assigned)} title={assigned ? "Unassign" : "Assign"}>
+                  <button
+                    className="outline-none"
+                    title={
+                      assigned ? "Unassign from route" : "Assign to route"
+                    }
+                    onClick={() => toggleAssign(v.id, assigned)}
+                  >
                     {v.name} ({v.minseats}–{v.maxseats})
                   </button>
                   <button
                     className={`rounded-full border px-2 py-0.5 text-xs ${
-                      isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
+                      isPref
+                        ? "bg-yellow-400 text-black border-yellow-500"
+                        : "bg-white text-black border-neutral-300"
                     }`}
-                    title="Preferred"
+                    title="Mark as preferred"
                     onClick={() => setPreferred(v.id)}
                   >
                     ★
                   </button>
                 </div>
               );
-            })}
-          </div>
-        )}
-      </div>
+            })
+          )}
+        </div>
+
+        <div className="text-sm text-neutral-600">
+          Preferred:{" "}
+          <span className="font-medium">
+            {preferred
+              ? vehicles.find((v) => v.id === preferred.vehicle_id)?.name ?? "—"
+              : "—"}
+          </span>
+        </div>
+      </section>
     </div>
   );
 }

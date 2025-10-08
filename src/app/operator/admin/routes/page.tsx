@@ -1,7 +1,13 @@
-// src/app/operator/admin/routes/page.tsx
-import { redirect } from "next/navigation";
+"use client";
 
-export default function LegacyOperatorAdminRoutesRedirect() {
-  // Forward old menu path to the new operator-admin routes tiles
-  redirect("/operator-admin/routes");
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
+/** Passthrough so legacy menu entry keeps working. */
+export default function OperatorAdminRoutesPassthrough() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/operator-admin/routes");
+  }, [router]);
+  return null;
 }
