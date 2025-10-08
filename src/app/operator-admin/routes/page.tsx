@@ -5,7 +5,32 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* ---------- SAME publicImage helper you use elsewhere ---------- */
+/* ---------- Types ---------- */
+type UUID = string;
+
+type PsUser = {
+  id: UUID;
+  first_name?: string | null;
+  operator_admin?: boolean | null;
+  operator_id?: string | null;
+  operator_name?: string | null;
+};
+
+type Operator = { id: UUID; name: string };
+
+type RouteRow = {
+  id: UUID;
+  route_name: string | null;
+  name: string | null;
+  frequency: string | null;
+  pickup?: { name: string; picture_url: string | null } | null;
+  destination?: { name: string; picture_url: string | null } | null;
+  journey_type_id: string | null;
+};
+
+type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
+
+/* ---------- SAME public-image helper used elsewhere ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -25,8 +50,10 @@ function publicImage(input?: string | null): string | undefined {
           ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
           : `${raw}?v=5`;
       }
-      return raw;
-    } catch { /* ignore */ }
+      return raw; // already a normal absolute URL
+    } catch {
+      /* ignore */
+    }
   }
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -49,33 +76,6 @@ const sb =
       )
     : null;
 
-/* ---------- Types ---------- */
-type UUID = string;
-
-type PsUser = {
-  id: UUID;
-  first_name?: string | null;
-  operator_admin?: boolean | null;
-  operator_id?: string | null;
-  operator_name?: string | null;
-};
-
-type Operator = { id: UUID; name: string };
-
-type RouteRow = {
-  id: UUID;
-  route_name: string | null;
-  name: string | null;
-  frequency: string | null;
-  journey_type_id: string | null;              // ⬅️ needed to filter by allowed types
-  pickup?: { name: string; picture_url: string | null } | null;
-  destination?: { name: string; picture_url: string | null } | null;
-};
-
-type OpTypeRel = { operator_id: string; journey_type_id: string };
-
-/* ===================================================================== */
-
 export default function OperatorRoutesTilesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
@@ -84,12 +84,12 @@ export default function OperatorRoutesTilesPage() {
   const [operatorId, setOperatorId] = useState<string>("");
 
   const [routes, setRoutes] = useState<RouteRow[]>([]);
-  const [opTypeRels, setOpTypeRels] = useState<OpTypeRel[]>([]);
+  const [opTypeRels, setOpTypeRels] = useState<OperatorTypeRel[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
 
-  /* read ps_user + preselect operator for operator admins */
+  // read ps_user and pre-select operator for operator admins
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -103,7 +103,7 @@ export default function OperatorRoutesTilesPage() {
     }
   }, []);
 
-  /* lookups + routes (global) + operator->journey_type relations */
+  // initial lookups + routes
   useEffect(() => {
     let off = false;
     (async () => {
@@ -133,7 +133,8 @@ export default function OperatorRoutesTilesPage() {
       if (off) return;
 
       if (ops.data) setOperators((ops.data as Operator[]) || []);
-      if (rels.data) setOpTypeRels((rels.data as OpTypeRel[]) || []);
+      if (rels.data) setOpTypeRels((rels.data as OperatorTypeRel[]) || []);
+
       if (r.data) {
         const rows: RouteRow[] = ((r.data as any[]) || []).map((row) => ({
           id: row.id,
@@ -153,27 +154,29 @@ export default function OperatorRoutesTilesPage() {
 
       setLoading(false);
     })();
-    return () => { off = true; };
+    return () => {
+      off = true;
+    };
   }, []);
 
-  /* allowed journey types for current operator */
-  const allowedTypeIds = useMemo(
-    () => new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id)),
-    [opTypeRels, operatorId]
-  );
+  // which journey types are allowed for current operator?
+  const allowedTypeIds = useMemo(() => {
+    if (!operatorId) return new Set<string>();
+    return new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id));
+  }, [opTypeRels, operatorId]);
 
-  /* filter routes:
-     1) must match operator's allowed journey types
-     2) search by name/pickup/destination
-  */
+  // filter by operator's allowed journey types + search
   const filtered = useMemo(() => {
-    if (!operatorId) return [] as RouteRow[]; // require operator choice (or lock)
-    const byType = routes.filter(
-      r => !!r.journey_type_id && allowedTypeIds.has(r.journey_type_id)
-    );
     const s = q.trim().toLowerCase();
-    if (!s) return byType;
-    return byType.filter(r =>
+
+    // If operator is selected (or locked), only show routes whose journey_type_id
+    // is allowed for that operator. (If a route has null journey_type_id, hide it.)
+    const base = operatorId
+      ? routes.filter(r => r.journey_type_id && allowedTypeIds.has(r.journey_type_id))
+      : routes;
+
+    if (!s) return base;
+    return base.filter((r) =>
       `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`
         .toLowerCase()
         .includes(s)
@@ -225,23 +228,26 @@ export default function OperatorRoutesTilesPage() {
         {loading ? (
           <div className="col-span-full p-4">Loading…</div>
         ) : !operatorId && !isOpAdmin ? (
-          <div className="col-span-full p-4">Choose an Operator to view eligible routes.</div>
+          <div className="col-span-full p-4">Choose an Operator to manage assignments.</div>
         ) : filtered.length === 0 ? (
-          <div className="col-span-full p-4">No eligible routes for this operator.</div>
+          <div className="col-span-full p-4">No routes.</div>
         ) : (
           filtered.map((r) => {
             const pImg = publicImage(r.pickup?.picture_url);
             const dImg = publicImage(r.destination?.picture_url);
-            const href = `/operator-admin/routes/${r.id}?op=${encodeURIComponent(
-              isOpAdmin ? (psUser?.operator_id || "") : operatorId
-            )}`;
+
+            // ✅ Link back to the existing detail page path (pre-update behavior)
+            const effectiveOp =
+              isOpAdmin ? (psUser?.operator_id || "") : operatorId;
+            const href = `/operator-admin/routes/edit/${r.id}?op=${encodeURIComponent(effectiveOp)}`;
+
             return (
               <Link
                 key={r.id}
                 href={href}
                 className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden"
               >
-                {/* Two images */}
+                {/* Two images area */}
                 <div className="relative w-full aspect-[16/7] grid grid-cols-2">
                   <div className="relative">
                     {pImg ? (
@@ -252,7 +258,13 @@ export default function OperatorRoutesTilesPage() {
                   </div>
                   <div className="relative">
                     {dImg ? (
-                      <Image src={dImg} alt={r.destination?.name || "Destination"} fill unoptimized className="object-cover" />
+                      <Image
+                        src={dImg}
+                        alt={r.destination?.name || "Destination"}
+                        fill
+                        unoptimized
+                        className="object-cover"
+                      />
                     ) : (
                       <div className="absolute inset-0 bg-neutral-100" />
                     )}
