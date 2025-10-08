@@ -1,3 +1,4 @@
+// app/admin/routes/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -37,10 +38,95 @@ type Row = {
   season_to: string | null;
 };
 
+/* ---------- Helpers ---------- */
 function toNum(v: string): number | null {
   if (!v?.trim()) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+const placeholder = "/placeholder.png";
+
+/** Pickup | Destination split image collage (left=pickup, right=destination) */
+function CollageThumb({
+  pickupImg,
+  destImg,
+  className = "",
+  alt,
+}: {
+  pickupImg?: string | null;
+  destImg?: string | null;
+  className?: string;
+  alt?: string;
+}) {
+  return (
+    <div className={`relative overflow-hidden rounded-xl shadow-sm ${className}`}>
+      <div className="grid grid-cols-2 h-full w-full">
+        <img
+          src={pickupImg || placeholder}
+          alt={alt || "Pick-up image"}
+          className="h-full w-full object-cover"
+        />
+        <img
+          src={destImg || placeholder}
+          alt={alt || "Destination image"}
+          className="h-full w-full object-cover"
+        />
+      </div>
+      <div className="pointer-events-none absolute inset-y-0 left-1/2 w-[1px] bg-white/70 mix-blend-overlay" />
+    </div>
+  );
+}
+
+/** Simple tile grid used on mobile pickers */
+function TileGrid<T extends { id: string; name: string; picture_url?: string | null }>({
+  title,
+  items,
+  selectedId,
+  onSelect,
+  emptyHint,
+}: {
+  title: string;
+  items: T[];
+  selectedId?: string | null;
+  onSelect: (id: string) => void;
+  emptyHint?: string;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="text-sm text-neutral-600">{title}</div>
+      {items.length === 0 ? (
+        <div className="rounded-xl border p-4 text-sm text-neutral-600 bg-white">
+          {emptyHint || "Nothing to show yet."}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {items.map((it) => {
+            const active = selectedId === it.id;
+            return (
+              <button
+                key={it.id}
+                onClick={() => onSelect(it.id)}
+                className={`text-left rounded-2xl border bg-white overflow-hidden transition shadow-sm ${
+                  active ? "ring-2 ring-blue-600 border-blue-600" : "hover:shadow"
+                }`}
+              >
+                <div className="aspect-[16/9] w-full overflow-hidden">
+                  <img
+                    src={it.picture_url || placeholder}
+                    alt={it.name}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <div className="p-3">
+                  <div className="font-medium">{it.name}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function RoutesPage() {
@@ -149,7 +235,6 @@ export default function RoutesPage() {
     }
     setRows((data as Row[]) || []);
   }
-
   function resetForm() {
     setEditingId(null);
     setCountryId("");
@@ -190,7 +275,7 @@ export default function RoutesPage() {
     setMsg(`Editing: ${data.route_name || data.name || id}`);
   }
 
-  /* ---------- SAVE via API (prevents 405) ---------- */
+  /* ---------- SAVE via API (same payload contract) ---------- */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -226,7 +311,7 @@ export default function RoutesPage() {
         frequency: frequency || null,
         is_active: isActive,
 
-        // NEW: persist the auto-generated name
+        // persist the auto-generated name
         route_name: derivedRouteName || null,
 
         // Journey type + legacy text kept in sync
@@ -278,6 +363,7 @@ export default function RoutesPage() {
     setMsg("Deleted.");
   }
 
+  /* ---------- Search / derived for list ---------- */
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return rows;
@@ -289,11 +375,10 @@ export default function RoutesPage() {
 
   const nameFor = (id: string | null | undefined, list: { id: string; name: string }[]) =>
     (id && list.find((x) => x.id === id)?.name) || "—";
-  const thumbPickup = (id: string | null | undefined) =>
+  const imgPickup = (id: string | null | undefined) =>
     (id && pickups.find((p) => p.id === id)?.picture_url) || null;
-  const thumbDest = (id: string | null | undefined) =>
+  const imgDest = (id: string | null | undefined) =>
     (id && destinations.find((d) => d.id === id)?.picture_url) || null;
-
   return (
     <div className="space-y-8">
       <header>
@@ -304,7 +389,7 @@ export default function RoutesPage() {
       {/* Form */}
       <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow">
         <form onSubmit={onSave} className="space-y-5">
-          {/* Country / Pickup / Destination */}
+          {/* Country (sticky first step) */}
           <div className="grid md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Country *</label>
@@ -318,27 +403,55 @@ export default function RoutesPage() {
               </select>
             </div>
 
-            <div>
+            {/* Desktop selects */}
+            <div className="hidden md:block">
               <label className="block text-sm text-neutral-600 mb-1">Pick-up Point *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={pickupId} onChange={(e) => setPickupId(e.target.value)} disabled={!countryId}>
                 <option value="">— Select —</option>
                 {filteredPickups.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-              {pickup?.picture_url && (
-                <img src={pickup.picture_url} alt={pickup.name} className="mt-2 h-24 w-40 object-cover rounded border" />
-              )}
             </div>
-
-            <div>
+            <div className="hidden md:block">
               <label className="block text-sm text-neutral-600 mb-1">Destination *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!countryId}>
                 <option value="">— Select —</option>
                 {filteredDestinations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
-              {destination?.picture_url && (
-                <img src={destination.picture_url} alt={destination.name} className="mt-2 h-24 w-40 object-cover rounded border" />
-              )}
             </div>
+
+            {/* Collage preview (desktop) */}
+            <div className="hidden md:flex items-end">
+              <CollageThumb
+                pickupImg={pickup?.picture_url}
+                destImg={destination?.picture_url}
+                className="h-24 w-full"
+                alt={derivedRouteName || "Route collage"}
+              />
+            </div>
+          </div>
+
+          {/* Mobile tile pickers */}
+          <div className="md:hidden space-y-6">
+            <TileGrid
+              title="Choose a pick-up point *"
+              items={filteredPickups}
+              selectedId={pickupId}
+              onSelect={setPickupId}
+              emptyHint={countryId ? "No pick-up points in this country yet." : "Pick a country first."}
+            />
+            <TileGrid
+              title="Choose a destination *"
+              items={filteredDestinations}
+              selectedId={destinationId}
+              onSelect={setDestinationId}
+              emptyHint={countryId ? "No destinations in this country yet." : "Pick a country first."}
+            />
+            <CollageThumb
+              pickupImg={pickup?.picture_url}
+              destImg={destination?.picture_url}
+              className="aspect-[16/9] w-full"
+              alt={derivedRouteName || "Route collage"}
+            />
           </div>
 
           {/* Derived route name + metrics */}
@@ -404,7 +517,7 @@ export default function RoutesPage() {
                 !countryId ||
                 !pickupId ||
                 !destinationId ||
-                (!editingId && !journeyTypeId) // Journey Type required only on create
+                (!editingId && !journeyTypeId)
               }
               className="inline-flex rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
             >
@@ -424,7 +537,6 @@ export default function RoutesPage() {
           </div>
         </form>
       </section>
-
       {/* List */}
       <section className="space-y-3">
         <div className="flex gap-2">
@@ -436,7 +548,49 @@ export default function RoutesPage() {
           />
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow">
+        {/* Mobile cards */}
+        <div className="md:hidden space-y-3">
+          {loading ? (
+            <div className="rounded-xl border bg-white p-4">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="rounded-xl border bg-white p-4">No routes yet.</div>
+          ) : (
+            filtered.map((r) => (
+              <div key={r.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+                <CollageThumb
+                  pickupImg={imgPickup(r.pickup_id)}
+                  destImg={imgDest(r.destination_id)}
+                  className="aspect-[16/9] w-full"
+                  alt={`${nameFor(r.pickup_id, pickups)} → ${nameFor(r.destination_id, destinations)}`}
+                />
+                <div className="p-3 space-y-1">
+                  <div className="font-medium">{r.route_name || r.name || "—"}</div>
+                  <div className="text-sm text-neutral-600">
+                    {countryName(r.country_id)} · {journeyTypeName(r.journey_type_id) !== "—"
+                      ? journeyTypeName(r.journey_type_id)
+                      : (r.transport_type ?? "—")}
+                  </div>
+                  <div className="text-xs text-neutral-600">
+                    {r.frequency || "—"} · {r.approx_duration_mins ?? "—"} mins · {r.approximate_distance_miles ?? "—"} mi
+                  </div>
+                  <div className="pt-2 flex gap-2">
+                    <button className="px-3 py-1 rounded-full border" onClick={() => loadOne(r.id)}>Edit</button>
+                    <button
+                      className="px-3 py-1 rounded-full border"
+                      onClick={() => onRemove(r)}
+                      disabled={deletingId === r.id}
+                    >
+                      {deletingId === r.id ? "Deleting…" : "Delete"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop table */}
+        <div className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
           {loading ? (
             <div className="p-4">Loading…</div>
           ) : filtered.length === 0 ? (
@@ -450,7 +604,7 @@ export default function RoutesPage() {
                   <th className="text-left p-3">Pick-up</th>
                   <th className="text-left p-3">Destination</th>
                   <th className="text-left p-3">Journey Type</th>
-                  <th className="text-left p-3">Frequency</th>{/* ← added */}
+                  <th className="text-left p-3">Frequency</th>
                   <th className="text-left p-3">Duration (mins)</th>
                   <th className="text-left p-3">Distance (mi)</th>
                   <th className="text-left p-3">Active</th>
@@ -472,29 +626,21 @@ export default function RoutesPage() {
                     <td className="p-3">{countryName(r.country_id)}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        {thumbPickup(r.pickup_id) ? (
-                          <img
-                            src={thumbPickup(r.pickup_id)!}
-                            className="h-10 w-16 object-cover rounded border"
-                            alt="pickup"
-                          />
-                        ) : (
-                          <div className="h-10 w-16 rounded border bg-neutral-100" />
-                        )}
+                        <img
+                          src={imgPickup(r.pickup_id) || placeholder}
+                          className="h-10 w-16 object-cover rounded border"
+                          alt="pickup"
+                        />
                         <span>{nameFor(r.pickup_id, pickups)}</span>
                       </div>
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        {thumbDest(r.destination_id) ? (
-                          <img
-                            src={thumbDest(r.destination_id)!}
-                            className="h-10 w-16 object-cover rounded border"
-                            alt="destination"
-                          />
-                        ) : (
-                          <div className="h-10 w-16 rounded border bg-neutral-100" />
-                        )}
+                        <img
+                          src={imgDest(r.destination_id) || placeholder}
+                          className="h-10 w-16 object-cover rounded border"
+                          alt="destination"
+                        />
                         <span>{nameFor(r.destination_id, destinations)}</span>
                       </div>
                     </td>
@@ -503,7 +649,7 @@ export default function RoutesPage() {
                         ? journeyTypeName(r.journey_type_id)
                         : (r.transport_type ?? "—")}
                     </td>
-                    <td className="p-3">{r.frequency || "—"}</td>{/* ← added */}
+                    <td className="p-3">{r.frequency || "—"}</td>
                     <td className="p-3">{r.approx_duration_mins ?? "—"}</td>
                     <td className="p-3">{r.approximate_distance_miles ?? "—"}</td>
                     <td className="p-3">{(r.is_active ?? true) ? "Yes" : "No"}</td>
