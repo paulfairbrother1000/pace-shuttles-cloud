@@ -241,7 +241,8 @@ export default function OperatorStaffTilesPage() {
                   <img
                     src={thumbs[r.id]!}
                     alt={`${r.first_name} ${r.last_name}`}
-                    className="h-full w-full object-cover object-center"
+                      className="w-full h-44 sm:h-52 rounded-t-2xl object-cover"
+                        style={{ objectPosition: "50% 20%" }} // center horizontally, show more top vertically
                   />
                 ) : (
                   <span className="text-neutral-400 text-sm">No image</span>
