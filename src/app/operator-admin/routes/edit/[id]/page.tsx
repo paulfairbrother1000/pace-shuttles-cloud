@@ -5,7 +5,7 @@ import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* ---------- Helpers: same as Destinations page ---------- */
+/* ---------- Same publicImage helper you use on Destinations ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -58,6 +58,7 @@ type PsUser = {
   operator_id?: string | null;
   operator_name?: string | null;
 };
+
 type Operator = { id: UUID; name: string };
 
 type Vehicle = {
@@ -67,6 +68,7 @@ type Vehicle = {
   maxseats: number | string;
   active: boolean | null;
   operator_id: string | null;
+  type_id: string | null; // journey_types.id
 };
 
 type Assignment = {
@@ -76,6 +78,8 @@ type Assignment = {
   preferred: boolean;
 };
 
+type OpTypeRel = { operator_id: string; journey_type_id: string };
+
 type RouteRow = {
   id: UUID;
   route_name: string | null;
@@ -83,10 +87,7 @@ type RouteRow = {
   frequency: string | null;
   pickup?: { name: string; picture_url: string | null } | null;
   destination?: { name: string; picture_url: string | null } | null;
-  // Optional details (only if your schema has them)
-  pickup_time_local?: string | null;
-  duration_mins?: number | null;
-  distance_miles?: number | null;
+  // (We omit optional timing columns to avoid 400s if they don't exist)
 };
 
 export default function OperatorRouteDetailPage() {
@@ -97,10 +98,13 @@ export default function OperatorRouteDetailPage() {
 
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [operators, setOperators] = useState<Operator[]>([]);
-  const [operatorId, setOperatorId] = useState<string>(""); // vehicle context
+  const [operatorId, setOperatorId] = useState<string>(""); // vehicle assignment context
   const [route, setRoute] = useState<RouteRow | null>(null);
+
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [opTypeRels, setOpTypeRels] = useState<OpTypeRel[]>([]);
+
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -118,7 +122,7 @@ export default function OperatorRouteDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // lookups + route (with fallback if a column like pickup_time_local doesn't exist)
+  // lookups + route (only safe columns -> no 400 in console)
   useEffect(() => {
     let off = false;
     (async () => {
@@ -126,31 +130,9 @@ export default function OperatorRouteDetailPage() {
       setLoading(true);
       setMsg(null);
 
-      const ops = await sb.from("operators").select("id,name").order("name");
-      if (!off && ops.data) setOperators((ops.data as Operator[]) || []);
-
-      // Try rich select first…
-      let routeRes = await sb
-        .from("routes")
-        .select(
-          `
-          id,
-          route_name,
-          name,
-          frequency,
-          pickup_time_local,
-          duration_mins,
-          distance_miles,
-          pickup:pickup_id ( name, picture_url ),
-          destination:destination_id ( name, picture_url )
-        `
-        )
-        .eq("id", params.id)
-        .single();
-
-      // If the DB complains about a missing column, retry with minimal fields
-      if (routeRes.error && /does not exist/i.test(routeRes.error.message)) {
-        routeRes = await sb
+      const [ops, r, rels] = await Promise.all([
+        sb.from("operators").select("id,name").order("name"),
+        sb
           .from("routes")
           .select(
             `
@@ -163,31 +145,32 @@ export default function OperatorRouteDetailPage() {
           `
           )
           .eq("id", params.id)
-          .single();
-      }
+          .single(),
+        sb.from("operator_transport_types").select("operator_id,journey_type_id"),
+      ]);
 
-      if (!off) {
-        if (routeRes.data) {
-          const row = routeRes.data as any;
-          const r: RouteRow = {
-            id: row.id,
-            route_name: row.route_name ?? null,
-            name: row.name ?? null,
-            frequency: row.frequency ?? null,
-            pickup_time_local: row.pickup_time_local ?? null,
-            duration_mins: row.duration_mins ?? null,
-            distance_miles: row.distance_miles ?? null,
-            pickup: row.pickup
-              ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
-              : null,
-            destination: row.destination
-              ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
-              : null,
-          };
-          setRoute(r);
-        } else if (routeRes.error) {
-          setMsg(routeRes.error.message);
-        }
+      if (off) return;
+
+      if (ops.data) setOperators((ops.data as Operator[]) || []);
+      if (rels.data) setOpTypeRels((rels.data as OpTypeRel[]) || []);
+
+      if (r.data) {
+        const row = r.data as any;
+        const routeRow: RouteRow = {
+          id: row.id,
+          route_name: row.route_name ?? null,
+          name: row.name ?? null,
+          frequency: row.frequency ?? null,
+          pickup: row.pickup
+            ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
+            : null,
+          destination: row.destination
+            ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
+            : null,
+        };
+        setRoute(routeRow);
+      } else if (r.error) {
+        setMsg(r.error.message);
       }
 
       // Only pull assignments for this route
@@ -196,24 +179,24 @@ export default function OperatorRouteDetailPage() {
         .select("route_id,vehicle_id,is_active,preferred")
         .eq("route_id", params.id)
         .eq("is_active", true);
-
       if (!off && asn.data) setAssignments((asn.data as Assignment[]) || []);
 
-      if (!off) setLoading(false);
+      setLoading(false);
     })();
     return () => {
       off = true;
     };
   }, [params.id]);
 
-  // Load vehicles for the operator context
+  // Load vehicles for the selected operator
   useEffect(() => {
     if (!sb || !operatorId) return;
     let off = false;
     (async () => {
+      setMsg(null);
       const { data, error } = await sb
         .from("vehicles")
-        .select("id,name,minseats,maxseats,active,operator_id")
+        .select("id,name,minseats,maxseats,active,operator_id,type_id")
         .eq("operator_id", operatorId)
         .eq("active", true)
         .order("name");
@@ -227,7 +210,18 @@ export default function OperatorRouteDetailPage() {
     };
   }, [operatorId]);
 
-  // Derive assignment sets
+  // Allowed journey types for the selected operator
+  const allowedTypeIds = useMemo(() => {
+    if (!operatorId) return new Set<string>();
+    return new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id));
+  }, [opTypeRels, operatorId]);
+
+  // Filter vehicles so operator can only assign within their allowed journey types
+  const vehiclesFiltered = useMemo(
+    () => vehicles.filter(v => !v.type_id || allowedTypeIds.has(v.type_id)),
+    [vehicles, allowedTypeIds]
+  );
+
   const preferred = assignments.find((a) => a.preferred);
   const assignedIds = new Set(assignments.map((a) => a.vehicle_id));
 
@@ -311,7 +305,7 @@ export default function OperatorRouteDetailPage() {
 
       {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      {/* Hero images + facts */}
+      {/* Images + basic facts (frequency only since other fields are not guaranteed) */}
       <section className="rounded-2xl border bg-white shadow overflow-hidden">
         <div className="grid grid-cols-2 gap-0">
           <div className="relative aspect-[16/7]">
@@ -349,24 +343,20 @@ export default function OperatorRouteDetailPage() {
           </div>
           <div>
             <div className="text-neutral-500">Pickup time (local)</div>
-            <div className="font-medium">{route?.pickup_time_local || "—"}</div>
+            <div className="font-medium">—</div>
           </div>
           <div>
             <div className="text-neutral-500">Duration</div>
-            <div className="font-medium">
-              {route?.duration_mins != null ? `${route.duration_mins} mins` : "—"}
-            </div>
+            <div className="font-medium">—</div>
           </div>
           <div>
             <div className="text-neutral-500">Distance</div>
-            <div className="font-medium">
-              {route?.distance_miles != null ? `${route.distance_miles} mi` : "—"}
-            </div>
+            <div className="font-medium">—</div>
           </div>
         </div>
       </section>
 
-      {/* Operator context + vehicle assignment */}
+      {/* Operator context + filtered vehicle assignment */}
       <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
         <div className="flex items-center gap-3">
           <div className="text-sm text-neutral-600">Operator</div>
@@ -393,12 +383,12 @@ export default function OperatorRouteDetailPage() {
 
         {!operatorId ? (
           <div className="text-sm text-neutral-500">Choose an Operator to assign vehicles.</div>
-        ) : vehicles.length === 0 ? (
-          <div className="text-sm text-neutral-500">No active vehicles for this operator.</div>
+        ) : vehiclesFiltered.length === 0 ? (
+          <div className="text-sm text-neutral-500">No active vehicles for this operator (or none for the allowed journey types).</div>
         ) : (
           <>
             <div className="flex flex-wrap gap-2">
-              {vehicles.map((v) => {
+              {vehiclesFiltered.map((v) => {
                 const assigned = assignedIds.has(v.id);
                 const isPref = preferred?.vehicle_id === v.id;
                 return (
@@ -432,7 +422,7 @@ export default function OperatorRouteDetailPage() {
             <div className="text-sm">
               Preferred:&nbsp;
               <span className="font-medium">
-                {preferred ? vehicles.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
+                {preferred ? vehiclesFiltered.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
               </span>
             </div>
           </>
