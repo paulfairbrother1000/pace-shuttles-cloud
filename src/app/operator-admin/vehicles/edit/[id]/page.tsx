@@ -1,16 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import Link from "next/link";
+import { useRouter, useParams } from "next/navigation";
 
-/* ---------- Supabase (browser) ---------- */
+/* ───────────────────────── Supabase ───────────────────────── */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-/* ---------- Types ---------- */
+/* ───────────────────────── Types ───────────────────────── */
 type PsUser = {
   id: string;
   site_admin?: boolean | null;
@@ -19,7 +20,7 @@ type PsUser = {
   operator_name?: string | null;
 };
 
-type Operator = { id: string; name: string; country_id: string | null };
+type Operator = { id: string; name: string };
 type JourneyType = { id: string; name: string };
 type OperatorTypeRel = { operator_id: string; journey_type_id: string };
 
@@ -27,41 +28,58 @@ type VehicleRow = {
   id: string;
   name: string;
   active: boolean | null;
-  created_at: string | null;
+  created_at: string;
   minseats: number;
   maxseats: number;
   minvalue: number;
   description: string;
-  picture_url: string | null;
+  picture_url: string | null; // storage path or full url
   min_val_threshold: number | null;
-  type_id: string | null;
-  operator_id: string | null;
+  type_id: string | null;     // journey_types.id
+  operator_id: string | null; // operators.id
 };
 
-/* ---------- Helpers ---------- */
+/* ───────────────────────── Helpers ───────────────────────── */
 const toInt = (v: string) => (v.trim() === "" ? null : Number.parseInt(v, 10));
-const toFloat = (v: string) => (v.trim() === "" ? null : Number.parseFloat(v));
+const toFloat = (v: string) =>
+  v.trim() === "" ? null : Number.parseFloat(v);
 
-export default function VehicleEditPage() {
+const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+
+/** Resolve storage path or raw URL into a browser-loadable URL. */
+async function resolveImageUrl(pathOrUrl: string | null): Promise<string | null> {
+  if (!pathOrUrl) return null;
+  if (isHttp(pathOrUrl)) return pathOrUrl;
+
+  // Public URL (works if bucket/object is public)
+  const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
+  if (pub) return pub;
+
+  // Fallback: long-lived signed URL
+  const { data } = await sb.storage
+    .from("images")
+    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  return data?.signedUrl ?? null;
+}
+
+/* ───────────────────────── Page ───────────────────────── */
+export default function EditVehiclePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const isNew = !params?.id || params.id === "new";
+  const vehicleId = params?.id;
 
-  /* ps_user */
+  /* ps_user (locks operator for operator admins) */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
+  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
-      const u = raw ? (JSON.parse(raw) as PsUser) : null;
-      setPsUser(u);
-      if (u?.operator_admin && u.operator_id) {
-        setOperatorId((cur) => cur || u.operator_id!);
-      }
+      setPsUser(raw ? (JSON.parse(raw) as PsUser) : null);
     } catch {
       setPsUser(null);
     }
   }, []);
-  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
 
   /* Lookups */
   const [operators, setOperators] = useState<Operator[]>([]);
@@ -80,14 +98,27 @@ export default function VehicleEditPage() {
   const [active, setActive] = useState(true);
   const [pictureFile, setPictureFile] = useState<File | null>(null);
 
+  /* Image preview */
+  const [storedImageUrl, setStoredImageUrl] = useState<string | null>(null); // existing image (resolved)
+  const livePreviewUrl = useMemo(
+    () => (pictureFile ? URL.createObjectURL(pictureFile) : null),
+    [pictureFile]
+  );
+
   /* UI */
-  const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   /* Allowed types for selected operator */
   const allowedTypeIds = useMemo(
-    () => new Set(opTypeRels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)),
+    () =>
+      new Set(
+        opTypeRels
+          .filter((r) => r.operator_id === operatorId)
+          .map((r) => r.journey_type_id)
+      ),
     [opTypeRels, operatorId]
   );
   const allowedTypes = useMemo(
@@ -95,12 +126,14 @@ export default function VehicleEditPage() {
     [journeyTypes, allowedTypeIds]
   );
 
-  /* Load lookups + vehicle (if editing) */
+  /* Load lookups + row */
   useEffect(() => {
     let off = false;
     (async () => {
+      setLoading(true);
+
       const [ops, jts, rels] = await Promise.all([
-        sb.from("operators").select("id,name,country_id").order("name"),
+        sb.from("operators").select("id,name").order("name"),
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
       ]);
@@ -109,10 +142,15 @@ export default function VehicleEditPage() {
       if (jts.data) setJourneyTypes(jts.data as JourneyType[]);
       if (rels.data) setOpTypeRels(rels.data as OperatorTypeRel[]);
 
-      if (!isNew && params?.id) {
-        const { data, error } = await sb.from("vehicles").select("*").eq("id", params.id).single();
+      if (vehicleId) {
+        const { data, error } = await sb
+          .from("vehicles")
+          .select("*")
+          .eq("id", vehicleId)
+          .single();
+
         if (error || !data) {
-          setMsg(error?.message ?? "Could not load vehicle.");
+          setMsg(error?.message ?? "Vehicle not found.");
         } else {
           const v = data as VehicleRow;
           setOperatorId(v.operator_id ?? "");
@@ -124,27 +162,26 @@ export default function VehicleEditPage() {
           setMinValThreshold(String(v.min_val_threshold ?? ""));
           setDescription(v.description ?? "");
           setActive(v.active ?? true);
+
+          const resolved = await resolveImageUrl(v.picture_url);
+          setStoredImageUrl(resolved);
         }
-      } else {
-        // New form: default operator for op-admins
-        if (operatorLocked && psUser?.operator_id) setOperatorId(psUser.operator_id);
       }
+
+      if (!off) setLoading(false);
     })();
+
     return () => {
       off = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNew, params?.id]);
+  }, [vehicleId]);
 
-  function resetAndBack(message?: string) {
-    if (message) setMsg(message);
-    router.push("/operator-admin/vehicles");
-  }
-
-  async function uploadPictureIfAny(vehicleId: string): Promise<string | null> {
+  /* Upload image -> return storage path */
+  async function uploadImageIfAny(id: string): Promise<string | null> {
     if (!pictureFile) return null;
     const safe = pictureFile.name.replace(/[^\w.\-]+/g, "_");
-    const path = `vehicles/${vehicleId}/${Date.now()}-${safe}`;
+    const path = `vehicles/${id}/${Date.now()}-${safe}`;
     const { error } = await sb.storage
       .from("images")
       .upload(path, pictureFile, {
@@ -159,98 +196,66 @@ export default function VehicleEditPage() {
     return path;
   }
 
-  /* ---------- Save ---------- */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
-
-    const effectiveOperatorId = operatorLocked ? (psUser?.operator_id || "") : operatorId;
-    if (!effectiveOperatorId) return setMsg("Please choose an Operator.");
-    if (!typeId) return setMsg("Please select a Transport Type.");
-    if (!name.trim()) return setMsg("Please enter a Vehicle name.");
-
-    const minS = toInt(minSeats),
-      maxS = toInt(maxSeats),
-      minV = toFloat(minValue);
-    if (minS == null || maxS == null || minV == null) {
-      return setMsg("Seats and Min Value are required.");
-    }
-
-    setSaving(true);
-    setMsg(null);
+    if (!vehicleId) return;
 
     try {
-      if (isNew) {
-        const payload = {
-          operator_id: effectiveOperatorId,
-          type_id: typeId,
-          name: name.trim(),
-          active,
-          minseats: minS,
-          maxseats: maxS,
-          minvalue: minV,
-          description: description.trim() || "",
-          min_val_threshold: toFloat(minValThreshold),
-          picture_url: null as string | null,
-        };
+      setMsg(null);
 
-        const res = await fetch(`/api/admin/vehicles`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setSaving(false);
-          return setMsg(body?.error || `Create failed (${res.status})`);
-        }
-        const { id } = await res.json();
+      const effectiveOperatorId = operatorLocked
+        ? psUser?.operator_id || ""
+        : operatorId;
+      if (!effectiveOperatorId) return setMsg("Please choose an Operator.");
+      if (!name.trim()) return setMsg("Please enter a Vehicle name.");
+      if (!typeId) return setMsg("Please select a Transport Type.");
+      const minS = toInt(minSeats),
+        maxS = toInt(maxSeats),
+        minV = toFloat(minValue);
+      if (minS == null || maxS == null || minV == null)
+        return setMsg("Seats and Min Value are required.");
 
-        if (id && pictureFile) {
-          const path = await uploadPictureIfAny(id);
-          if (path) {
-            const patch = await fetch(`/api/admin/vehicles/${id}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json", Accept: "application/json" },
-              body: JSON.stringify({ picture_url: path }),
-            });
-            if (!patch.ok) {
-              const body = await patch.json().catch(() => ({}));
-              setMsg(body?.error || `Image save failed (${patch.status})`);
-            }
-          }
-        }
+      setSaving(true);
 
-        resetAndBack("Created ✅");
-      } else {
-        const id = params.id as string;
-        const path = await uploadPictureIfAny(id);
+      const payload: Record<string, any> = {
+        operator_id: effectiveOperatorId,
+        type_id: typeId,
+        name: name.trim(),
+        active,
+        minseats: minS,
+        maxseats: maxS,
+        minvalue: minV,
+        description: description.trim() || "",
+        min_val_threshold: toFloat(minValThreshold),
+      };
 
-        const payload: Record<string, any> = {
-          operator_id: effectiveOperatorId,
-          type_id: typeId,
-          name: name.trim(),
-          active,
-          minseats: minS,
-          maxseats: maxS,
-          minvalue: minV,
-          description: description.trim() || "",
-          min_val_threshold: toFloat(minValThreshold),
-        };
-        if (path) payload.picture_url = path;
+      // If a new file selected, upload and patch the path
+      const uploadedPath = await uploadImageIfAny(vehicleId);
+      if (uploadedPath) payload.picture_url = uploadedPath;
 
-        const res = await fetch(`/api/admin/vehicles/${id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setSaving(false);
-          return setMsg(body?.error || `Update failed (${res.status})`);
-        }
+      const res = await fetch(`/api/admin/vehicles/${vehicleId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
 
-        resetAndBack("Updated ✅");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setSaving(false);
+        return setMsg(body?.error || `Update failed (${res.status})`);
       }
+
+      // Refresh preview if we uploaded one
+      if (uploadedPath) {
+        const resolved = await resolveImageUrl(uploadedPath);
+        setStoredImageUrl(resolved);
+        setPictureFile(null);
+      }
+
+      setMsg("Updated ✅");
     } catch (err: any) {
       setMsg(err?.message ?? String(err));
     } finally {
@@ -258,14 +263,13 @@ export default function VehicleEditPage() {
     }
   }
 
-  /* ---------- Delete ---------- */
   async function onDelete() {
-    if (isNew || !params?.id) return;
+    if (!vehicleId) return;
     if (!confirm("Delete this vehicle?")) return;
 
-    setDeleting(true);
     try {
-      const res = await fetch(`/api/admin/vehicles/${params.id}`, {
+      setDeleting(true);
+      const res = await fetch(`/api/admin/vehicles/${vehicleId}`, {
         method: "DELETE",
         headers: { Accept: "application/json" },
       });
@@ -274,53 +278,82 @@ export default function VehicleEditPage() {
         setDeleting(false);
         return setMsg(body?.error || `Delete failed (${res.status})`);
       }
-      resetAndBack("Deleted.");
+      router.push("/operator-admin/vehicles");
     } catch (err: any) {
       setMsg(err?.message ?? String(err));
       setDeleting(false);
     }
   }
 
-  const lockedOperatorName =
-    (operatorLocked && (psUser?.operator_name || operators.find((o) => o.id === psUser!.operator_id!)?.name)) || "";
+  const operatorName =
+    (operatorLocked && (psUser?.operator_name ||
+      operators.find((o) => o.id === psUser?.operator_id)?.name)) || "";
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <button
-          onClick={() => router.back()}
-          className="rounded-full border px-3 py-1 text-sm"
+        <Link
+          href="/operator-admin/vehicles"
+          className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm"
         >
           ← Back
+        </Link>
+        <button
+          onClick={onDelete}
+          className="rounded-full border px-3 py-2 text-sm"
+          disabled={deleting}
+        >
+          {deleting ? "Deleting…" : "Delete"}
         </button>
-        {!isNew && (
-          <button
-            id="delete"
-            onClick={onDelete}
-            disabled={deleting}
-            className="rounded-full border px-3 py-1 text-sm"
-          >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
-        )}
       </div>
 
       <header>
-        <h1 className="text-2xl font-semibold">{isNew ? "New Vehicle" : "Edit Vehicle"}</h1>
-        {operatorLocked && (
-          <p className="text-neutral-600">Operator is locked to <strong>{lockedOperatorName || psUser?.operator_id}</strong>.</p>
-        )}
-        {msg && <p className="text-sm text-red-600 mt-1">{msg}</p>}
+        <h1 className="text-2xl font-semibold">
+          {loading ? "Loading…" : "Edit Vehicle"}
+        </h1>
       </header>
 
+      {/* Preview image */}
+      <section className="rounded-2xl border bg-white p-4 shadow">
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="md:col-span-3">
+            <div className="w-full rounded-2xl overflow-hidden border">
+              {/* live preview takes precedence */}
+              {livePreviewUrl ? (
+                <img
+                  src={livePreviewUrl}
+                  alt="New upload preview"
+                  className="w-full h-48 sm:h-60 object-cover"
+                  style={{ objectPosition: "50% 40%" }}
+                />
+              ) : storedImageUrl ? (
+                <img
+                  src={storedImageUrl}
+                  alt="Vehicle image"
+                  className="w-full h-48 sm:h-60 object-cover"
+                  style={{ objectPosition: "50% 40%" }}
+                />
+              ) : (
+                <div className="w-full h-48 sm:h-60 grid place-items-center text-neutral-400">
+                  No image
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Form */}
       <section className="rounded-2xl border bg-white p-5 shadow">
         <form onSubmit={onSave} className="space-y-5">
-          <div className="grid md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm text-neutral-600 mb-1">Operator *</label>
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="lg:col-span-2">
+              <label className="block text-sm text-neutral-600 mb-1">
+                Operator *
+              </label>
               {operatorLocked ? (
                 <div className="inline-flex rounded-full bg-neutral-100 border px-3 py-2 text-sm">
-                  {lockedOperatorName || psUser?.operator_id}
+                  {operatorName || psUser?.operator_id}
                 </div>
               ) : (
                 <select
@@ -342,7 +375,9 @@ export default function VehicleEditPage() {
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Transport Type *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Transport Type *
+              </label>
               <select
                 className="w-full border rounded-lg px-3 py-2"
                 value={typeId}
@@ -356,13 +391,12 @@ export default function VehicleEditPage() {
                   </option>
                 ))}
               </select>
-              {!operatorId && (
-                <p className="text-xs text-neutral-500 mt-1">Choose an Operator to see allowed types.</p>
-              )}
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Vehicle Name *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Vehicle Name *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 value={name}
@@ -371,9 +405,11 @@ export default function VehicleEditPage() {
             </div>
           </div>
 
-          <div className="grid md:grid-cols-4 gap-4">
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Seats *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Seats *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -382,7 +418,9 @@ export default function VehicleEditPage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Max Seats *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Max Seats *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -391,7 +429,9 @@ export default function VehicleEditPage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Value *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Value *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -400,7 +440,9 @@ export default function VehicleEditPage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Value Threshold</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Value Threshold
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -411,7 +453,9 @@ export default function VehicleEditPage() {
           </div>
 
           <div>
-            <label className="block text-sm text-neutral-600 mb-1">Description</label>
+            <label className="block text-sm text-neutral-600 mb-1">
+              Description
+            </label>
             <textarea
               className="w-full border rounded-lg px-3 py-2"
               rows={3}
@@ -422,18 +466,22 @@ export default function VehicleEditPage() {
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Picture</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Picture
+              </label>
               <input
                 type="file"
                 accept="image/*"
                 onChange={(e) => setPictureFile(e.target.files?.[0] || null)}
               />
               <p className="text-xs text-neutral-500 mt-1">
-                Stored in bucket <code>images</code> at <code>vehicles/&lt;vehicleId&gt;/</code>
+                Stored in bucket <code>images</code> at{" "}
+                <code>vehicles/&lt;vehicleId&gt;/</code>
               </p>
             </div>
-            <div className="flex items-center gap-3">
-              <label className="inline-flex items-center gap-2 mt-6">
+
+            <div className="flex items-end">
+              <label className="inline-flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={active}
@@ -458,16 +506,15 @@ export default function VehicleEditPage() {
               }
               className="inline-flex rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
             >
-              {saving ? "Saving…" : isNew ? "Create Vehicle" : "Update Vehicle"}
+              {saving ? "Saving…" : "Update Vehicle"}
             </button>
-            <button
-              type="button"
+            <Link
+              href="/operator-admin/vehicles"
               className="inline-flex rounded-full px-4 py-2 border text-sm"
-              onClick={() => router.back()}
-              disabled={saving}
             >
               Cancel
-            </button>
+            </Link>
+            {msg && <span className="text-sm text-neutral-600">{msg}</span>}
           </div>
         </form>
       </section>
