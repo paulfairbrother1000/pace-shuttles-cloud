@@ -14,7 +14,7 @@ type PsUser = {
   operator_id?: string | null;
   operator_name?: string | null;
 };
- 
+
 type Operator = { id: UUID; name: string };
 
 type Vehicle = {
@@ -45,7 +45,7 @@ type RouteRow = {
   distance_miles?: number | null;
 };
 
-/* ---------- SAME publicImage helper as Destinations ---------- */
+/* ---------- SAME publicImage helper as Destinations/tiles ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
