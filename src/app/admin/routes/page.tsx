@@ -27,10 +27,8 @@ type Row = {
   pickup_time: string | null;
   frequency: string | null;
   is_active: boolean | null;
-
   journey_type_id: string | null;
   transport_type: string | null;
-
   season_from: string | null;
   season_to: string | null;
 };
@@ -43,7 +41,7 @@ function toNum(v: string): number | null {
 }
 const placeholder = "/placeholder.png";
 
-/** Public image normalizer (same as Home) */
+/** Supabase public image normalizer (same logic as Home) */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -64,9 +62,7 @@ function publicImage(input?: string | null): string | undefined {
           : `${raw}?v=5`;
       }
       return raw;
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -298,7 +294,7 @@ export default function RoutesPage() {
     setMsg(`Editing: ${data.route_name || data.name || id}`);
   }
 
-  /* ---------- SAVE via API ---------- */
+  /* ---------- SAVE via API (same payload contract) ---------- */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -329,12 +325,9 @@ export default function RoutesPage() {
         pickup_time: pickupTime || null,
         frequency: frequency || null,
         is_active: isActive,
-
         route_name: derivedRouteName || null,
-
         journey_type_id: journeyTypeId || null,
         transport_type: jtName === "—" ? null : jtName,
-
         season_from: seasonFrom || null,
         season_to: seasonTo || null,
       };
@@ -407,21 +400,22 @@ export default function RoutesPage() {
 
       {/* Form */}
       <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow">
-        <form onSubmit={onSave} className="space-y-5">
-          {/* Country / Pickup / Destination */}
-          <div className="grid md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm text-neutral-600 mb-1">Country *</label>
-              <select className="w-full border rounded-lg px-3 py-2" value={countryId} onChange={(e) => {
-                setCountryId(e.target.value);
-                setPickupId("");
-                setDestinationId("");
-              }}>
-                <option value="">— Select —</option>
-                {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
+        <form onSubmit={onSave} className="space-y-6">
+          {/* Country (always first) */}
+          <div>
+            <label className="block text-sm text-neutral-600 mb-1">Country *</label>
+            <select className="w-full border rounded-lg px-3 py-2" value={countryId} onChange={(e) => {
+              setCountryId(e.target.value);
+              setPickupId("");
+              setDestinationId("");
+            }}>
+              <option value="">— Select —</option>
+              {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
 
+          {/* Desktop selects */}
+          <div className="hidden md:grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Pick-up Point *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={pickupId} onChange={(e) => setPickupId(e.target.value)} disabled={!countryId}>
@@ -429,7 +423,6 @@ export default function RoutesPage() {
                 {filteredPickups.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
-
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Destination *</label>
               <select className="w-full border rounded-lg px-3 py-2" value={destinationId} onChange={(e) => setDestinationId(e.target.value)} disabled={!countryId}>
@@ -439,17 +432,31 @@ export default function RoutesPage() {
             </div>
           </div>
 
-          {/* Collage preview */}
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="md:col-span-3">
-              <CollageThumb
-                pickupImg={pickup?.picture_url || null}
-                destImg={destination?.picture_url || null}
-                className="h-24 w-full"
-                alt={derivedRouteName || "Route collage"}
-              />
-            </div>
+          {/* Mobile tile pickers */}
+          <div className="md:hidden space-y-6">
+            <TileGrid
+              title="Choose a pick-up point *"
+              items={filteredPickups}
+              selectedId={pickupId}
+              onSelect={setPickupId}
+              emptyHint={countryId ? "No pick-up points in this country yet." : "Pick a country first."}
+            />
+            <TileGrid
+              title="Choose a destination *"
+              items={filteredDestinations}
+              selectedId={destinationId}
+              onSelect={setDestinationId}
+              emptyHint={countryId ? "No destinations in this country yet." : "Pick a country first."}
+            />
           </div>
+
+          {/* Collage preview */}
+          <CollageThumb
+            pickupImg={pickup?.picture_url || null}
+            destImg={destination?.picture_url || null}
+            className="h-24 w-full"
+            alt={derivedRouteName || "Route collage"}
+          />
 
           {/* Derived route name + metrics */}
           <div className="grid md:grid-cols-3 gap-4">
@@ -467,7 +474,7 @@ export default function RoutesPage() {
             </div>
           </div>
 
-          {/* Journey Type + Season From/To */}
+          {/* Journey Type + Season */}
           <div className="grid md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Journey Type{editingId ? "" : " *"}</label>
@@ -535,7 +542,7 @@ export default function RoutesPage() {
         </form>
       </section>
 
-      {/* List */}
+      {/* List (desktop table; mobile can stay table here or be cards later) */}
       <section className="space-y-3">
         <div className="flex gap-2">
           <input
@@ -610,12 +617,7 @@ export default function RoutesPage() {
                     <td className="p-3">{r.approximate_distance_miles ?? "—"}</td>
                     <td className="p-3">{(r.is_active ?? true) ? "Yes" : "No"}</td>
                     <td className="p-3 text-right space-x-2">
-                      <button className="px-3 py-1 rounded-full border" onClick={() => loadOne(r.id)}>Edit</button>
-                      <button
-                        className="px-3 py-1 rounded-full border"
-                        onClick={() => onRemove(r)}
-                        disabled={deletingId === r.id}
-                      >
+                      <button className="px-3 py-1 rounded-full border" onClick={() => onRemove(r)} disabled={deletingId === r.id}>
                         {deletingId === r.id ? "Deleting…" : "Delete"}
                       </button>
                     </td>
