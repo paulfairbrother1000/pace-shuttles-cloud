@@ -1,40 +1,24 @@
 "use client";
 
+import Image from "next/image";
+import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* ---------- Supabase (browser) ---------- */
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
 /* ---------- Types ---------- */
+type UUID = string;
+
 type PsUser = {
-  id: string;
+  id: UUID;
   operator_admin?: boolean | null;
   operator_id?: string | null;
   operator_name?: string | null;
-  site_admin?: boolean | null;
 };
 
-type Operator = { id: string; name: string };
-
-type RouteRow = {
-  id: string;
-  route_name: string | null;
-  name: string | null;
-  frequency: string | null;
-  pickup_time_local?: string | null;
-  duration_mins?: number | null;
-  distance_miles?: number | null;
-  pickup?: { name: string; picture_url?: string | null } | null;
-  destination?: { name: string; picture_url?: string | null } | null;
-};
+type Operator = { id: UUID; name: string };
 
 type Vehicle = {
-  id: string;
+  id: UUID;
   name: string;
   minseats: number | string;
   maxseats: number | string;
@@ -49,82 +33,105 @@ type Assignment = {
   preferred: boolean;
 };
 
-/* ---------- Helpers ---------- */
-const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+type RouteRow = {
+  id: UUID;
+  route_name: string | null;
+  name: string | null;
+  frequency: string | null;
+  pickup?: { name: string; picture_url: string | null } | null;
+  destination?: { name: string; picture_url: string | null } | null;
+  pickup_time_local?: string | null;
+  duration_mins?: number | null;
+  distance_miles?: number | null;
+};
 
-/** Resolve a storage path or raw URL to a browser-loadable URL.
- *  We try public URL first (works for public buckets), then fall back to a long-lived signed URL.
- */
-async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
-  if (!pathOrUrl) return null;
-  if (isHttp(pathOrUrl)) return pathOrUrl;
+/* ---------- SAME publicImage helper as Destinations ---------- */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
+  if (!raw) return undefined;
 
-  // Public URL (works if bucket/object is public)
-  const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
-  if (pub) return pub;
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
+  const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
 
-  // Signed fallback (works for private)
-  const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
-  return data?.signedUrl ?? null;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(u.hostname);
+      const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
+      if (m) {
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          : `${raw}?v=5`;
+      }
+      return raw;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
+  const key = raw.replace(/^\/+/, "");
+  if (key.startsWith(`${bucket}/`)) {
+    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
+  }
+  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
 }
 
-function cls(...a: (string | false | null | undefined)[]) {
-  return a.filter(Boolean).join(" ");
-}
-
-/* ===================================================================== */
+/* ---------- Supabase ---------- */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
 export default function OperatorRouteDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
+  const opFromQuery = search.get("op") || "";
 
-  /* ps_user (lock operator if operator_admin) */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("ps_user");
-      setPsUser(raw ? (JSON.parse(raw) as PsUser) : null);
-    } catch {
-      setPsUser(null);
-    }
-  }, []);
-  const operatorLocked = Boolean(psUser?.operator_admin && psUser?.operator_id);
+  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
 
-  /* Operator context (site admin may pass ?op=<operator_id> from the tiles page) */
   const [operators, setOperators] = useState<Operator[]>([]);
-  const [operatorId, setOperatorId] = useState<string>("");
-
-  // Initialize operatorId once from (lock || query param)
-  useEffect(() => {
-    if (operatorLocked && psUser?.operator_id) {
-      setOperatorId(psUser.operator_id);
-    } else {
-      const qop = search.get("op") || "";
-      setOperatorId(qop);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operatorLocked, psUser?.operator_id]);
-
-  /* Data */
+  const [operatorId, setOperatorId] = useState<string>(""); // for vehicle assignment
   const [route, setRoute] = useState<RouteRow | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
-  /* Resolved pictures */
-  const [pickupImg, setPickupImg] = useState<string | null>(null);
-  const [destImg, setDestImg] = useState<string | null>(null);
+  // ps_user + operator lock
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("ps_user");
+      const u = raw ? (JSON.parse(raw) as PsUser) : null;
+      setPsUser(u);
+      // initial operator context: op query param wins, then operator_admin lock
+      if (opFromQuery) setOperatorId(opFromQuery);
+      else if (u?.operator_admin && u.operator_id) setOperatorId(u.operator_id);
+    } catch {
+      setPsUser(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  /* Load lookups + route core (single row) */
+  // lookups + route
   useEffect(() => {
     let off = false;
     (async () => {
+      if (!sb) return;
       setLoading(true);
       setMsg(null);
 
-      const [ops, r] = await Promise.all([
+      const [ops, r, a] = await Promise.all([
         sb.from("operators").select("id,name").order("name"),
         sb
           .from("routes")
@@ -142,48 +149,39 @@ export default function OperatorRouteDetailPage() {
           `
           )
           .eq("id", params.id)
-          .maybeSingle(),
+          .single(),
+        sb
+          .from("route_vehicle_assignments")
+          .select("route_id,vehicle_id,is_active,preferred")
+          .eq("is_active", true),
       ]);
 
       if (off) return;
 
       if (ops.data) setOperators((ops.data as Operator[]) || []);
-      if (r.error) {
-        setMsg(r.error.message);
-        setRoute(null);
-      } else {
+      if (r.data) {
         const row = r.data as any;
-        const mapped: RouteRow | null = row
-          ? {
-              id: row.id,
-              route_name: row.route_name ?? null,
-              name: row.name ?? null,
-              frequency: row.frequency ?? null,
-              pickup_time_local: row.pickup_time_local ?? null,
-              duration_mins: row.duration_mins ?? null,
-              distance_miles: row.distance_miles ?? null,
-              pickup: row.pickup
-                ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url ?? null }
-                : null,
-              destination: row.destination
-                ? {
-                    name: row.destination.name as string,
-                    picture_url: row.destination.picture_url ?? null,
-                  }
-                : null,
-            }
-          : null;
-
-        setRoute(mapped);
-
-        // Resolve pictures (public or signed)
-        const [p, d] = await Promise.all([
-          resolveStorageUrl(mapped?.pickup?.picture_url || null),
-          resolveStorageUrl(mapped?.destination?.picture_url || null),
-        ]);
-        setPickupImg(p);
-        setDestImg(d);
+        const routeRow: RouteRow = {
+          id: row.id,
+          route_name: row.route_name ?? null,
+          name: row.name ?? null,
+          frequency: row.frequency ?? null,
+          pickup_time_local: row.pickup_time_local ?? null,
+          duration_mins: row.duration_mins ?? null,
+          distance_miles: row.distance_miles ?? null,
+          pickup: row.pickup
+            ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
+            : null,
+          destination: row.destination
+            ? { name: row.destination.name as string, picture_url: row.destination.picture_url as string | null }
+            : null,
+        };
+        setRoute(routeRow);
+      } else if (r.error) {
+        setMsg(r.error.message);
       }
+
+      if (a.data) setAssignments((a.data as Assignment[]) || []);
 
       setLoading(false);
     })();
@@ -192,109 +190,78 @@ export default function OperatorRouteDetailPage() {
     };
   }, [params.id]);
 
-  /* Load vehicles for the selected operator + all assignments (we’ll filter by operator vehicles) */
+  // load vehicles for current operator context
   useEffect(() => {
-    if (!operatorId) return;
+    if (!sb || !operatorId) return;
     let off = false;
     (async () => {
-      setMsg(null);
-
-      const [vs, asn] = await Promise.all([
-        sb
-          .from("vehicles")
-          .select("id,name,minseats,maxseats,active,operator_id")
-          .eq("operator_id", operatorId)
-          .eq("active", true)
-          .order("name"),
-        sb
-          .from("route_vehicle_assignments")
-          .select("route_id,vehicle_id,is_active,preferred")
-          .eq("route_id", params.id),
-      ]);
-
-      if (off) return;
-
-      if (vs.error) setMsg(vs.error.message);
-      setVehicles((vs.data as Vehicle[]) || []);
-
-      if (!asn.error && asn.data) setAssignments((asn.data as Assignment[]) || []);
+      const { data, error } = await sb
+        .from("vehicles")
+        .select("id,name,minseats,maxseats,active,operator_id")
+        .eq("operator_id", operatorId)
+        .eq("active", true)
+        .order("name");
+      if (!off) {
+        if (error) setMsg(error.message);
+        setVehicles((data as Vehicle[]) || []);
+      }
     })();
     return () => {
       off = true;
     };
-  }, [operatorId, params.id]);
+  }, [operatorId]);
 
-  /* Filter assignments to just vehicles that belong to current operator */
-  const assignedVehicleIds = useMemo(() => {
-    const allowed = new Set(vehicles.map((v) => v.id));
-    return new Set(assignments.filter((a) => allowed.has(a.vehicle_id) && a.is_active).map((a) => a.vehicle_id));
-  }, [assignments, vehicles]);
+  const assignmentsByRoute = useMemo(() => {
+    const allowedVehicleIds = new Set(vehicles.map((v) => v.id));
+    const filtered = assignments.filter((a) => allowedVehicleIds.has(a.vehicle_id) && a.route_id === params.id);
+    return filtered;
+  }, [assignments, vehicles, params.id]);
 
-  const preferredVehicleId = useMemo(
-    () =>
-      assignments.find((a) => a.is_active && a.preferred && vehicles.some((v) => v.id === a.vehicle_id))
-        ?.vehicle_id || null,
-    [assignments, vehicles]
-  );
-
-  /* Actions */
   async function reloadAssignments() {
-    const { data, error } = await sb
+    const { data, error } = await sb!
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
-      .eq("route_id", params.id);
+      .eq("is_active", true);
     if (!error) setAssignments((data as Assignment[]) || []);
   }
 
-  async function toggleAssign(vehicleId: string, currentlyAssigned: boolean) {
+  async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
     try {
       if (currentlyAssigned) {
-        const { error } = await sb
+        const { error } = await sb!
           .from("route_vehicle_assignments")
           .update({ is_active: false, preferred: false })
-          .eq("route_id", params.id)
+          .eq("route_id", routeId)
           .eq("vehicle_id", vehicleId);
         if (error) throw error;
       } else {
-        const { error } = await sb
+        const { error } = await sb!
           .from("route_vehicle_assignments")
           .upsert(
-            {
-              route_id: params.id,
-              vehicle_id: vehicleId,
-              is_active: true,
-              preferred: false,
-            },
+            { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: false },
             { onConflict: "route_id,vehicle_id" }
           );
         if (error) throw error;
       }
       await reloadAssignments();
     } catch (e: any) {
-      alert(e.message ?? "Unable to update assignment");
+      alert(e.message ?? "Unable to update");
     }
   }
 
-  async function setPreferred(vehicleId: string) {
+  async function setPreferred(routeId: string, vehicleId: string) {
     try {
-      // clear existing for this route
-      const { error: clearErr } = await sb
+      const { error: clearErr } = await sb!
         .from("route_vehicle_assignments")
         .update({ preferred: false })
-        .eq("route_id", params.id)
+        .eq("route_id", routeId)
         .eq("preferred", true);
       if (clearErr) throw clearErr;
 
-      // ensure this vehicle is assigned & preferred
-      const { error: upErr } = await sb
+      const { error: upErr } = await sb!
         .from("route_vehicle_assignments")
         .upsert(
-          {
-            route_id: params.id,
-            vehicle_id: vehicleId,
-            is_active: true,
-            preferred: true,
-          },
+          { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: true },
           { onConflict: "route_id,vehicle_id" }
         );
       if (upErr) throw upErr;
@@ -305,65 +272,61 @@ export default function OperatorRouteDetailPage() {
     }
   }
 
-  /* Derived / display helpers */
   const lockedOperatorName =
-    operatorLocked && psUser?.operator_id
-      ? psUser.operator_name ||
+    isOpAdmin && psUser?.operator_id
+      ? psUser?.operator_name ||
         operators.find((o) => o.id === psUser.operator_id)?.name ||
         psUser.operator_id
       : "";
 
-  const title =
-    route?.route_name ||
-    (route?.pickup?.name && route?.destination?.name
-      ? `${route.pickup.name} → ${route.destination.name}`
-      : route?.name || "Route");
+  const preferred = assignmentsByRoute.find((a) => a.preferred);
+  const assignedIds = new Set(assignmentsByRoute.map((a) => a.vehicle_id));
 
   return (
     <div className="p-4 space-y-5">
-      {/* Header */}
       <div className="flex items-center gap-2">
-        <button
-          className="rounded-full border px-3 py-1.5 text-sm"
-          onClick={() => {
-            // send operator back to tiles (retain operator id if any)
-            const op = operatorLocked ? psUser?.operator_id : operatorId;
-            router.push(op ? `/operator-admin/routes?op=${op}` : "/operator-admin/routes");
-          }}
-        >
+        <button className="rounded-full border px-3 py-1.5 text-sm" onClick={() => router.push("/operator-admin/routes")}>
           ← Back
         </button>
-        <h1 className="text-2xl font-semibold">{title}</h1>
+        <h1 className="text-2xl font-semibold">
+          {route ? `${route.pickup?.name ?? "—"} → ${route.destination?.name ?? "—"}` : "Route"}
+        </h1>
       </div>
 
       {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      {/* Route images + meta */}
-      <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
-        {/* Two images side-by-side on desktop; stacked on mobile */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="rounded-xl overflow-hidden border bg-neutral-50 aspect-[16/10] grid place-items-center">
-            {pickupImg ? (
-              <img src={pickupImg} alt={route?.pickup?.name || "Pickup"} className="h-full w-full object-cover" />
-            ) : (
-              <span className="text-neutral-400 text-sm">{route?.pickup?.name || "Pick-up"}</span>
-            )}
-          </div>
-          <div className="rounded-xl overflow-hidden border bg-neutral-50 aspect-[16/10] grid place-items-center">
-            {destImg ? (
-              <img
-                src={destImg}
-                alt={route?.destination?.name || "Destination"}
-                className="h-full w-full object-cover"
+      {/* Hero images + facts */}
+      <section className="rounded-2xl border bg-white shadow overflow-hidden">
+        <div className="grid grid-cols-2 gap-0">
+          <div className="relative aspect-[16/7]">
+            {publicImage(route?.pickup?.picture_url) ? (
+              <Image
+                src={publicImage(route?.pickup?.picture_url)!}
+                alt={route?.pickup?.name || "Pickup"}
+                fill
+                unoptimized
+                className="object-cover"
               />
             ) : (
-              <span className="text-neutral-400 text-sm">{route?.destination?.name || "Destination"}</span>
+              <div className="absolute inset-0 bg-neutral-100" />
+            )}
+          </div>
+          <div className="relative aspect-[16/7]">
+            {publicImage(route?.destination?.picture_url) ? (
+              <Image
+                src={publicImage(route?.destination?.picture_url)!}
+                alt={route?.destination?.name || "Destination"}
+                fill
+                unoptimized
+                className="object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 bg-neutral-100" />
             )}
           </div>
         </div>
 
-        {/* Meta */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 text-sm">
           <div>
             <div className="text-neutral-500">Frequency</div>
             <div className="font-medium">{route?.frequency || "—"}</div>
@@ -387,15 +350,14 @@ export default function OperatorRouteDetailPage() {
         </div>
       </section>
 
-      {/* Operator + vehicle assignments */}
+      {/* Operator context + vehicle assignment */}
       <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
         <div className="flex items-center gap-3">
           <div className="text-sm text-neutral-600">Operator</div>
-
-          {operatorLocked ? (
+          {isOpAdmin ? (
             <div className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm bg-neutral-50">
               <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
-              {lockedOperatorName}
+              {lockedOperatorName || psUser?.operator_id}
             </div>
           ) : (
             <select
@@ -413,47 +375,51 @@ export default function OperatorRouteDetailPage() {
           )}
         </div>
 
-        {/* Chips */}
-        {operatorId ? (
-          <div className="flex flex-wrap gap-2">
-            {vehicles.length === 0 ? (
-              <span className="text-sm text-neutral-500">No active vehicles for this operator.</span>
-            ) : (
-              vehicles.map((v) => {
-                const assigned = assignedVehicleIds.has(v.id);
-                const isPref = preferredVehicleId === v.id;
+        {!operatorId ? (
+          <div className="text-sm text-neutral-500">Choose an Operator to assign vehicles.</div>
+        ) : vehicles.length === 0 ? (
+          <div className="text-sm text-neutral-500">No active vehicles for this operator.</div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2">
+              {vehicles.map((v) => {
+                const assigned = assignedIds.has(v.id);
+                const isPref = preferred?.vehicle_id === v.id;
                 return (
                   <div
                     key={v.id}
-                    className={cls(
-                      "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm",
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
                       assigned ? "bg-black text-white border-black" : "bg-white"
-                    )}
+                    }`}
                   >
                     <button
                       className="outline-none"
-                      title={assigned ? "Unassign from route" : "Assign to route"}
-                      onClick={() => toggleAssign(v.id, assigned)}
+                      title={assigned ? "Unassign" : "Assign to route"}
+                      onClick={() => toggleAssign(params.id, v.id, assigned)}
                     >
                       {v.name} ({v.minseats}–{v.maxseats})
                     </button>
                     <button
-                      className={cls(
-                        "rounded-full border px-2 py-0.5 text-xs",
+                      className={`rounded-full border px-2 py-0.5 text-xs ${
                         isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
-                      )}
+                      }`}
                       title="Mark as preferred"
-                      onClick={() => setPreferred(v.id)}
+                      onClick={() => setPreferred(params.id, v.id)}
                     >
                       ★
                     </button>
                   </div>
                 );
-              })
-            )}
-          </div>
-        ) : (
-          <div className="text-sm text-neutral-500">Select an operator to manage assignments.</div>
+              })}
+            </div>
+
+            <div className="text-sm">
+              Preferred:&nbsp;
+              <span className="font-medium">
+                {preferred ? vehicles.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
+              </span>
+            </div>
+          </>
         )}
       </section>
     </div>
