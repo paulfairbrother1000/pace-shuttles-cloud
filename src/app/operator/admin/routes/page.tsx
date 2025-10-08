@@ -17,3 +17,4 @@ export default function Page({
 
   redirect(`/operator-admin/routes/${params.id}${qs ? `?${qs}` : ""}`);
 }
+ 

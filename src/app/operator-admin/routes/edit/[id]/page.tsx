@@ -14,7 +14,7 @@ type PsUser = {
   operator_id?: string | null;
   operator_name?: string | null;
 };
-
+ 
 type Operator = { id: UUID; name: string };
 
 type Vehicle = {
