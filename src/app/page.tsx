@@ -619,7 +619,7 @@ const facetTypeNames = useMemo(() => {
   return typeNames;
 }, [occWithFilters, filterDateISO, filterDestinationId, filterPickupId, verifiedRoutes]);
 
-/* ---------- Auto-unselect invalid selections ---------- */
+/* ---------- Auto-unselect & auto-close ---------- */
 useEffect(() => {
   if (filterDestinationId && !facetDestIds.has(filterDestinationId)) setFilterDestinationId(null);
 }, [facetDestIds, filterDestinationId]);
@@ -636,6 +636,23 @@ useEffect(() => {
 useEffect(() => {
   if (activePane === "type" && facetTypeNames.size <= 1) setActivePane("none");
 }, [activePane, facetTypeNames]);
+
+/** auto-close Pickup pane if it adds no value (0 or 1 option) */
+useEffect(() => {
+  if (activePane === "pickup" && facetPickupIds.size <= 1) setActivePane("none");
+}, [activePane, facetPickupIds]);
+
+/** helper: fallback image for a type when transport_types has no picture */
+const firstImageForType = (normId: string): string | undefined => {
+  for (const r of verifiedRoutes) {
+    if (normType(vehicleTypeNameForRoute(r.id)) !== normId) continue;
+    const d = destById(r.destination_id);
+    const p = pickupById(r.pickup_id);
+    const img = publicImage(d?.picture_url) || publicImage(p?.picture_url);
+    if (img) return img;
+  }
+  return undefined;
+};
 /* ---------- Filters -> occurrences (EXCLUDE SOLD-OUT) ---------- */
 const filteredOccurrences = useMemo(() => {
   const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
@@ -1076,11 +1093,29 @@ if (!countryId) {
   /* Planner UI (country selected) */
   const allowedDestIds = new Set(availableDestinationsByCountry[countryId] ?? []);
 
-  /** show Type facet only when ≥ 2 options */
+  /** facet visibility rules */
   const showTypeFacet = facetTypeNames.size >= 2;
-  const filterPills = (["date","destination","pickup"] as const).concat(
-    showTypeFacet ? (["type"] as const) : []
-  );
+  const showPickupFacet = facetPickupIds.size >= 2;
+
+  const filterPills = (["date","destination"] as const)
+    .concat(showPickupFacet ? (["pickup"] as const) : [])
+    .concat(showTypeFacet ? (["type"] as const) : []);
+
+  /** breadcrumbs for active filters */
+  const crumbs: { key: "date"|"destination"|"pickup"|"type"; label: string }[] = [];
+  if (filterDateISO) crumbs.push({ key: "date", label: new Date(filterDateISO + "T12:00:00").toLocaleDateString() });
+  if (filterDestinationId) {
+    const d = destById(filterDestinationId);
+    if (d) crumbs.push({ key: "destination", label: d.name });
+  }
+  if (filterPickupId) {
+    const p = pickupById(filterPickupId);
+    if (p) crumbs.push({ key: "pickup", label: p.name });
+  }
+  if (filterTypeName) {
+    const t = transportTypeByNormName[filterTypeName];
+    crumbs.push({ key: "type", label: t?.name ?? titleCase(filterTypeName) });
+  }
 
   content = (
     <div className="space-y-8 px-4 py-6 mx-auto max-w-[1120px]">
@@ -1106,7 +1141,7 @@ if (!countryId) {
       </div>
 
       {/* Filters */}
-      <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow space-y-4">
+      <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow space-y-3">
         <div className="flex flex-wrap gap-2">
           {filterPills.map((k) => (
             <button
@@ -1127,8 +1162,38 @@ if (!countryId) {
           )}
         </div>
 
+        {/* Breadcrumbs / active filters */}
+        {(crumbs.length > 0) && (
+          <div className="flex flex-wrap gap-2 text-sm">
+            <span className="text-neutral-600">Active filters:</span>
+            {crumbs.map(c => (
+              <span key={c.key} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5">
+                <span className="font-medium">{c.key[0].toUpperCase() + c.key.slice(1)}:</span>
+                <span>{c.label}</span>
+                <button
+                  aria-label={`Clear ${c.key} filter`}
+                  className="ml-1 hover:text-red-600"
+                  onClick={() => {
+                    if (c.key === "date") setFilterDateISO(null);
+                    if (c.key === "destination") setFilterDestinationId(null);
+                    if (c.key === "pickup") setFilterPickupId(null);
+                    if (c.key === "type") setFilterTypeName(null);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         {activePane === "date" && (
           <div className="border-t pt-4">
+            {(crumbs.length > 0) && (
+              <div className="mb-2 text-xs text-neutral-600">
+                Calendar shows dates matching your active filters above.
+              </div>
+            )}
             <div className="flex items-center justify-between mb-3">
               <button className="px-3 py-1 border rounded-lg" onClick={() => setCalCursor(addMonths(calCursor, -1))}>←</button>
               <div className="text-lg font-medium" suppressHydrationWarning>{monthLabel}</div>
@@ -1181,7 +1246,7 @@ if (!countryId) {
           />
         )}
 
-        {activePane === "pickup" && (
+        {activePane === "pickup" && showPickupFacet && (
           <TilePicker
             title="Choose a pick-up point"
             items={pickups
@@ -1193,7 +1258,7 @@ if (!countryId) {
           />
         )}
 
-        {/* TYPE: build from facetTypeNames with graceful fallback */}
+        {/* TYPE: build from facetTypeNames with graceful fallback (now with fallback image) */}
         {activePane === "type" && showTypeFacet && (
           <TilePicker
             title="Choose a vehicle type"
@@ -1203,7 +1268,7 @@ if (!countryId) {
                 id: normId,
                 name: t?.name ?? titleCase(normId),
                 description: t?.description ?? "",
-                image: t ? typeImgSrc(t) : undefined,
+                image: t ? typeImgSrc(t) : firstImageForType(normId),
               };
             })}
             onChoose={(normId) => { setFilterTypeName(normId); setActivePane("none"); }}
@@ -1250,7 +1315,7 @@ if (!countryId) {
                 timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
                 durationMins={r.route.approx_duration_mins ?? undefined}
                 vehicleType={vType}
-                soldOut={false /* filtered out */}
+                soldOut={false}
                 priceLabel={hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
                 lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
                 errorMsg={overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` : err ?? undefined}
