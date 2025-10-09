@@ -1318,7 +1318,7 @@ export default function Page() {
           )}
         </section>
 
-        {/* Desktop/tablet table */}
+        {/* Desktop/tablet table latest changes */}
         <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow hidden md:block">
           {loading ? (
             <div className="p-4">Loading…</div>
