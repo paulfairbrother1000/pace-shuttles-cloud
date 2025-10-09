@@ -1,8 +1,9 @@
+// src/components/JourneyCard.tsx
 "use client";
 
 import Image from "next/image";
 
-export function JourneyCard(props: {
+type Props = {
   pickupName: string;
   pickupImg?: string;
   destName: string;
@@ -19,38 +20,84 @@ export function JourneyCard(props: {
   onSeatsChange: (n: number) => void;
   onContinue: () => void;
   continueDisabled?: boolean;
-}) {
-  const {
-    pickupName, pickupImg, destName, destImg, dateISO, timeStr,
-    durationMins, vehicleType, soldOut, priceLabel, lowSeats,
-    errorMsg, seats, onSeatsChange, onContinue, continueDisabled
-  } = props;
+
+  /** Drill-down handlers (optional) */
+  onOpenPickup?: () => void;
+  onOpenDestination?: () => void;
+};
+
+export function JourneyCard({
+  pickupName,
+  pickupImg,
+  destName,
+  destImg,
+  dateISO,
+  timeStr,
+  durationMins,
+  vehicleType,
+  soldOut,
+  priceLabel,
+  lowSeats,
+  errorMsg,
+  seats,
+  onSeatsChange,
+  onContinue,
+  continueDisabled,
+  onOpenPickup,
+  onOpenDestination,
+}: Props) {
+  const pickupSrc = pickupImg || "/placeholder.png";
+  const destSrc = destImg || "/placeholder.png";
+
+  const pickupClickable = !!onOpenPickup;
+  const destClickable = !!onOpenDestination;
 
   return (
-    <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-      <div className="flex">
-        <div className="w-1/2 relative aspect-[4/3]">
+    <div className="rounded-2xl border bg-white overflow-hidden shadow">
+      {/* Top images (clickable if handlers provided) */}
+      <div className="grid grid-cols-2 gap-0">
+        <button
+          type="button"
+          onClick={onOpenPickup ?? undefined}
+          disabled={!pickupClickable}
+          className={`relative aspect-[4/3] overflow-hidden border-r focus:outline-none ${
+            pickupClickable ? "focus:ring-2 focus:ring-blue-500 cursor-pointer" : "cursor-default"
+          }`}
+          aria-label="View pick-up details"
+          title={pickupClickable ? "View pick-up details" : undefined}
+        >
           <Image
-            src={pickupImg || "/placeholder.png"}
+            src={pickupSrc}
             alt={pickupName}
             fill
             unoptimized
             className="object-cover"
             sizes="50vw"
           />
-        </div>
-        <div className="w-1/2 relative aspect-[4/3]">
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenDestination ?? undefined}
+          disabled={!destClickable}
+          className={`relative aspect-[4/3] overflow-hidden focus:outline-none ${
+            destClickable ? "focus:ring-2 focus:ring-blue-500 cursor-pointer" : "cursor-default"
+          }`}
+          aria-label="View destination details"
+          title={destClickable ? "View destination details" : undefined}
+        >
           <Image
-            src={destImg || "/placeholder.png"}
+            src={destSrc}
             alt={destName}
             fill
             unoptimized
             className="object-cover"
             sizes="50vw"
           />
-        </div>
+        </button>
       </div>
 
+      {/* Body */}
       <div className="p-3 space-y-2">
         <div className="text-sm font-medium">
           {pickupName} → {destName}
@@ -72,7 +119,9 @@ export function JourneyCard(props: {
             disabled={soldOut}
           >
             {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
-              <option key={n} value={n}>{n}</option>
+              <option key={n} value={n}>
+                {n}
+              </option>
             ))}
           </select>
         </div>
@@ -88,10 +137,11 @@ export function JourneyCard(props: {
         )}
 
         <button
-          className="w-full mt-1 px-3 py-2 rounded-lg text-white text-sm"
+          className="w-full mt-1 px-3 py-2 rounded-lg text-white text-sm disabled:opacity-60"
           onClick={onContinue}
           disabled={!!continueDisabled}
           style={{ backgroundColor: continueDisabled ? "#9ca3af" : "#2563eb" }}
+          aria-disabled={!!continueDisabled}
         >
           {soldOut ? "Sold out" : "Continue"}
         </button>

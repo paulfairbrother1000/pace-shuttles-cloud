@@ -953,6 +953,18 @@ export default function Page() {
     return days.slice(0, 42);
   }, [calCursor]);
 
+
+const openPickup = (id?: string | null) => {
+  if (!id) return;
+  window.location.href = `/pickups/${id}`; // or use router.push(`/pickups/${id}`)
+};
+const openDestination = (id?: string | null) => {
+  if (!id) return;
+  window.location.href = `/destinations/${id}`; // or router.push(`/destinations/${id}`)
+};
+
+
+
   // ===== SECTION 2: Safe globals pulled from hydrate =====
   const availableCountryIdSet = useMemo(
     () => new Set(Object.keys(availableDestinationsByCountry)),
@@ -1285,42 +1297,29 @@ export default function Page() {
 
               return (
                 <div key={r.key} className="space-y-2">
-                  <JourneyCard
-                    pickupName={pu?.name ?? "—"}
-                    pickupImg={publicImage(pu?.picture_url)}
-                    destName={de?.name ?? "—"}
-                    destImg={publicImage(de?.picture_url)}
-                    dateISO={r.dateISO}
-                    timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
-                    durationMins={r.route.approx_duration_mins ?? undefined}
-                    vehicleType={vType}
-                    soldOut={false}
-                    priceLabel={hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
-                    lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
-                    errorMsg={overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` : err ?? undefined}
-                    seats={selected}
-                    onSeatsChange={(n) => handleSeatChange(r.key, n)}
-                    onContinue={() => handleContinue(r.key, r.route.id)}
-                    continueDisabled={false}
-                  />
-                  {/* Drill-down buttons below the card for mobile */}
-                  <div className="flex items-center justify-between gap-2 px-1">
-                    <button
-                      className="text-sm underline"
-                      onClick={() => openPickup(pu?.id)}
-                      aria-label={`View pick-up: ${pu?.name ?? ""}`}
-                    >
-                      View Pick-up
-                    </button>
-                    <button
-                      className="text-sm underline"
-                      onClick={() => openDestination(de?.id)}
-                      aria-label={`View destination: ${de?.name ?? ""}`}
-                    >
-                      View Destination
-                    </button>
-                  </div>
-                </div>
+  <JourneyCard
+    pickupName={pu?.name ?? "—"}
+    pickupImg={publicImage(pu?.picture_url)}
+    destName={de?.name ?? "—"}
+    destImg={publicImage(de?.picture_url)}
+    dateISO={r.dateISO}
+    timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
+    durationMins={r.route.approx_duration_mins ?? undefined}
+    vehicleType={vType}
+    soldOut={false}
+    priceLabel={hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
+    lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
+    errorMsg={overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` : err ?? undefined}
+    seats={selected}
+    onSeatsChange={(n) => handleSeatChange(r.key, n)}
+    onContinue={() => handleContinue(r.key, r.route.id)}
+    continueDisabled={false}
+    /* NEW: make images clickable */
+    onOpenPickup={() => openPickup(pu?.id)}
+    onOpenDestination={() => openDestination(de?.id)}
+  />
+</div>
+
               );
             })
           )}

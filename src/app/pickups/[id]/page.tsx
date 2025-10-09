@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
+/* ---------- types ---------- */
 type UUID = string;
-
-type Pickup = {
+type PickupRow = {
   id: UUID;
+  country_id: UUID;
   name: string;
-  country_id: UUID | null;
   picture_url: string | null;
   description: string | null;
   address1: string | null;
@@ -21,85 +21,100 @@ type Pickup = {
   transport_type_place_id: UUID | null;
   arrival_notes: string | null;
 };
-
 type Country = { id: UUID; name: string };
+type TransportType = { id: UUID; name: string };
 type TransportPlace = { id: UUID; name: string };
 
-function supa() {
-  if (
-    typeof window !== "undefined" &&
-    process.env.NEXT_PUBLIC_SUPABASE_URL &&
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  ) {
-    return createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-  }
-  return null;
-}
+/* ---------- supabase (browser) ---------- */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
-const norm = (v?: string | null) => (v && v.trim() ? v.trim() : null);
-
-function formatAddress(p: Pickup, countryName?: string) {
-  return [
-    norm(p.address1),
-    norm(p.address2),
-    norm(p.town),
-    norm(p.region),
-    norm(p.postal_code),
-    norm(countryName),
-  ]
-    .filter(Boolean)
-    .join(", ");
-}
-
-function publicImage(url?: string | null) {
-  const raw = (url || "").trim();
+/* ---------- image helper (no regex pitfalls) ---------- */
+function publicImage(input?: string | null): string | undefined {
+  const raw = (input || "").trim();
   if (!raw) return undefined;
-  if (/^https?:\/\//i.test(raw)) return raw;
-  const host = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
+  const supaHost = supaUrl.replace(/^https?:\/\//i, "");
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
+  if (!supaHost) return undefined;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const isLocal = u.hostname === "localhost" || /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(u.hostname);
+      const publicPrefix = "/storage/v1/object/public/";
+      if (u.pathname.startsWith(publicPrefix)) {
+        const rest = u.pathname.slice(publicPrefix.length);
+        return (isLocal || u.hostname !== supaHost)
+          ? `https://${supaHost}${publicPrefix}${rest}?v=5`
+          : `${raw}?v=5`;
+      }
+      return raw;
+    } catch { return undefined; }
+  }
+  if (raw.startsWith("/storage/v1/object/public/")) {
+    return `https://${supaHost}${raw}?v=5`;
+  }
   const key = raw.replace(/^\/+/, "");
-  const path = key.startsWith(`${bucket}/`) ? key : `${bucket}/${key}`;
-  return `https://${host}/storage/v1/object/public/${path}`;
+  const normalizedKey = key.startsWith(`${bucket}/`) ? key : `${bucket}/${key}`;
+  return `https://${supaHost}/storage/v1/object/public/${normalizedKey}?v=5`;
 }
 
-export default function PickupDetailsPage() {
-  const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const id = params?.id as string;
+/* ---------- tiny utils ---------- */
+function addrLines(p: PickupRow, countryName?: string) {
+  return [p.address1, p.address2, p.town, p.region, p.postal_code, countryName]
+    .filter(Boolean)
+    .map((s) => String(s));
+}
+function mapsEmbedUrl(lines: string[]) {
+  const q = encodeURIComponent(lines.join(", "));
+  // No API key needed for this generic “place search” embed
+  return `https://www.google.com/maps?q=${q}&output=embed`;
+}
 
-  const sb = useMemo(() => supa(), []);
+export default function PickupDetailsPage({ params }: { params: { id: string }}) {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
-  const [pickup, setPickup] = useState<Pickup | null>(null);
+  const [row, setRow] = useState<PickupRow | null>(null);
   const [country, setCountry] = useState<Country | null>(null);
+  const [type, setType] = useState<TransportType | null>(null);
   const [place, setPlace] = useState<TransportPlace | null>(null);
 
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!sb) {
-        setErr("Supabase not configured"); setLoading(false); return;
-      }
-      setLoading(true); setErr(null);
       try {
-        const { data: p, error } = await sb.from("pickup_points").select("*").eq("id", id).maybeSingle();
-        if (error) throw error;
-        if (!p) throw new Error("Pick-up point not found");
+        if (!sb) throw new Error("Supabase client not configured.");
+        setLoading(true);
+        setErr(null);
+
+        const { data: p, error: pErr } = await sb.from("pickup_points").select("*").eq("id", params.id).maybeSingle();
+        if (pErr) throw pErr;
+        if (!p) throw new Error("Pick-up point not found.");
         if (off) return;
-        setPickup(p as Pickup);
 
-        // lookups (country + place)
-        const [cQ, ttpQ] = await Promise.all([
-          p.country_id ? sb.from("countries").select("id,name").eq("id", p.country_id).maybeSingle() : Promise.resolve({ data: null, error: null }),
-          p.transport_type_place_id ? sb.from("transport_type_places").select("id,name").eq("id", p.transport_type_place_id).maybeSingle() : Promise.resolve({ data: null, error: null }),
+        setRow(p as PickupRow);
+
+        // parallel fetches
+        const [cQ, tQ, plQ] = await Promise.all([
+          sb.from("countries").select("id,name").eq("id", p.country_id).maybeSingle(),
+          p.transport_type_id ? sb.from("transport_types").select("id,name").eq("id", p.transport_type_id).maybeSingle() : Promise.resolve({ data: null as any, error: null }),
+          p.transport_type_place_id ? sb.from("transport_type_places").select("id,name").eq("id", p.transport_type_place_id).maybeSingle() : Promise.resolve({ data: null as any, error: null }),
         ]);
+        if (cQ.error) throw cQ.error;
+        if (tQ.error) throw tQ.error;
+        if (plQ.error) throw plQ.error;
 
-        if (!off && cQ && (cQ as any).data) setCountry((cQ as any).data as Country);
-        if (!off && ttpQ && (ttpQ as any).data) setPlace((ttpQ as any).data as TransportPlace);
+        setCountry((cQ.data || null) as Country | null);
+        setType((tQ.data || null) as TransportType | null);
+        setPlace((plQ.data || null) as TransportPlace | null);
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
@@ -107,87 +122,99 @@ export default function PickupDetailsPage() {
       }
     })();
     return () => { off = true; };
-  }, [sb, id]);
+  }, [params.id]);
 
-  const img = publicImage(pickup?.picture_url);
-  const address = pickup ? formatAddress(pickup, country?.name || undefined) : "";
-
-  // Google Maps embed without API key, and a directions link
-  const mapQuery = encodeURIComponent(address || pickup?.name || "");
-  const mapsEmbed = `https://www.google.com/maps?q=${mapQuery}&output=embed`;
-  const mapsDir = `https://www.google.com/maps/dir/?api=1&destination=${mapQuery}`;
+  const photo = useMemo(() => publicImage(row?.picture_url) || "/placeholder.png", [row?.picture_url]);
+  const lines = useMemo(() => addrLines(row as any, country?.name), [row, country?.name]);
 
   return (
-    <div className="px-4 py-4 mx-auto w-full max-w-2xl">
-      <button className="mb-3 px-3 py-1 rounded-lg border hover:bg-neutral-50" onClick={() => router.back()}>
-        ← Back
-      </button>
-      <h1 className="text-2xl font-semibold">Pick-up Point</h1>
+    <div className="px-4 py-6 mx-auto max-w-3xl space-y-5">
+      <button className="px-3 py-1 rounded-lg border hover:bg-neutral-50" onClick={() => router.back()}>← Back</button>
+      <h1 className="text-2xl font-semibold">Pick-up</h1>
 
-      {err && <div className="mt-3 p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
-
-      {loading ? (
-        <div className="mt-4 p-4 border rounded-xl bg-white shadow">Loading…</div>
-      ) : pickup ? (
-        <div className="mt-4 space-y-4">
+      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
+      {loading || !row ? (
+        <div className="p-4 rounded-xl border bg-white">Loading…</div>
+      ) : (
+        <div className="rounded-2xl border bg-white shadow overflow-hidden">
           {/* Photo */}
-          {img && (
-            <div className="overflow-hidden rounded-2xl border">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={img} alt={pickup.name} className="w-full max-h-[320px] object-cover" />
-            </div>
-          )}
+          <div className="relative w-full aspect-[16/10] overflow-hidden border-b">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={photo} alt={row.name} className="w-full h-full object-cover" />
+          </div>
 
-          {/* Core info */}
-          <div className="rounded-2xl border bg-white shadow p-4 space-y-2">
-            <h2 className="text-xl font-medium">{pickup.name}</h2>
-            {address && <p className="text-sm text-neutral-700">{address}</p>}
-            {place?.name && (
+          {/* Body */}
+          <div className="p-4 space-y-4">
+            <div>
+              <div className="text-xl font-semibold">{row.name}</div>
+              {country?.name && <div className="text-sm text-neutral-600">{country.name}</div>}
+            </div>
+
+            {/* Address */}
+            {lines.length > 0 && (
               <div className="text-sm">
-                <span className="font-medium">Place:</span> {place.name}
+                <div className="font-medium mb-1">Address</div>
+                <div className="whitespace-pre-line leading-relaxed">
+                  {lines.join("\n")}
+                </div>
               </div>
             )}
-            {pickup.description && (
+
+            {/* Type (was “Place”) */}
+            {(type?.name || place?.name) && (
+              <div className="text-sm">
+                <div className="font-medium mb-1">Type</div>
+                <div>
+                  {type?.name ?? "—"}
+                  {place?.name ? ` · ${place.name}` : ""}
+                </div>
+              </div>
+            )}
+
+            {/* Description */}
+            {row.description && (
               <div className="text-sm">
                 <div className="font-medium mb-1">Description</div>
-                <p className="whitespace-pre-wrap">{pickup.description}</p>
+                <div className="whitespace-pre-line">{row.description}</div>
               </div>
             )}
-            {pickup.arrival_notes && (
+
+            {/* Arrival notes (new) */}
+            {row.arrival_notes && (
               <div className="text-sm">
                 <div className="font-medium mb-1">Arrival notes</div>
-                <p className="whitespace-pre-wrap">{pickup.arrival_notes}</p>
+                <div className="whitespace-pre-line">{row.arrival_notes}</div>
+              </div>
+            )}
+
+            {/* Map */}
+            {lines.length > 0 && (
+              <div className="text-sm">
+                <div className="font-medium mb-2">Location</div>
+                <div className="aspect-[16/10] w-full overflow-hidden rounded-lg border">
+                  <iframe
+                    title="Map"
+                    src={mapsEmbedUrl(lines)}
+                    className="w-full h-full"
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </div>
+                <div className="mt-1">
+                  <a
+                    className="text-blue-600 underline text-sm"
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lines.join(", "))}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open in Google Maps
+                  </a>
+                </div>
               </div>
             )}
           </div>
-
-          {/* Map */}
-          {address && (
-            <div className="rounded-2xl border bg-white shadow overflow-hidden">
-              <div className="aspect-[3/2] w-full">
-                <iframe
-                  title="Map"
-                  src={mapsEmbed}
-                  className="w-full h-full border-0"
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                />
-              </div>
-              <div className="p-3">
-                <a
-                  href={mapsDir}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-block px-4 py-2 rounded-lg text-white"
-                  style={{ backgroundColor: "#2563eb" }}
-                >
-                  Open directions in Google Maps
-                </a>
-              </div>
-            </div>
-          )}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
