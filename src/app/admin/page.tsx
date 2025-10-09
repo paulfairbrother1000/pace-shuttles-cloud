@@ -215,7 +215,6 @@ function allocateDetailed(
   // T-72 rebalancer:
   // Ensure all ACTIVE boats are >= min, allowing at most ONE to be min-1.
   if (horizon === "T72") {
-    // Helper to count under-min boats
     const active = () => [...work.values()].filter(w => w.used > 0);
     const underMin = () => active().filter(w => w.used < w.def.min);
     const overMin = () => active().filter(w => w.used > w.def.min);
@@ -225,35 +224,30 @@ function allocateDetailed(
       const free = receiver.def.max - receiver.used;
       if (free <= 0) return false;
 
-      // pick the smallest group that helps us reach min, prefer exact hit
       const sorted = [...donor.groups].sort((a, b) => a.size - b.size);
       let pick: { order_id: UUID; size: number } | null = null;
-      let exact = false;
 
       for (const g of sorted) {
         if (g.size > free) continue;
         const donorWouldBe = donor.used - g.size;
         if (donorWouldBe < donor.def.min) continue; // don't push donor below min
 
+        // prefer exact hit if possible
         const recvWouldBe = receiver.used + g.size;
         if (recvWouldBe === receiver.def.min) {
-          pick = g; exact = true; break;
+          pick = g; break;
         }
-        // keep a candidate that fits
         pick = pick ?? g;
       }
       if (!pick) return false;
 
-      // move pick
       donor.used -= pick.size;
       receiver.used += pick.size;
 
-      // remove from donor groups & add to receiver groups
       const idx = donor.groups.findIndex(x => x.order_id === pick!.order_id && x.size === pick!.size);
       if (idx >= 0) donor.groups.splice(idx, 1);
       receiver.groups.push(pick);
 
-      // update byBoat map
       const dMap = byBoat.get(donor.def.vehicle_id)!;
       const rMap = byBoat.get(receiver.def.vehicle_id) ?? { seats: 0, orders: [] };
       dMap.seats -= pick.size;
@@ -266,16 +260,14 @@ function allocateDetailed(
       return true;
     };
 
-    // First, raise receivers to min where possible
+    // Raise receivers to min where possible
     let changed = true;
     while (changed) {
       changed = false;
-      // receiver with largest deficit first
       const receivers = underMin().sort((a, b) => (b.def.min - b.used) - (a.def.min - a.used));
       if (!receivers.length) break;
 
       for (const recv of receivers) {
-        // donors: highest surplus first
         const donors = overMin().sort((a, b) => (b.used - b.def.min) - (a.used - a.def.min));
         for (const don of donors) {
           if (tryMove(don, recv)) { changed = true; break; }
@@ -283,22 +275,19 @@ function allocateDetailed(
       }
     }
 
-    // Now ensure we have at most ONE under-min boat; release extras by merging them into others if possible
-    type W = ReturnType<typeof active>[number];
+    // Ensure at most ONE under-min boat; try to merge additional under-mins into others
     const activeW = () => [...work.values()].filter(w => w.used > 0);
     let under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     while (under.length > 1) {
-      const src = under[0]; // try to empty this one
+      const src = under[0];
       let movedAnything = false;
 
-      // prefer targets already >= min
       const targets = activeW()
         .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
         .sort((a, b) => {
           const aPref = a.used >= a.def.min ? 0 : 1;
           const bPref = b.used >= b.def.min ? 0 : 1;
           if (aPref !== bPref) return aPref - bPref;
-          // more free capacity first
           return (b.def.max - b.used) - (a.def.max - a.used);
         });
 
@@ -307,7 +296,6 @@ function allocateDetailed(
           const free = tgt.def.max - tgt.used;
           if (g.size > free) continue;
 
-          // move g from src to tgt (tgt may become >min, that's fine)
           src.used -= g.size;
           tgt.used += g.size;
 
@@ -329,7 +317,7 @@ function allocateDetailed(
         }
       }
 
-      if (!movedAnything) break; // can’t merge further
+      if (!movedAnything) break;
       under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     }
   }
@@ -372,9 +360,8 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
       break;
     }
   }
-  // If still null, see if total < smallest min window => reduce k to 1 and ignore extra boats (single boat path)
+  // fallback: smallest k with capacity, but we will still enforce mins for any running boat
   if (!chosen) {
-    // Find any k where total <= maxSum; use smallest such k and allow some boats at 0 (but cannot be < min for running boats)
     for (let k = 1; k <= ranked.length; k++) {
       const subset = ranked.slice(0, k);
       const maxSum = subset.reduce((s, b) => s + b.max, 0);
@@ -414,17 +401,20 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     else remaining.push(g);
   }
 
-  // Check if any bucket still below min; if so, try to merge-down (reduce boats) and retry
+  // If any bucket still below min, we cannot run multiple boats unless mins are satisfiable.
   const belowMin = buckets.filter(b => b.used > 0 && b.used < b.def.min);
   if (belowMin.length > 0) {
-    // If total < sum(mins), running multiple boats is impossible; try single-boat allocation.
+    // Try single-boat, but only if total satisfies that boat's min AND max
     const single = ranked[0];
-    if (total <= single.max) {
+    if (total >= single.min && total <= single.max) {
       const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
-      byBoat.set(single.vehicle_id, { seats: total, orders: groups.map(g => ({ order_id: g.order_id, size: g.size })) });
+      byBoat.set(single.vehicle_id, {
+        seats: total,
+        orders: groups.map(g => ({ order_id: g.order_id, size: g.size })),
+      });
       return { byBoat, unassigned: [], total };
     }
-    throw new Error("Cannot meet minimum seats across selected boats. Reduce active boats or adjust mins.");
+    throw new Error("Cannot meet minimum seats across selected boats. Total passengers below the smallest min.");
   }
 
   // Pass B — balance: place remaining groups into bucket with smallest projected load (<= max)
@@ -663,6 +653,7 @@ export default function AdminPage() {
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
     boats?: Boat[];
+    atRiskBelowMin?: boolean;     // NEW: for T-72 gating
   };
 
   const rows: UiRow[] = useMemo(() => {
@@ -778,7 +769,7 @@ export default function AdminPage() {
               db: 0,
               min: v?.minseats != null ? Number(v.minseats) : null,
               max: v?.maxseats != null ? Number(v.maxseats) : null,
-              preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
+              preferred: !!rvaArr.find(x => x.vehicle_id)?.preferred,
               groups: [],
             });
           }
@@ -825,6 +816,11 @@ export default function AdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
+      // NEW: T-72 "at risk" flag (any running boat below min)
+      const atRiskBelowMin =
+        isT72orT24(horizon) &&
+        perBoat.some(b => b.db > 0 && b.min != null && b.db < (b.min as number));
+
       out.push({
         journey: j,
         pickup: pickupNameById.get(r.pickup_id) ?? "—",
@@ -845,6 +841,7 @@ export default function AdminPage() {
         lockedAlloc: locked,
         parties,
         boats,
+        atRiskBelowMin,
       });
     }
 
@@ -895,6 +892,12 @@ export default function AdminPage() {
     try {
       if (!row.parties?.length || !row.boats?.length) {
         alert("No data to finalise.");
+        return;
+      }
+
+      // Prevent finalise at T-72 if below min
+      if (row.horizon === "T72" && row.atRiskBelowMin) {
+        setErr("Cannot finalise at T-72: one or more boats would run below their minimum seats.");
         return;
       }
 
@@ -982,9 +985,6 @@ export default function AdminPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Site Admin — Live Journeys</h1>
-          <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist.
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-neutral-700">Operator:</label>
@@ -1003,20 +1003,24 @@ export default function AdminPage() {
         </div>
       </header>
 
+      <p className="text-neutral-600 text-sm">
+        Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist.
+      </p>
+
       {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm mt-2">
           {err}
         </div>
       )}
 
       {loading ? (
-        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
+        <div className="p-4 border rounded-xl bg-white shadow mt-4">Loading…</div>
       ) : rows.length === 0 ? (
-        <div className="p-4 border rounded-xl bg-white shadow">
+        <div className="p-4 border rounded-xl bg-white shadow mt-4">
           No journeys with client assignments.
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-6 mt-4">
           {rows.map(row => (
             <section
               key={row.journey.id}
@@ -1038,8 +1042,8 @@ export default function AdminPage() {
                       T-24 (Final window)
                     </span>
                   ) : row.horizon === "T72" ? (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">
-                      T-72 (Confirm window)
+                    <span className={`px-2 py-0.5 rounded-full text-xs ${row.atRiskBelowMin ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800"}`}>
+                      {row.atRiskBelowMin ? "T-72 (At risk: below min)" : "T-72 (Confirm window)"}
                     </span>
                   ) : row.horizon === ">72h" ? (
                     <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
@@ -1092,9 +1096,19 @@ export default function AdminPage() {
                       </>
                     ) : (
                       <button
-                        className="text-xs px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50"
-                        onClick={() => lockJourney(row)}
-                        title="Run the T-24 final shuffle and persist allocation"
+                        className={`text-xs px-3 py-1 rounded-lg border ${row.horizon === "T72" && row.atRiskBelowMin
+                          ? "border-neutral-300 text-neutral-400 cursor-not-allowed"
+                          : "border-blue-600 text-blue-600 hover:bg-blue-50"}`}
+                        onClick={() => {
+                          if (row.horizon === "T72" && row.atRiskBelowMin) return;
+                          lockJourney(row);
+                        }}
+                        title={
+                          row.horizon === "T72" && row.atRiskBelowMin
+                            ? "Below min — cannot confirm at T-72"
+                            : "Run the T-24 final shuffle and persist allocation"
+                        }
+                        disabled={row.horizon === "T72" && row.atRiskBelowMin}
                       >
                         Finalise
                       </button>
