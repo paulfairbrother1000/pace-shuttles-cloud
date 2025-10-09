@@ -242,7 +242,10 @@ export async function POST(req: NextRequest) {
       });
     }
     if (!auth?.user)
-      return NextResponse.json({ ok: false, error: "Auth required" }, { status: 401 });
+      return NextResponse.json(
+        { ok: false, error: "Auth required" },
+        { status: 401 }
+      );
     const userId = auth.user.id;
 
     // tax/fees snapshot
@@ -359,24 +362,12 @@ export async function POST(req: NextRequest) {
     // optional: create booking right away (dev)
     let bookingId: string | null = null;
     let becamePaidNow = false;
-
-    // We'll also need these to decide the operator save-date email.
     let journeyIdForEmail: string | null = null;
-    let isFirstForJourney = false;
 
     if (CREATE_BOOKING_IMMEDIATELY) {
       try {
         const journeyId = await ensureJourneyId(routeId!, dateISO!);
         journeyIdForEmail = journeyId;
-
-        // count BEFORE insert (head:true gives count w/o rows)
-        if (journeyId) {
-          const { count } = await admin
-            .from("bookings")
-            .select("id", { count: "exact", head: true })
-            .eq("journey_id", journeyId);
-          isFirstForJourney = (count || 0) === 0;
-        }
 
         const lead = paxRows.find((p) => p.is_lead);
         const customer_name =
@@ -394,7 +385,7 @@ export async function POST(req: NextRequest) {
             order_id: inserted.id,
             paid_at: new Date().toISOString(),
           })
-          .select("id")
+          .select("id, journey_id")
           .maybeSingle();
 
         if (bookErr) {
@@ -413,113 +404,151 @@ export async function POST(req: NextRequest) {
         } else {
           becamePaidNow = true;
         }
-      } catch (e: any) {
-        console.warn("[/api/checkout] dev booking creation skipped:", e?.message ?? e);
-      }
-    }
 
-    // Customer email (when paid now)
-    if (becamePaidNow) {
-      try {
-        await sendBookingPaidEmail(inserted.id);
-      } catch (e) {
-        console.error("sendBookingPaidEmail failed (non-blocking):", e);
-      }
-    }
+        // Re-count AFTER insert to detect "first booking"
+        let isFirstForJourney = false;
+        if (booking?.journey_id) {
+          const { count: afterCount } = await admin
+            .from("bookings")
+            .select("id", { count: "exact", head: true })
+            .eq("journey_id", booking.journey_id);
+          isFirstForJourney = (afterCount || 0) === 1;
+        }
 
-    // Operator "Save the Date" — only on FIRST booking for the journey and only if >72h
-    if (becamePaidNow && journeyIdForEmail && isFirstForJourney) {
-      try {
-        // get journey + route + country tz/name
-        const [{ data: journey }, { data: routeRow }, { data: country }] =
-          await Promise.all([
-            admin
-              .from("journeys")
-              .select("id, route_id, departure_ts, operator_id, vehicle_id")
-              .eq("id", journeyIdForEmail)
-              .maybeSingle(),
-            admin
-              .from("routes")
-              .select("id, route_name, country_id, transport_type")
-              .eq("id", routeId!)
-              .maybeSingle(),
-            admin
-              .from("countries")
-              .select("name, timezone")
-              .eq("id", (await admin.from("routes").select("country_id").eq("id", routeId!).maybeSingle()).data?.country_id || "")
-              .maybeSingle(),
-          ]);
+        // Customer email (when paid now)
+        if (becamePaidNow) {
+          try {
+            await sendBookingPaidEmail(inserted.id);
+          } catch (e) {
+            console.error("sendBookingPaidEmail failed (non-blocking):", e);
+          }
+        }
 
-        const dep = journey?.departure_ts || null;
-        if (dep) {
-          const depDate = new Date(dep);
-          const lockDate = new Date(depDate.getTime() - 72 * 60 * 60 * 1000);
-          const now = new Date();
-          const moreThan72h = now < lockDate;
+        // Operator "Save the Date" — only on FIRST booking and only if >72h
+        if (becamePaidNow && isFirstForJourney && journeyIdForEmail) {
+          try {
+            console.log("[save-date] first booking detected; preparing email.");
 
-          if (moreThan72h) {
-            // Pick preferred assigned vehicle (or first)
-            const { data: assigns } = await admin
-              .from("assignments")
-              .select("vehicle_id, preferred")
-              .eq("route_id", routeId!)
-              .order("preferred", { ascending: false })
-              .limit(5);
+            // Load journey + route
+            const [{ data: journey }, { data: routeRow }] = await Promise.all([
+              admin
+                .from("journeys")
+                .select("id, route_id, departure_ts, operator_id, vehicle_id")
+                .eq("id", journeyIdForEmail)
+                .maybeSingle(),
+              admin
+                .from("routes")
+                .select("id, route_name, country_id, transport_type")
+                .eq("id", routeId!)
+                .maybeSingle(),
+            ]);
 
-            let vehicleId: string | null =
-              journey?.vehicle_id || assigns?.[0]?.vehicle_id || null;
+            if (!journey || !routeRow || !journey.departure_ts) {
+              console.log("[save-date] missing journey/route data; skipped.");
+              throw new Error("missing journey/route");
+            }
 
-            // load operator via vehicle
-            let operator: { id: string; name: string; email: string | null } | null =
-              null;
-            let vehicleName = "";
-            if (vehicleId) {
-              const { data: v } = await admin
-                .from("vehicles")
-                .select("id,name,operator_id,type_id")
-                .eq("id", vehicleId)
+            // Country/timezone (best-effort)
+            let tz = "UTC";
+            if (routeRow.country_id) {
+              const { data: country } = await admin
+                .from("countries")
+                .select("timezone")
+                .eq("id", routeRow.country_id)
                 .maybeSingle();
+              tz = country?.timezone || tz;
+            }
 
-              vehicleName = v?.name || "Your boat";
+            // T-72 check
+            const dep = new Date(journey.departure_ts);
+            const lockDate = new Date(dep.getTime() - 72 * 60 * 60 * 1000);
+            const moreThan72h = new Date() < lockDate;
+            if (!moreThan72h) {
+              console.log("[save-date] inside 72h window; not sending.");
+              throw new Error("inside-72h");
+            }
 
-              if (v?.operator_id) {
-                const { data: op } = await admin
-                  .from("operators")
-                  .select("id,name,email")
-                  .eq("id", v.operator_id)
-                  .maybeSingle();
-                if (op?.email) {
-                  operator = {
-                    id: op.id,
-                    name: op.name,
-                    email: String(op.email),
-                  };
-                }
+            // Resolve vehicle → operator
+            let vehicleId: string | null = journey.vehicle_id || null;
+
+            if (!vehicleId) {
+              // try assignments (preferred first)
+              const { data: assignsA } = await admin
+                .from("assignments")
+                .select("vehicle_id, preferred")
+                .eq("route_id", routeId!)
+                .order("preferred", { ascending: false })
+                .limit(1);
+
+              // fallback to route_assignments
+              if (assignsA && assignsA.length > 0) {
+                vehicleId = assignsA[0].vehicle_id;
+              } else {
+                const { data: assignsB } = await admin
+                  .from("route_assignments")
+                  .select("vehicle_id, preferred")
+                  .eq("route_id", routeId!)
+                  .order("preferred", { ascending: false })
+                  .limit(1);
+                vehicleId = assignsB?.[0]?.vehicle_id || null;
               }
             }
 
-            if (operator?.email) {
-              await sendOperatorSaveDateEmail({
-                to: operator.email,
-                vehicleName,
-                vehicleType: routeRow?.transport_type || "boat",
-                routeName: routeRow?.route_name || "journey",
-                journeyDateISO: dep,
-                journeyTZ: country?.timezone || "UTC",
-                operatorHomeUrl: "https://www.paceshuttles.com/operators",
-                termsUrl: "https://www.paceshuttles.com/operators/terms",
-                tMinusLockISO: lockDate.toISOString(),
-              });
-            } else {
-              console.warn(
-                "[save-the-date] No operator email found; skipped."
-              );
+            if (!vehicleId) {
+              console.log("[save-date] no vehicle found; skipped.");
+              throw new Error("no-vehicle");
             }
+
+            const { data: vehicle } = await admin
+              .from("vehicles")
+              .select("id, name, operator_id, type_id")
+              .eq("id", vehicleId)
+              .maybeSingle();
+
+            if (!vehicle?.operator_id) {
+              console.log("[save-date] vehicle has no operator_id; skipped.");
+              throw new Error("no-operator-id");
+            }
+
+            const { data: op } = await admin
+              .from("operators")
+              .select("id, name, email, contact_email, notification_email")
+              .eq("id", vehicle.operator_id)
+              .maybeSingle();
+
+            const operatorEmail =
+              (op?.email as string | null) ||
+              (op?.contact_email as string | null) ||
+              (op?.notification_email as string | null) ||
+              null;
+
+            if (!operatorEmail) {
+              console.log("[save-date] operator email not found; skipped.");
+              throw new Error("no-operator-email");
+            }
+
+            console.log("[save-date] sending to", operatorEmail);
+
+            await sendOperatorSaveDateEmail({
+              to: operatorEmail,
+              vehicleName: vehicle?.name || "Your boat",
+              vehicleType: routeRow.transport_type || "boat",
+              routeName: routeRow.route_name || "journey",
+              journeyDateISO: journey.departure_ts,
+              journeyTZ: tz,
+              operatorHomeUrl: "https://www.paceshuttles.com/operators",
+              termsUrl: "https://www.paceshuttles.com/operators/terms",
+              tMinusLockISO: lockDate.toISOString(),
+            });
+          } catch (e) {
+            console.warn("save-the-date email not sent:", (e as any)?.message || e);
           }
         }
-      } catch (e) {
-        console.error("save-the-date email failed (non-blocking):", e);
+      } catch (e: any) {
+        console.warn("[/api/checkout] dev booking creation skipped:", e?.message ?? e);
       }
+    } else {
+      // If you later add card payments, move email/webhook logic to your payment success handler.
     }
 
     // success URL
