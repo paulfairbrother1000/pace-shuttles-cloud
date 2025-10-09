@@ -100,7 +100,6 @@ type Boat = {
   price_cents?: number | null; // keep null for now; wire real prices later
 };
 
-
 type DetailedAlloc = {
   byBoat: Map<
     UUID,
@@ -135,7 +134,6 @@ function allocateDetailed(
     const pb = b.price_cents ?? 0;
     if (pa !== pb) return pa - pb;
 
-    // same "price tier" — apply preferred only within the same operator
     const sameOp = (a.operator_id ?? null) === (b.operator_id ?? null);
     if (sameOp && a.preferred !== b.preferred) return a.preferred ? -1 : 1;
 
@@ -286,13 +284,15 @@ function allocateDetailed(
     }
 
     // Now ensure we have at most ONE under-min boat; release extras by merging them into others if possible
-    let under = underMin().sort((a, b) => a.used - b.used); // smallest first
+    type W = ReturnType<typeof active>[number];
+    const activeW = () => [...work.values()].filter(w => w.used > 0);
+    let under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     while (under.length > 1) {
       const src = under[0]; // try to empty this one
       let movedAnything = false;
 
       // prefer targets already >= min
-      const targets = active()
+      const targets = activeW()
         .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
         .sort((a, b) => {
           const aPref = a.used >= a.def.min ? 0 : 1;
@@ -330,18 +330,147 @@ function allocateDetailed(
       }
 
       if (!movedAnything) break; // can’t merge further
-      under = underMin().sort((a, b) => a.used - b.used);
+      under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     }
-
-    // Allow exactly one boat to be min-1 (if total demand tight)
-    // (No extra work needed here; the above steps already minimise receivers under min.
-    // We simply don't force the last under-min up to min if total pax insufficient.)
   }
 
   const total = parties.reduce((s, p) => s + (p.size || 0), 0);
   return { byBoat, unassigned, total };
 }
 
+/* ---------- Final (T-24) allocator ---------- */
+/**
+ * Deterministic T-24 finaliser: choose the smallest number of boats that can run,
+ * assign groups so that ALL boats >= min, none exceed max, and balance loads.
+ * Throws with a human-readable reason if impossible.
+ */
+function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
+  const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
+  const ranked = [...boats].sort((a, b) => {
+    // cheaper first, then preferred within operator, then id
+    const pa = a.price_cents ?? 0;
+    const pb = b.price_cents ?? 0;
+    if (pa !== pb) return pa - pb;
+    const sameOp = (a.operator_id ?? null) === (b.operator_id ?? null);
+    if (sameOp && a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+    return String(a.vehicle_id).localeCompare(String(b.vehicle_id));
+  });
+
+  const total = groups.reduce((s, g) => s + g.size, 0);
+  if (!ranked.length) {
+    throw new Error("No vehicles available for this route.");
+  }
+
+  // Try k = 1..n boats; pick smallest k that can legally host 'total' (mins/maxs window)
+  let chosen: Boat[] | null = null;
+  for (let k = 1; k <= ranked.length; k++) {
+    const subset = ranked.slice(0, k);
+    const minSum = subset.reduce((s, b) => s + b.min, 0);
+    const maxSum = subset.reduce((s, b) => s + b.max, 0);
+    if (total >= minSum && total <= maxSum) {
+      chosen = subset;
+      break;
+    }
+  }
+  // If still null, see if total < smallest min window => reduce k to 1 and ignore extra boats (single boat path)
+  if (!chosen) {
+    // Find any k where total <= maxSum; use smallest such k and allow some boats at 0 (but cannot be < min for running boats)
+    for (let k = 1; k <= ranked.length; k++) {
+      const subset = ranked.slice(0, k);
+      const maxSum = subset.reduce((s, b) => s + b.max, 0);
+      if (total <= maxSum) { chosen = subset; break; }
+    }
+  }
+  if (!chosen) throw new Error("Capacity window exceeded: total passengers exceed fleet max.");
+
+  // Assign: Pass A — reach mins for each running boat greedily by largest deficit
+  type Bucket = { def: Boat; used: number; orders: Party[] };
+  const buckets: Bucket[] = chosen.map(b => ({ def: b, used: 0, orders: [] }));
+
+  const place = (i: number, g: Party) => {
+    buckets[i].used += g.size;
+    buckets[i].orders.push(g);
+  };
+
+  // Helper to find candidate index under min that can fit g
+  const findReceiverForMin = (g: Party): number => {
+    let best = -1;
+    let bestDeficit = -1;
+    for (let i = 0; i < buckets.length; i++) {
+      const b = buckets[i];
+      const free = b.def.max - b.used;
+      if (free < g.size) continue;
+      const deficit = Math.max(0, b.def.min - b.used);
+      if (deficit <= 0) continue;
+      if (deficit > bestDeficit) { bestDeficit = deficit; best = i; }
+    }
+    return best;
+  };
+
+  const remaining: Party[] = [];
+  for (const g of groups) {
+    const idx = findReceiverForMin(g);
+    if (idx >= 0) place(idx, g);
+    else remaining.push(g);
+  }
+
+  // Check if any bucket still below min; if so, try to merge-down (reduce boats) and retry
+  const belowMin = buckets.filter(b => b.used > 0 && b.used < b.def.min);
+  if (belowMin.length > 0) {
+    // If total < sum(mins), running multiple boats is impossible; try single-boat allocation.
+    const single = ranked[0];
+    if (total <= single.max) {
+      const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
+      byBoat.set(single.vehicle_id, { seats: total, orders: groups.map(g => ({ order_id: g.order_id, size: g.size })) });
+      return { byBoat, unassigned: [], total };
+    }
+    throw new Error("Cannot meet minimum seats across selected boats. Reduce active boats or adjust mins.");
+  }
+
+  // Pass B — balance: place remaining groups into bucket with smallest projected load (<= max)
+  for (const g of remaining) {
+    let target = -1;
+    let bestLoad = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < buckets.length; i++) {
+      const b = buckets[i];
+      const free = b.def.max - b.used;
+      if (free < g.size) continue;
+      const projected = b.used + g.size;
+      if (projected < bestLoad) {
+        bestLoad = projected;
+        target = i;
+      }
+    }
+    if (target === -1) {
+      throw new Error("A group cannot fit within max capacities. Consider opening another boat.");
+    }
+    place(target, g);
+  }
+
+  // Final validation: all running boats >= min; none > max
+  for (const b of buckets) {
+    if (b.used > 0 && b.used < b.def.min) {
+      throw new Error(`Boat would run below min (${b.used} < ${b.def.min}).`);
+    }
+    if (b.used > b.def.max) {
+      throw new Error(`Boat would exceed max (${b.used} > ${b.def.max}).`);
+    }
+  }
+
+  // Build DetailedAlloc
+  const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
+  for (const b of buckets) {
+    if (b.used <= 0) continue; // don't include empty boats
+    byBoat.set(
+      b.def.vehicle_id,
+      {
+        seats: b.used,
+        orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })),
+      }
+    );
+  }
+  return { byBoat, unassigned: [], total };
+}
 
 /* ---------- Page ---------- */
 export default function AdminPage() {
@@ -579,27 +708,25 @@ export default function AdminPage() {
       // Candidate boats
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
       const boats: Boat[] = rvaArr
-  .map(x => {
-    const v = vehicleById.get(x.vehicle_id);
-    if (!v || v.active === false) return null;
-    const min = Number(v?.minseats ?? 0);
-    const max = Number(v?.maxseats ?? 0);
-    return {
-      vehicle_id: x.vehicle_id,
-      preferred: !!x.preferred,
-      min: Number.isFinite(min) ? min : 0,
-      max: Number.isFinite(max) ? max : 0,
-      operator_id: v.operator_id ?? null,
-      price_cents: null, // placeholder until we wire real price
-    };
-  })
-  .filter(Boolean) as Boat[];
-
+        .map(x => {
+          const v = vehicleById.get(x.vehicle_id);
+          if (!v || v.active === false) return null;
+          const min = Number(v?.minseats ?? 0);
+          const max = Number(v?.maxseats ?? 0);
+          return {
+            vehicle_id: x.vehicle_id,
+            preferred: !!x.preferred,
+            min: Number.isFinite(min) ? min : 0,
+            max: Number.isFinite(max) ? max : 0,
+            operator_id: v.operator_id ?? null,
+            price_cents: null, // placeholder until we wire real price
+          };
+        })
+        .filter(Boolean) as Boat[];
 
       let previewAlloc = allocateDetailed(parties, boats, { horizon });
 
       const maxTotal = boats.reduce((s, b) => s + b.max, 0);
-
 
       // If locked, build from persisted rows
       const locked = locksByJourney.get(j.id) ?? [];
@@ -761,28 +888,42 @@ export default function AdminPage() {
     operatorNameById,
   ]);
 
-  /* ---------- Actions: Lock / Unlock ---------- */
+  /* ---------- Actions: Finalise / Unlock ---------- */
 
   async function lockJourney(row: UiRow) {
     if (!supabase) return;
     try {
-      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] =
-        [];
-
-      if (row.previewAlloc && row.parties && row.boats) {
-        for (const [vehId, data] of row.previewAlloc.byBoat.entries()) {
-          for (const o of data.orders) {
-            allocToSave.push({
-              journey_id: row.journey.id,
-              vehicle_id: vehId,
-              order_id: o.order_id,
-              seats: o.size,
-            });
-          }
-        }
-      } else {
-        alert("No preview allocation available to lock.");
+      if (!row.parties?.length || !row.boats?.length) {
+        alert("No data to finalise.");
         return;
+      }
+
+      // Run strict T-24 allocator (final shuffle)
+      let finalAlloc: DetailedAlloc;
+      try {
+        finalAlloc = allocateFinalT24(row.parties, row.boats);
+      } catch (e: any) {
+        setErr(`Cannot finalise: ${e?.message ?? String(e)}`);
+        return;
+      }
+
+      // Validate: no unassigned; all running boats >= min
+      if (finalAlloc.unassigned.length > 0) {
+        setErr("Cannot finalise: some groups could not be assigned within capacities.");
+        return;
+      }
+
+      // Persist
+      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] = [];
+      for (const [vehId, data] of finalAlloc.byBoat.entries()) {
+        for (const o of data.orders) {
+          allocToSave.push({
+            journey_id: row.journey.id,
+            vehicle_id: vehId,
+            order_id: o.order_id,
+            seats: o.size,
+          });
+        }
       }
 
       // Replace existing rows for this journey
@@ -842,7 +983,7 @@ export default function AdminPage() {
         <div>
           <h1 className="text-2xl font-semibold">Site Admin — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Lock</strong> to persist.
+            Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -894,11 +1035,11 @@ export default function AdminPage() {
                   {/* Horizon badge */}
                   {row.horizon === "T24" ? (
                     <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
-                      T-24 (Finalised)
+                      T-24 (Final window)
                     </span>
                   ) : row.horizon === "T72" ? (
                     <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">
-                      T-72 (Confirmed)
+                      T-72 (Confirm window)
                     </span>
                   ) : row.horizon === ">72h" ? (
                     <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
@@ -936,7 +1077,7 @@ export default function AdminPage() {
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
-                  {/* Lock/Unlock */}
+                  {/* Finalise / Unlock */}
                   {(row.horizon === "T24" || row.horizon === "T72") && (
                     row.isLocked ? (
                       <>
@@ -953,9 +1094,9 @@ export default function AdminPage() {
                       <button
                         className="text-xs px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50"
                         onClick={() => lockJourney(row)}
-                        title="Persist the current preview allocation"
+                        title="Run the T-24 final shuffle and persist allocation"
                       >
-                        Lock
+                        Finalise
                       </button>
                     )
                   )}
