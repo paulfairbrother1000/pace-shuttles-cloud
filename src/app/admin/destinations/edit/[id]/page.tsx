@@ -84,7 +84,8 @@ function emptyDest(): DestinationRow {
     url: "",
     gift: "",
     arrival_notes: "",
-    email: "",
+    // IMPORTANT: start as null, not ""
+    email: null,
   };
 }
 
@@ -98,7 +99,6 @@ function publicImage(input?: string | null): string | undefined {
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
   if (!supaHost) return undefined;
 
-  // already absolute
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
@@ -204,15 +204,21 @@ export default function DestinationEditPage({ params }: { params: { id: string }
           if (!data) throw new Error("Destination not found.");
           const r = data as DestinationRow;
 
-          // Coerce legacy wet/dry & email blanks on LOAD
+          // Coerce legacy wet/dry
           const legacy = (r.wet_or_dry ?? "").toString().toLowerCase();
           const coercedWD: "wet" | "dry" | null =
             legacy === "wet" ? "wet" : legacy === "dry" ? "dry" : null;
 
+          // Robust email blank → null (can't rely on truthy check)
+          const rawEmail =
+            r.email === null ? null : (typeof r.email === "string" ? r.email : String(r.email));
+          const trimmedEmail = rawEmail === null ? null : rawEmail.trim();
+          const cleanEmail = trimmedEmail && trimmedEmail.length > 0 ? trimmedEmail : null;
+
           setRow({
             ...r,
             wet_or_dry: coercedWD,
-            email: r.email && r.email.trim().length === 0 ? null : r.email, // ← important
+            email: cleanEmail, // ← this is the key fix
             season_from: r.season_from ? toYMD(r.season_from) : null,
             season_to: r.season_to ? toYMD(r.season_to) : null,
           });
@@ -281,7 +287,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
         description: norm(row.description),
         picture_url,
         arrival_notes: norm(row.arrival_notes),
-        email: norm(row.email), // ← important
+        email: norm(row.email), // ← blanks become NULL here too
       };
 
       if (isCreate) {
@@ -499,7 +505,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
                     onChange={(e) => update("region", e.target.value || null)}
                   />
                 </label>
-                <label className="block text-sm">
+                <label className="block text sm">
                   <span className="text-neutral-700">Postal code</span>
                   <input
                     className="w-full mt-1 border rounded-lg px-3 py-2"
@@ -531,7 +537,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
                 />
               </label>
 
-              <label className="block text-sm">
+              <label className="block text sm">
                 <span className="text-neutral-700">Arrival notes (shown to passengers)</span>
                 <textarea
                   className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[100px]"
