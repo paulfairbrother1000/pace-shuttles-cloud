@@ -34,6 +34,10 @@ type DestinationRow = {
 type DestType = { id: number; type: string | null };
 type ArrivalType = { id: number; type: "wet" | "dry" | null; advice: string | null };
 
+// ---- Storage config for uploads ----
+const BUCKET = "images";
+const FOLDER = "destinations";
+
 function supa() {
   if (
     typeof window !== "undefined" &&
@@ -47,6 +51,20 @@ function supa() {
   }
   return null;
 }
+
+function slugify(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+/** empty → null; trims strings */
+const norm = (s: string | null | undefined) => {
+  const t = (s ?? "").trim();
+  return t.length ? t : null;
+};
 
 function emptyDest(): DestinationRow {
   return {
@@ -77,13 +95,6 @@ function emptyDest(): DestinationRow {
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
-
-  // add near the top of the file
-const norm = (s: string | null | undefined) => {
-  const t = (s ?? "").trim();
-  return t.length ? t : null;
-};
-
 
   const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
   const supaHost = supaUrl.replace(/^https?:\/\//i, "");
@@ -149,10 +160,14 @@ export default function DestinationEditPage({
   const [arrivalChoice, setArrivalChoice] = useState<number | null>(null); // destination_arrival.id
   const selectedArrival = arrivalTypes.find((a) => a.id === arrivalChoice);
 
-  // derived: image preview src
+  // Image upload state
+  const [file, setFile] = useState<File | null>(null);
   const imgSrc = useMemo(
-    () => publicImage((row?.picture_url as string | undefined) || "") || "",
-    [row?.picture_url]
+    () =>
+      file
+        ? URL.createObjectURL(file)
+        : publicImage((row?.picture_url as string | undefined) || "") || "",
+    [file, row?.picture_url]
   );
 
   // Preload lookups + (optionally) existing row
@@ -256,33 +271,50 @@ export default function DestinationEditPage({
     if (!client) return;
     setErr(null);
     try {
-      // Normalise payload to match DB
+      // 1) Optional image upload (file wins over manual URL)
+      let picture_url: string | null = norm(row.picture_url);
+      if (file) {
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        const key = `${FOLDER}/${slugify(row.name || "destination")}.${ext}`;
 
-const payload: DestinationRow = {
-  ...row,
-  name: String(row.name || "").trim(),
-  season_from: row.season_from ? toYMD(row.season_from) : null,
-  season_to: row.season_to ? toYMD(row.season_to) : null,
-  destination_type: row.destination_type || null,
-  wet_or_dry: (row.wet_or_dry as "wet" | "dry" | null) ?? null,
+        const { error: upErr } = await client.storage
+          .from(BUCKET)
+          .upload(key, file, {
+            upsert: true,
+            cacheControl: "3600",
+            contentType:
+              file.type || (ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg"),
+          });
+        if (upErr) throw upErr;
 
-  // normalize ALL optional text fields
-  url: norm(row.url),
-  gift: norm(row.gift),
-  phone: norm(row.phone),
-  address1: norm(row.address1),
-  address2: norm(row.address2),
-  town: norm(row.town),
-  region: norm(row.region),
-  postal_code: norm(row.postal_code),
-  description: norm(row.description),
-  picture_url: norm(row.picture_url),
+        const { data: pub } = client.storage.from(BUCKET).getPublicUrl(key);
+        picture_url = pub?.publicUrl || picture_url;
+      }
 
-  // NEW — crucial for the constraint
-  arrival_notes: norm(row.arrival_notes),
-  email: norm(row.email),
-};
+      // 2) Normalise payload to match DB
+      const payload: DestinationRow = {
+        ...row,
+        name: String(row.name || "").trim(),
+        season_from: row.season_from ? toYMD(row.season_from) : null,
+        season_to: row.season_to ? toYMD(row.season_to) : null,
+        destination_type: norm(row.destination_type) as any,
+        wet_or_dry: (row.wet_or_dry as "wet" | "dry" | null) ?? null,
 
+        url: norm(row.url),
+        gift: norm(row.gift),
+        phone: norm(row.phone),
+        address1: norm(row.address1),
+        address2: norm(row.address2),
+        town: norm(row.town),
+        region: norm(row.region),
+        postal_code: norm(row.postal_code),
+        description: norm(row.description),
+        picture_url,
+
+        // NEW — crucial for the constraint
+        arrival_notes: norm(row.arrival_notes),
+        email: norm(row.email),
+      };
 
       // basic guardrails for the check constraints
       const allowedWetDry = new Set(["wet", "dry", null]);
@@ -409,35 +441,47 @@ const payload: DestinationRow = {
               </label>
             </div>
 
-            {/* Image + URL */}
+            {/* Image + URL + Upload */}
             <div className="space-y-3">
               <label className="block text-sm">
-                <span className="text-neutral-700">Picture URL</span>
+                <span className="text-neutral-700">Picture URL (optional)</span>
                 <input
                   className="w-full mt-1 border rounded-lg px-3 py-2"
                   value={row.picture_url ?? ""}
-                  onChange={(e) => update("picture_url", e.target.value || null)}
-                  placeholder="https://…"
+                  onChange={(e) => {
+                    setFile(null); // if user types a URL, drop selected file
+                    update("picture_url", e.target.value || null);
+                  }}
+                  placeholder="https://… (or leave blank and upload a file below)"
                 />
               </label>
 
-              {row.picture_url ? (
-                <div className="relative w-full overflow-hidden rounded-lg border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={imgSrc}
-                    alt={row.name || "Destination image"}
-                    className="w-full h-48 object-cover"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
-                    }}
-                  />
+              <label className="block text-sm">
+                <span className="text-neutral-700">Upload image</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    setFile(f);
+                  }}
+                />
+                <div className="text-xs text-neutral-500 mt-1">
+                  If a file is chosen, it will replace the URL above on save.
                 </div>
-              ) : (
-                <div className="text-xs text-neutral-500">
-                  Add a picture URL or a storage key (e.g. <code>images/foo.jpg</code>) to preview it here.
-                </div>
-              )}
+              </label>
+
+              <div className="relative w-full overflow-hidden rounded-lg border">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={imgSrc}
+                  alt={row.name || "Destination image"}
+                  className="w-full h-48 object-cover"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+                  }}
+                />
+              </div>
 
               <label className="block text-sm">
                 <span className="text-neutral-700">Website URL</span>
@@ -446,6 +490,7 @@ const payload: DestinationRow = {
                   value={row.url ?? ""}
                   onChange={(e) => update("url", e.target.value || null)}
                   placeholder="https://example.com"
+                  onBlur={(e) => update("url", norm(e.target.value))}
                 />
               </label>
 
@@ -453,15 +498,14 @@ const payload: DestinationRow = {
               <label className="block text-sm">
                 <span className="text-neutral-700">Destination contact email</span>
                 <input
-  type="email"
-  inputMode="email"
-  className="w-full mt-1 border rounded-lg px-3 py-2"
-  value={row.email ?? ""}
-  onChange={(e) => update("email", e.target.value)}
-  onBlur={(e) => update("email", e.target.value.trim())}
-  placeholder="destinations@operator.com"
-/>
-
+                  type="email"
+                  inputMode="email"
+                  className="w-full mt-1 border rounded-lg px-3 py-2"
+                  value={row.email ?? ""}
+                  onChange={(e) => update("email", e.target.value)}
+                  onBlur={(e) => update("email", norm(e.target.value))}
+                  placeholder="destinations@operator.com"
+                />
               </label>
             </div>
 
