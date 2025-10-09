@@ -954,14 +954,7 @@ export default function Page() {
   }, [calCursor]);
 
 
-const openPickup = (id?: string | null) => {
-  if (!id) return;
-  window.location.href = `/pickups/${id}`; // or use router.push(`/pickups/${id}`)
-};
-const openDestination = (id?: string | null) => {
-  if (!id) return;
-  window.location.href = `/destinations/${id}`; // or router.push(`/destinations/${id}`)
-};
+
 
 
 
