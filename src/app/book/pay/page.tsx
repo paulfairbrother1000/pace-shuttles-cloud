@@ -59,44 +59,88 @@ export default function PayPage(): JSX.Element {
   const [submitting, setSubmitting] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
-  /* ---------------- Prefill lead details from logged-in user ---------------- */
-  React.useEffect(() => {
-    let off = false;
-    (async () => {
-      try {
-        if (!sb) return;
+  // Prefill from Supabase: users.first_name, users.last_name, users.mobile; email from auth
+React.useEffect(() => {
+  let off = false;
+  (async () => {
+    try {
+      if (!sb) return;
 
-        // Auth email (source of truth for email)
-        const { data: sess } = await sb.auth.getSession();
-        const authUser = sess?.session?.user;
-        const authEmail = authUser?.email || "";
+      // 1) Auth session
+      const { data: auth } = await sb.auth.getUser();
+      const authedEmail = auth?.user?.email || "";
+      const authedId = auth?.user?.id || "";
 
-        if (!off && authEmail && !leadEmail) setLeadEmail(authEmail);
+      // Email: prefer auth email (authoritative)
+      if (!off && authedEmail && !leadEmail) setLeadEmail(authedEmail);
 
-        // Match app-profile row by users.auth_user_id = auth.users.id
-        if (authUser?.id) {
-          const { data, error } = await sb
-            .from("users")
-            .select("first_name,last_name,mobile")
-            .eq("auth_user_id", authUser.id)
-            .maybeSingle();
+      // 2) Try users.auth_user_id first (ideal case)
+      let first: string | null = null;
+      let last: string | null = null;
+      let phone: string | null = null;
 
-          if (!error && data && !off) {
-            if (data.first_name && !leadFirst) setLeadFirst(String(data.first_name));
-            if (data.last_name && !leadLast) setLeadLast(String(data.last_name));
-            if (data.mobile != null && !leadPhone) setLeadPhone(String(data.mobile));
-            setLeadChoice("lead");
+      if (authedId) {
+        const { data: byAuthId } = await sb
+          .from("users")
+          .select("first_name,last_name,mobile")
+          .eq("auth_user_id", authedId)
+          .maybeSingle();
+
+        if (byAuthId) {
+          first = (byAuthId.first_name ?? null) as any;
+          last  = (byAuthId.last_name ?? null) as any;
+          phone = byAuthId.mobile != null ? String(byAuthId.mobile) : null;
+        }
+      }
+
+      // 3) Fallback: match by email (common if auth_user_id wasn’t filled yet)
+      if ((!first || !last || !phone) && authedEmail) {
+        const { data: byEmail } = await sb
+          .from("users")
+          .select("first_name,last_name,mobile")
+          .ilike("email", authedEmail)   // case-insensitive
+          .maybeSingle();
+
+        if (byEmail) {
+          if (!first) first = (byEmail.first_name ?? null) as any;
+          if (!last)  last  = (byEmail.last_name  ?? null) as any;
+          if (!phone) phone = byEmail.mobile != null ? String(byEmail.mobile) : null;
+        }
+      }
+
+      // 4) Final fallback: auth user_metadata (if you ever store full_name there)
+      if (!first || !last) {
+        const meta = (auth?.user?.user_metadata ?? {}) as Record<string, any>;
+        const fullName: string | undefined =
+          meta.full_name || meta.name || meta["fullName"] || meta["given_name"];
+        if (fullName && (!first || !last)) {
+          const parts = String(fullName).trim().split(/\s+/);
+          if (parts.length >= 2) {
+            if (!first) first = parts[0];
+            if (!last)  last  = parts.slice(1).join(" ");
+          } else if (parts.length === 1 && !first) {
+            first = parts[0];
           }
         }
-      } catch {
-        /* swallow prefill errors */
+        if (!first && meta.first_name) first = String(meta.first_name);
+        if (!last  && meta.last_name)  last  = String(meta.last_name);
       }
-    })();
-    return () => {
-      off = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+
+      if (!off) {
+        if (first && !leadFirst) setLeadFirst(first);
+        if (last  && !leadLast)  setLeadLast(last);
+        if (phone && !leadPhone) setLeadPhone(phone);
+      }
+    } catch {
+      // ignore prefill errors, user can still type manually
+    }
+  })();
+  return () => {
+    off = true;
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
 
   function updateGuest(i: number, patch: Partial<Guest>) {
     setGuests((prev) => {

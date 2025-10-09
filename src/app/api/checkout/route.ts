@@ -393,17 +393,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // If the order became PAID in this handler, send the email now.
-    if (becamePaidNow) {
-      try {
-        await sendBookingPaidEmail(inserted.id);
-      } catch (e) {
-        console.error("sendBookingPaidEmail failed (non-blocking):", e);
-      }
-    }
+    
     // NOTE: In production with card payments, remove the above and
     // call sendBookingPaidEmail from your payment webhook once the order
     // status flips to 'paid'.
+
+// If the order became PAID in this handler, send the email now.
+if (becamePaidNow) {
+  try {
+    console.log(
+      "[checkout] sending booking email for order",
+      inserted.id,
+      "becamePaidNow=",
+      becamePaidNow
+    );
+    await sendBookingPaidEmail(inserted.id);
+  } catch (e) {
+    console.error("sendBookingPaidEmail failed (non-blocking):", e);
+  }
+}
+
 
     // success URL
     const url = `/orders/success2?orderId=${encodeURIComponent(inserted.id)}&s=${encodeURIComponent(
