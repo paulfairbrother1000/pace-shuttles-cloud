@@ -8,14 +8,15 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import * as QuoteToken from "@/lib/quoteToken";
 import type { QuotePayloadV1 } from "@/lib/quoteToken";
-import { sendBookingPaidEmail, sendOperatorSaveTheDate } from "@/lib/email";
+import { sendBookingPaidEmail, sendOperatorSaveDateEmail } from "@/lib/email";
 
 /* ---------- Env ---------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const QUOTE_SECRET = process.env.QUOTE_SIGNING_SECRET!;
-const CREATE_BOOKING_IMMEDIATELY = process.env.CREATE_BOOKING_IMMEDIATELY === "true";
+const CREATE_BOOKING_IMMEDIATELY =
+  process.env.CREATE_BOOKING_IMMEDIATELY === "true";
 
 /* ---------- Helpers ---------- */
 function sbAdmin() {
@@ -32,7 +33,10 @@ function asFraction(x: unknown): number {
   return n;
 }
 
-async function ensureJourneyId(routeId: string, dateISO: string): Promise<string | null> {
+async function ensureJourneyId(
+  routeId: string,
+  dateISO: string
+): Promise<string | null> {
   try {
     const { data, error } = await sbAdmin().rpc("ps_ensure_journey", {
       p_route_id: routeId,
@@ -71,11 +75,10 @@ async function ensureJourneyId(routeId: string, dateISO: string): Promise<string
   return data?.[0]?.id ?? null;
 }
 
-/**
- * Find which date column exists on public.orders so we don’t insert
- * into a non-existent field (cloud vs local naming differences).
- */
-async function resolveOrdersDateColumn(): Promise<"journey_date" | "date" | "travel_date" | null> {
+/** Determine which date column exists on public.orders */
+async function resolveOrdersDateColumn(): Promise<
+  "journey_date" | "date" | "travel_date" | null
+> {
   const admin = sbAdmin();
   const { data, error } = await admin
     .from("information_schema.columns")
@@ -87,7 +90,7 @@ async function resolveOrdersDateColumn(): Promise<"journey_date" | "date" | "tra
       code: (error as any).code,
       message: (error as any).message,
     });
-    return "journey_date"; // sensible default from your code
+    return "journey_date";
   }
   const cols = new Set((data ?? []).map((r: any) => String(r.column_name)));
   if (cols.has("journey_date")) return "journey_date";
@@ -99,13 +102,21 @@ async function resolveOrdersDateColumn(): Promise<"journey_date" | "date" | "tra
 /* ---------- Route ---------- */
 export async function POST(req: NextRequest) {
   try {
-    // sanity env checks
     if (!SUPABASE_URL || !SUPABASE_ANON)
-      return NextResponse.json({ ok: false, error: "Supabase env not configured" }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "Supabase env not configured" },
+        { status: 500 }
+      );
     if (!SUPABASE_SERVICE_ROLE_KEY)
-      return NextResponse.json({ ok: false, error: "SUPABASE_SERVICE_ROLE_KEY not set" }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "SUPABASE_SERVICE_ROLE_KEY not set" },
+        { status: 500 }
+      );
     if (!QUOTE_SECRET)
-      return NextResponse.json({ ok: false, error: "QUOTE_SIGNING_SECRET not set" }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "QUOTE_SIGNING_SECRET not set" },
+        { status: 500 }
+      );
 
     const body = await req.json().catch(() => ({} as any));
 
@@ -115,11 +126,14 @@ export async function POST(req: NextRequest) {
     let dateISO: string | null = body.date || body.date_iso || null;
     let qty: number = Math.max(1, Number(body.qty ?? body.seats ?? 0));
     let token: string | null = body.token || body.quoteToken || null;
-    let allInUnits: number | null = Number(body.allInC ?? body.perSeatAllIn); // per-seat all-in, possibly rounded in UI
+    let allInUnits: number | null = Number(body.allInC ?? body.perSeatAllIn);
     const currency: string = (body.ccy || "GBP").toUpperCase();
 
     // hydrate from quote_intents if provided
-    if (qid && (!routeId || !dateISO || !qty || !token || !Number.isFinite(allInUnits))) {
+    if (
+      qid &&
+      (!routeId || !dateISO || !qty || !token || !Number.isFinite(allInUnits))
+    ) {
       const { data: qi, error } = await sbAdmin()
         .from("quote_intents")
         .select("route_id,date_iso,seats,per_seat_all_in,quote_token")
@@ -145,21 +159,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // final required fields
     if (!routeId || !dateISO || !qty || qty < 1 || !token) {
-      return NextResponse.json({ ok: false, error: "Invalid request: route/date/qty/token required" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Invalid request: route/date/qty/token required" },
+        { status: 400 }
+      );
     }
 
-    // verify quote token (same secret as /api/quote)
+    // verify quote token
     type VerifyOk = { ok: true; payload: QuotePayloadV1 };
     type VerifyErr = { ok: false; error?: string; code?: string };
-    const v = (await QuoteToken.verifyQuote(token, { secret: QUOTE_SECRET })) as VerifyOk | VerifyErr;
+    const v = (await QuoteToken.verifyQuote(token, {
+      secret: QUOTE_SECRET,
+    })) as VerifyOk | VerifyErr;
 
     if (!v.ok) {
       const reason =
-        ("error" in v && v.error) ||
-        ("code" in v && v.code) ||
-        "invalid";
+        ("error" in v && v.error) || ("code" in v && v.code) || "invalid";
       if (process.env.NODE_ENV !== "production") {
         console.error("[/api/checkout] verifyQuote failed:", reason);
       }
@@ -183,24 +199,33 @@ export async function POST(req: NextRequest) {
           body: { routeId, dateISO, qty },
         });
       }
-      return NextResponse.json({ ok: false, error: "Quote token invalid/expired" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Quote token invalid/expired" },
+        { status: 400 }
+      );
     }
 
     // per-seat from token (authoritative)
     const perSeatFromToken = pay.qty > 0 ? pay.total_cents / pay.qty / 100 : 0;
 
     // tolerate UI rounding within ~£1
-    if (Number.isFinite(allInUnits) && Math.abs(Number(allInUnits) - perSeatFromToken) > 1.01) {
+    if (
+      Number.isFinite(allInUnits) &&
+      Math.abs(Number(allInUnits) - perSeatFromToken) > 1.01
+    ) {
       if (process.env.NODE_ENV !== "production") {
         console.error("[/api/checkout] price mismatch", {
           ui: allInUnits,
           tokenPerSeat: perSeatFromToken,
         });
       }
-      return NextResponse.json({ ok: false, error: "Quote token invalid/expired" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "Quote token invalid/expired" },
+        { status: 400 }
+      );
     }
 
-    // authenticated user (browser session)
+    // authenticated user
     const jar = await cookies();
     const sb = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
       cookies: {
@@ -216,26 +241,21 @@ export async function POST(req: NextRequest) {
         message: (authErr as any).message,
       });
     }
-    if (!auth?.user) return NextResponse.json({ ok: false, error: "Auth required" }, { status: 401 });
+    if (!auth?.user)
+      return NextResponse.json({ ok: false, error: "Auth required" }, { status: 401 });
     const userId = auth.user.id;
 
-    // snapshot tax/fees
-    const { data: tf, error: tfErr } = await sb
+    // tax/fees snapshot
+    const { data: tf } = await sb
       .from("tax_fees")
       .select("tax,fees")
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (tfErr) {
-      console.warn("CHECKOUT_DB_ERROR: tax_fees", {
-        code: (tfErr as any).code,
-        message: (tfErr as any).message,
-      });
-    }
     const taxRate = asFraction(tf?.tax ?? 0);
     const feesRate = asFraction(tf?.fees ?? 0);
 
-    // cents from token (authoritative, per-seat)
+    // cents from token (per-seat)
     const base_per_seat_cents = Math.round(pay.base_cents);
     const tax_per_seat_cents = Math.round(pay.tax_cents);
     const fees_per_seat_cents = Math.round(pay.fees_cents);
@@ -262,7 +282,6 @@ export async function POST(req: NextRequest) {
       total_cents,
       tax_rate: taxRate,
       fees_rate: feesRate,
-      // mirrors
       lead_first_name: body.lead_first_name ?? null,
       lead_last_name: body.lead_last_name ?? null,
       lead_email: body.lead_email ?? null,
@@ -270,7 +289,7 @@ export async function POST(req: NextRequest) {
     };
     if (dateCol) orderPayload[dateCol] = dateISO;
 
-    // insert order (service role)
+    // insert order
     const admin = sbAdmin();
     const { data: inserted, error: insErr } = await admin
       .from("orders")
@@ -279,18 +298,14 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     if (insErr || !inserted) {
-      console.error("CHECKOUT_DB_ERROR: orders.insert", {
-        code: (insErr as any)?.code,
-        message: (insErr as any)?.message,
-        details: (insErr as any)?.details,
-        hint: (insErr as any)?.hint,
-        payloadKeys: Object.keys(orderPayload),
-        dateCol,
-      });
-      return NextResponse.json({ ok: false, error: insErr?.message || "Order insert failed" }, { status: 500 });
+      console.error("CHECKOUT_DB_ERROR: orders.insert", insErr);
+      return NextResponse.json(
+        { ok: false, error: insErr?.message || "Order insert failed" },
+        { status: 500 }
+      );
     }
 
-    // passengers (ensure exactly qty rows, one lead)
+    // passengers
     type InPax = { first_name?: string; last_name?: string; is_lead?: boolean };
     let pax: InPax[] = Array.isArray(body.passengers) ? body.passengers : [];
     pax = pax
@@ -310,7 +325,12 @@ export async function POST(req: NextRequest) {
     }
 
     // build rows, pad to qty
-    const paxRows: Array<{ order_id: string; first_name: string | null; last_name: string | null; is_lead: boolean }> = [];
+    const paxRows: Array<{
+      order_id: string;
+      first_name: string | null;
+      last_name: string | null;
+      is_lead: boolean;
+    }> = [];
     for (const p of pax) {
       paxRows.push({
         order_id: inserted.id,
@@ -332,49 +352,56 @@ export async function POST(req: NextRequest) {
     if (paxRows.length) {
       const { error: paxErr } = await admin.from("order_passengers").insert(paxRows);
       if (paxErr) {
-        console.warn("[/api/checkout] order_passengers warning:", {
-          code: (paxErr as any).code,
-          message: (paxErr as any).message,
-          details: (paxErr as any).details,
-        });
+        console.warn("[/api/checkout] order_passengers warning:", paxErr);
       }
     }
 
     // optional: create booking right away (dev)
     let bookingId: string | null = null;
     let becamePaidNow = false;
-    let journeyId: string | null = null;
+
+    // We'll also need these to decide the operator save-date email.
+    let journeyIdForEmail: string | null = null;
+    let isFirstForJourney = false;
 
     if (CREATE_BOOKING_IMMEDIATELY) {
       try {
-        journeyId = await ensureJourneyId(routeId!, dateISO!);
+        const journeyId = await ensureJourneyId(routeId!, dateISO!);
+        journeyIdForEmail = journeyId;
+
+        // count BEFORE insert (head:true gives count w/o rows)
+        if (journeyId) {
+          const { count } = await admin
+            .from("bookings")
+            .select("id", { count: "exact", head: true })
+            .eq("journey_id", journeyId);
+          isFirstForJourney = (count || 0) === 0;
+        }
+
         const lead = paxRows.find((p) => p.is_lead);
-        const customer_name = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ").trim() || "Guest";
+        const customer_name =
+          [lead?.first_name, lead?.last_name].filter(Boolean).join(" ").trim() ||
+          "Guest";
 
         const { data: booking, error: bookErr } = await admin
           .from("bookings")
           .insert({
             route_id: routeId!,
-            journey_id: journeyId,
+            journey_id: journeyIdForEmail,
             customer_name,
             seats: qty,
             status: "Scheduled",
             order_id: inserted.id,
             paid_at: new Date().toISOString(),
           })
-          .select("id, journey_id")
+          .select("id")
           .maybeSingle();
 
         if (bookErr) {
-          console.warn("CHECKOUT_DB_ERROR: bookings.insert", {
-            code: (bookErr as any).code,
-            message: (bookErr as any).message,
-            details: (bookErr as any).details,
-          });
+          console.warn("CHECKOUT_DB_ERROR: bookings.insert", bookErr);
         }
 
         bookingId = booking?.id ?? null;
-        journeyId = journeyId || booking?.journey_id || null;
 
         const { error: updErr } = await admin
           .from("orders")
@@ -382,55 +409,130 @@ export async function POST(req: NextRequest) {
           .eq("id", inserted.id);
 
         if (updErr) {
-          console.warn("CHECKOUT_DB_ERROR: orders.update->paid", {
-            code: (updErr as any).code,
-            message: (updErr as any).message,
-            details: (updErr as any).details,
-          });
+          console.warn("CHECKOUT_DB_ERROR: orders.update->paid", updErr);
         } else {
           becamePaidNow = true;
         }
-
-        // ---- Operator “Save the Date” (idempotent & T-72 guarded in mailer) ----
-        try {
-          if (journeyId) {
-            await sendOperatorSaveTheDate(journeyId);
-          }
-        } catch (e) {
-          console.warn("[checkout] save-the-date email failed (non-blocking):", (e as any)?.message || e);
-        }
-        // -----------------------------------------------------------------------
-
       } catch (e: any) {
         console.warn("[/api/checkout] dev booking creation skipped:", e?.message ?? e);
       }
     }
 
-    // NOTE: In production with card payments, remove the above and
-    // call sendBookingPaidEmail from your payment webhook once the order
-    // status flips to 'paid'.
-
-    // If the order became PAID in this handler, send the customer email now.
+    // Customer email (when paid now)
     if (becamePaidNow) {
       try {
-        console.log(
-          "[checkout] sending booking email for order",
-          inserted.id,
-          "becamePaidNow=",
-          becamePaidNow
-        );
         await sendBookingPaidEmail(inserted.id);
       } catch (e) {
         console.error("sendBookingPaidEmail failed (non-blocking):", e);
       }
     }
 
-    // success URL
-    const url = `/orders/success2?orderId=${encodeURIComponent(inserted.id)}&s=${encodeURIComponent(
-      inserted.success_token
-    )}`;
+    // Operator "Save the Date" — only on FIRST booking for the journey and only if >72h
+    if (becamePaidNow && journeyIdForEmail && isFirstForJourney) {
+      try {
+        // get journey + route + country tz/name
+        const [{ data: journey }, { data: routeRow }, { data: country }] =
+          await Promise.all([
+            admin
+              .from("journeys")
+              .select("id, route_id, departure_ts, operator_id, vehicle_id")
+              .eq("id", journeyIdForEmail)
+              .maybeSingle(),
+            admin
+              .from("routes")
+              .select("id, route_name, country_id, transport_type")
+              .eq("id", routeId!)
+              .maybeSingle(),
+            admin
+              .from("countries")
+              .select("name, timezone")
+              .eq("id", (await admin.from("routes").select("country_id").eq("id", routeId!).maybeSingle()).data?.country_id || "")
+              .maybeSingle(),
+          ]);
 
-    return NextResponse.json({ ok: true, order_id: inserted.id, booking_id: bookingId, url });
+        const dep = journey?.departure_ts || null;
+        if (dep) {
+          const depDate = new Date(dep);
+          const lockDate = new Date(depDate.getTime() - 72 * 60 * 60 * 1000);
+          const now = new Date();
+          const moreThan72h = now < lockDate;
+
+          if (moreThan72h) {
+            // Pick preferred assigned vehicle (or first)
+            const { data: assigns } = await admin
+              .from("assignments")
+              .select("vehicle_id, preferred")
+              .eq("route_id", routeId!)
+              .order("preferred", { ascending: false })
+              .limit(5);
+
+            let vehicleId: string | null =
+              journey?.vehicle_id || assigns?.[0]?.vehicle_id || null;
+
+            // load operator via vehicle
+            let operator: { id: string; name: string; email: string | null } | null =
+              null;
+            let vehicleName = "";
+            if (vehicleId) {
+              const { data: v } = await admin
+                .from("vehicles")
+                .select("id,name,operator_id,type_id")
+                .eq("id", vehicleId)
+                .maybeSingle();
+
+              vehicleName = v?.name || "Your boat";
+
+              if (v?.operator_id) {
+                const { data: op } = await admin
+                  .from("operators")
+                  .select("id,name,email")
+                  .eq("id", v.operator_id)
+                  .maybeSingle();
+                if (op?.email) {
+                  operator = {
+                    id: op.id,
+                    name: op.name,
+                    email: String(op.email),
+                  };
+                }
+              }
+            }
+
+            if (operator?.email) {
+              await sendOperatorSaveDateEmail({
+                to: operator.email,
+                vehicleName,
+                vehicleType: routeRow?.transport_type || "boat",
+                routeName: routeRow?.route_name || "journey",
+                journeyDateISO: dep,
+                journeyTZ: country?.timezone || "UTC",
+                operatorHomeUrl: "https://www.paceshuttles.com/operators",
+                termsUrl: "https://www.paceshuttles.com/operators/terms",
+                tMinusLockISO: lockDate.toISOString(),
+              });
+            } else {
+              console.warn(
+                "[save-the-date] No operator email found; skipped."
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.error("save-the-date email failed (non-blocking):", e);
+      }
+    }
+
+    // success URL
+    const url = `/orders/success2?orderId=${encodeURIComponent(
+      inserted.id
+    )}&s=${encodeURIComponent(inserted.success_token)}`;
+
+    return NextResponse.json({
+      ok: true,
+      order_id: inserted.id,
+      booking_id: bookingId,
+      url,
+    });
   } catch (e: any) {
     console.error("CHECKOUT_DB_ERROR: handler", {
       message: e?.message ?? String(e),
@@ -438,6 +540,9 @@ export async function POST(req: NextRequest) {
       details: e?.details ?? null,
       hint: e?.hint ?? null,
     });
-    return NextResponse.json({ ok: false, error: e?.message || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }
