@@ -26,6 +26,9 @@ type DestinationRow = {
   wet_or_dry: "wet" | "dry" | null;
   url: string | null;
   gift: string | null;
+  // NEW FIELDS
+  arrival_notes: string | null;
+  email: string | null;
 };
 
 type DestType = { id: number; type: string | null };
@@ -64,6 +67,9 @@ function emptyDest(): DestinationRow {
     wet_or_dry: "dry",
     url: "",
     gift: "",
+    // NEW defaults
+    arrival_notes: "",
+    email: "",
   };
 }
 
@@ -172,7 +178,28 @@ export default function DestinationEditPage({
           const { data, error } = await client
             .from("destinations")
             .select(
-              "id,country_id,name,address1,address2,town,region,postal_code,phone,picture_url,description,season_from,season_to,destination_type,wet_or_dry,url,gift"
+              [
+                "id",
+                "country_id",
+                "name",
+                "address1",
+                "address2",
+                "town",
+                "region",
+                "postal_code",
+                "phone",
+                "picture_url",
+                "description",
+                "season_from",
+                "season_to",
+                "destination_type",
+                "wet_or_dry",
+                "url",
+                "gift",
+                // NEW
+                "arrival_notes",
+                "email",
+              ].join(",")
             )
             .eq("id", params.id)
             .maybeSingle();
@@ -240,6 +267,9 @@ export default function DestinationEditPage({
         postal_code: row.postal_code || null,
         description: row.description || null,
         picture_url: row.picture_url || null,
+        // NEW fields normalised
+        arrival_notes: row.arrival_notes || null,
+        email: row.email || null,
       };
 
       // basic guardrails for the check constraints
@@ -406,6 +436,18 @@ export default function DestinationEditPage({
                   placeholder="https://example.com"
                 />
               </label>
+
+              {/* NEW: Destination contact email */}
+              <label className="block text-sm">
+                <span className="text-neutral-700">Destination contact email</span>
+                <input
+                  type="email"
+                  className="w-full mt-1 border rounded-lg px-3 py-2"
+                  value={row.email ?? ""}
+                  onChange={(e) => update("email", e.target.value || null)}
+                  placeholder="destinations@operator.com"
+                />
+              </label>
             </div>
 
             {/* Address */}
@@ -472,6 +514,17 @@ export default function DestinationEditPage({
                   className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[120px]"
                   value={row.description ?? ""}
                   onChange={(e) => update("description", e.target.value || null)}
+                />
+              </label>
+
+              {/* NEW: Arrival notes (passenger guidance used in emails) */}
+              <label className="block text-sm">
+                <span className="text-neutral-700">Arrival notes (shown to passengers)</span>
+                <textarea
+                  className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[100px]"
+                  value={row.arrival_notes ?? ""}
+                  onChange={(e) => update("arrival_notes", e.target.value || null)}
+                  placeholder="e.g., Disembark at Dock B, follow the blue signs to the main gate. Security check required."
                 />
               </label>
 
