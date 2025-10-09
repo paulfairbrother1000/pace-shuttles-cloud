@@ -1361,33 +1361,49 @@ export default function Page() {
                   return (
                     <tr key={r.key} className="border-t align-top" ref={(el) => (rowRefs.current[r.key] = el)}>
                       <td className="p-3">
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="relative h-10 w-16 overflow-hidden rounded border"
-                            onClick={() => openPickup(pu?.id)}
-                            title={pu?.name || "Pick-up"}
-                          >
-                            <Image src={publicImage(pu?.picture_url) || "/placeholder.png"} alt={pu?.name || "Pick-up"} fill unoptimized className="object-cover" sizes="64px" />
-                          </button>
-                          <button className="text-left underline" onClick={() => openPickup(pu?.id)}>
-                            {pu?.name ?? "—"}
-                          </button>
-                        </div>
-                      </td>
-                      <td className="p-3">
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="relative h-10 w-16 overflow-hidden rounded border"
-                            onClick={() => openDestination(de?.id)}
-                            title={de?.name || "Destination"}
-                          >
-                            <Image src={publicImage(de?.picture_url) || "/placeholder.png"} alt={de?.name || "Destination"} fill unoptimized className="object-cover" sizes="64px" />
-                          </button>
-                          <button className="text-left underline" onClick={() => openDestination(de?.id)}>
-                            {de?.name ?? "—"}
-                          </button>
-                        </div>
-                      </td>
+  <button
+    type="button"
+    onClick={() => openPickup(pu?.id)}
+    className="flex items-center gap-2 text-left group"
+    aria-label={`View pick-up: ${pu?.name ?? ""}`}
+    title={pu?.name ?? "Pick-up"}
+  >
+    <span className="relative h-10 w-16 overflow-hidden rounded border">
+      <Image
+        src={publicImage(pu?.picture_url) || "/placeholder.png"}
+        alt={pu?.name || "Pick-up"}
+        fill
+        unoptimized
+        className="object-cover group-hover:opacity-90"
+        sizes="64px"
+      />
+    </span>
+    <span className="underline underline-offset-2">{pu?.name ?? "—"}</span>
+  </button>
+</td>
+
+<td className="p-3">
+  <button
+    type="button"
+    onClick={() => openDestination(de?.id)}
+    className="flex items-center gap-2 text-left group"
+    aria-label={`View destination: ${de?.name ?? ""}`}
+    title={de?.name ?? "Destination"}
+  >
+    <span className="relative h-10 w-16 overflow-hidden rounded border">
+      <Image
+        src={publicImage(de?.picture_url) || "/placeholder.png"}
+        alt={de?.name || "Destination"}
+        fill
+        unoptimized
+        className="object-cover group-hover:opacity-90"
+        sizes="64px"
+      />
+    </span>
+    <span className="underline underline-offset-2">{de?.name ?? "—"}</span>
+  </button>
+</td>
+
                       <td className="p-3" suppressHydrationWarning>{new Date(r.dateISO + "T12:00:00").toLocaleDateString()}</td>
                       <td className="p-3" suppressHydrationWarning>{hhmmLocalToDisplay(r.route.pickup_time)}</td>
                       <td className="p-3">{r.route.approx_duration_mins ?? "—"}</td>
