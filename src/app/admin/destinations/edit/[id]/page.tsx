@@ -22,17 +22,15 @@ type DestinationRow = {
   description: string | null;
   season_from: string | null; // YYYY-MM-DD
   season_to: string | null;   // YYYY-MM-DD
-  destination_type: string | null; // constrained check
+  destination_type: string | null;
   wet_or_dry: "wet" | "dry" | null;
   url: string | null;
   gift: string | null;
-  // NEW FIELDS
   arrival_notes: string | null;
   email: string | null;
 };
 
 type DestType = { id: number; type: string | null };
-type ArrivalType = { id: number; type: "wet" | "dry" | null; advice: string | null };
 
 // ---- Storage config for uploads ----
 const BUCKET = "images";
@@ -85,7 +83,6 @@ function emptyDest(): DestinationRow {
     wet_or_dry: "dry",
     url: "",
     gift: "",
-    // NEW defaults
     arrival_notes: "",
     email: "",
   };
@@ -105,24 +102,16 @@ function publicImage(input?: string | null): string | undefined {
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      // unify public object path with cache-busting param
       const m = u.pathname.match(/\/storage\/v1\/object\/public\/(.+)$/);
-      if (m) {
-        const full = `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`;
-        return full;
-      }
+      if (m) return `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`;
       return raw;
     } catch {
       return undefined;
     }
   }
-
-  // stored as /storage/v1/object/public/...
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
   }
-
-  // stored as "images/foo.jpg" or "bucket/foo.jpg" or just "foo.jpg"
   const key = raw.replace(/^\/+/, "");
   if (key.startsWith(`${bucket}/`)) {
     return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
@@ -140,11 +129,7 @@ function toYMD(d: string | Date | null | undefined) {
   return `${y}-${m}-${day}`;
 }
 
-export default function DestinationEditPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default function DestinationEditPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const isCreate = params.id === "new";
 
@@ -154,19 +139,13 @@ export default function DestinationEditPage({
 
   const [countries, setCountries] = useState<Country[]>([]);
   const [destTypes, setDestTypes] = useState<DestType[]>([]);
-  const [arrivalTypes, setArrivalTypes] = useState<ArrivalType[]>([]);
 
   const [row, setRow] = useState<DestinationRow>(() => emptyDest());
-  const [arrivalChoice, setArrivalChoice] = useState<number | null>(null); // destination_arrival.id
-  const selectedArrival = arrivalTypes.find((a) => a.id === arrivalChoice);
 
   // Image upload state
   const [file, setFile] = useState<File | null>(null);
   const imgSrc = useMemo(
-    () =>
-      file
-        ? URL.createObjectURL(file)
-        : publicImage((row?.picture_url as string | undefined) || "") || "",
+    () => (file ? URL.createObjectURL(file) : publicImage(row?.picture_url || "") || ""),
     [file, row?.picture_url]
   );
 
@@ -182,19 +161,16 @@ export default function DestinationEditPage({
       setLoading(true);
       setErr(null);
       try {
-        const [cQ, dtQ, atQ] = await Promise.all([
+        const [cQ, dtQ] = await Promise.all([
           client.from("countries").select("id,name").order("name", { ascending: true }),
           client.from("destination_type").select("id,type").order("id", { ascending: true }),
-          client.from("destination_arrival").select("id,type,advice").order("id", { ascending: true }),
         ]);
         if (cQ.error) throw cQ.error;
         if (dtQ.error) throw dtQ.error;
-        if (atQ.error) throw atQ.error;
 
         if (cancelled) return;
         setCountries((cQ.data || []) as Country[]);
         setDestTypes((dtQ.data || []) as DestType[]);
-        setArrivalTypes((atQ.data || []) as ArrivalType[]);
 
         if (!isCreate) {
           const { data, error } = await client
@@ -218,7 +194,6 @@ export default function DestinationEditPage({
                 "wet_or_dry",
                 "url",
                 "gift",
-                // NEW
                 "arrival_notes",
                 "email",
               ].join(",")
@@ -228,23 +203,20 @@ export default function DestinationEditPage({
           if (error) throw error;
           if (!data) throw new Error("Destination not found.");
           const r = data as DestinationRow;
+
+          // Coerce legacy values to acceptable set for UI
+          const legacy = (r.wet_or_dry ?? "").toString().toLowerCase();
+          const coerced: "wet" | "dry" | null =
+            legacy === "wet" ? "wet" : legacy === "dry" ? "dry" : null;
+
           setRow({
             ...r,
+            wet_or_dry: coerced,
             season_from: r.season_from ? toYMD(r.season_from) : null,
             season_to: r.season_to ? toYMD(r.season_to) : null,
           });
-
-          // Preselect arrival type to match wet_or_dry if available
-          const match = (atQ.data || []).find(
-            (a: any) => (a?.type ?? null) === (r.wet_or_dry ?? null)
-          );
-          setArrivalChoice(match?.id ?? null);
         } else {
-          // sensible defaults for create
-          const fresh = emptyDest();
-          setRow(fresh);
-          const defaultArrival = (atQ.data || []).find((a: any) => a?.type === "dry");
-          setArrivalChoice(defaultArrival?.id ?? null);
+          setRow(emptyDest());
         }
       } catch (e: any) {
         if (!cancelled) setErr(e?.message ?? String(e));
@@ -256,12 +228,6 @@ export default function DestinationEditPage({
       cancelled = true;
     };
   }, [client, isCreate, params.id]);
-
-  // When arrivalChoice changes, reflect it in wet_or_dry field
-  useEffect(() => {
-    const wetdry = selectedArrival?.type ?? null;
-    setRow((r) => ({ ...r, wet_or_dry: (wetdry as any) || null }));
-  }, [selectedArrival?.type]);
 
   function update<K extends keyof DestinationRow>(key: K, v: DestinationRow[K]) {
     setRow((r) => ({ ...r, [key]: v }));
@@ -291,15 +257,18 @@ export default function DestinationEditPage({
         picture_url = pub?.publicUrl || picture_url;
       }
 
-      // 2) Normalise payload to match DB
+      // 2) Normalize wet/dry strictly
+      const wd = (row.wet_or_dry ?? "").toString().toLowerCase();
+      const wet_or_dry: "wet" | "dry" | null = wd === "wet" ? "wet" : wd === "dry" ? "dry" : null;
+
+      // 3) Build payload
       const payload: DestinationRow = {
         ...row,
         name: String(row.name || "").trim(),
         season_from: row.season_from ? toYMD(row.season_from) : null,
         season_to: row.season_to ? toYMD(row.season_to) : null,
         destination_type: norm(row.destination_type) as any,
-        wet_or_dry: (row.wet_or_dry as "wet" | "dry" | null) ?? null,
-
+        wet_or_dry,
         url: norm(row.url),
         gift: norm(row.gift),
         phone: norm(row.phone),
@@ -310,26 +279,15 @@ export default function DestinationEditPage({
         postal_code: norm(row.postal_code),
         description: norm(row.description),
         picture_url,
-
-        // NEW — crucial for the constraint
         arrival_notes: norm(row.arrival_notes),
         email: norm(row.email),
       };
-
-      // basic guardrails for the check constraints
-      const allowedWetDry = new Set(["wet", "dry", null]);
-      if (!allowedWetDry.has(payload.wet_or_dry)) {
-        throw new Error("Arrival type must be wet or dry.");
-      }
 
       if (isCreate) {
         const { error } = await client.from("destinations").insert(payload as any);
         if (error) throw error;
       } else {
-        const { error } = await client
-          .from("destinations")
-          .update(payload as any)
-          .eq("id", params.id);
+        const { error } = await client.from("destinations").update(payload as any).eq("id", params.id);
         if (error) throw error;
       }
 
@@ -399,44 +357,41 @@ export default function DestinationEditPage({
                   value={row.destination_type ?? ""}
                   onChange={(e) => update("destination_type", e.target.value || null)}
                 >
-                  {destTypes.length === 0 && (
+                  {destTypes.length === 0 ? (
                     <>
-                      {/* fallback to the check-list if lookup table is empty */}
                       {["Restaurant", "Bar", "Beach Club", "Restaurant & Bar"].map((t) => (
                         <option key={t} value={t}>
                           {t}
                         </option>
                       ))}
                     </>
+                  ) : (
+                    destTypes.map((t) => (
+                      <option key={t.id} value={t.type ?? ""}>
+                        {t.type ?? ""}
+                      </option>
+                    ))
                   )}
-                  {destTypes.map((t) => (
-                    <option key={t.id} value={t.type ?? ""}>
-                      {t.type ?? ""}
-                    </option>
-                  ))}
                 </select>
               </label>
 
-              {/* Arrival type controls wet/dry + shows advice */}
+              {/* Simple Wet/Dry select */}
               <label className="block text-sm">
-                <span className="text-neutral-700">Arrival Type (sets wet/dry)</span>
+                <span className="text-neutral-700">Arrival Type</span>
                 <select
                   className="w-full mt-1 border rounded-lg px-3 py-2"
-                  value={arrivalChoice ?? ""}
-                  onChange={(e) => setArrivalChoice(e.target.value ? Number(e.target.value) : null)}
+                  value={row.wet_or_dry ?? ""}
+                  onChange={(e) => {
+                    const v = (e.target.value || "").toLowerCase();
+                    update("wet_or_dry", (v === "wet" ? "wet" : v === "dry" ? "dry" : null) as any);
+                  }}
                 >
                   <option value="">—</option>
-                  {arrivalTypes.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.type ?? ""}{a.advice ? ` — ${a.advice}` : ""}
-                    </option>
-                  ))}
+                  <option value="wet">Wet</option>
+                  <option value="dry">Dry</option>
                 </select>
                 <div className="mt-1 text-xs text-neutral-600">
                   Current wet/dry value: <strong>{row.wet_or_dry ?? "—"}</strong>
-                  {selectedArrival?.advice ? (
-                    <span> · Advice: {selectedArrival.advice}</span>
-                  ) : null}
                 </div>
               </label>
             </div>
@@ -449,7 +404,7 @@ export default function DestinationEditPage({
                   className="w-full mt-1 border rounded-lg px-3 py-2"
                   value={row.picture_url ?? ""}
                   onChange={(e) => {
-                    setFile(null); // if user types a URL, drop selected file
+                    setFile(null);
                     update("picture_url", e.target.value || null);
                   }}
                   placeholder="https://… (or leave blank and upload a file below)"
@@ -494,7 +449,6 @@ export default function DestinationEditPage({
                 />
               </label>
 
-              {/* NEW: Destination contact email */}
               <label className="block text-sm">
                 <span className="text-neutral-700">Destination contact email</span>
                 <input
@@ -576,14 +530,13 @@ export default function DestinationEditPage({
                 />
               </label>
 
-              {/* NEW: Arrival notes (passenger guidance used in emails) */}
               <label className="block text-sm">
                 <span className="text-neutral-700">Arrival notes (shown to passengers)</span>
                 <textarea
                   className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[100px]"
                   value={row.arrival_notes ?? ""}
                   onChange={(e) => update("arrival_notes", e.target.value || null)}
-                  placeholder="e.g., Disembark at Dock B, follow the blue signs to the main gate. Security check required."
+                  placeholder="e.g., Disembark at Dock B, follow the blue signs to the main gate."
                 />
               </label>
 
