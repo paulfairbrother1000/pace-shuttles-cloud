@@ -1,6 +1,8 @@
 // src/app/api/email/on-paid/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { sendBookingPaidEmail } from "@/src/lib/email";
+// ✅ correct
+import { sendBookingPaidEmail } from "@/lib/email";
+
 
 export async function POST(req: NextRequest) {
   try {
