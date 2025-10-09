@@ -78,6 +78,13 @@ function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
 
+  // add near the top of the file
+const norm = (s: string | null | undefined) => {
+  const t = (s ?? "").trim();
+  return t.length ? t : null;
+};
+
+
   const supaUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
   const supaHost = supaUrl.replace(/^https?:\/\//i, "");
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
@@ -250,27 +257,32 @@ export default function DestinationEditPage({
     setErr(null);
     try {
       // Normalise payload to match DB
-      const payload: DestinationRow = {
-        ...row,
-        name: String(row.name || "").trim(),
-        season_from: row.season_from ? toYMD(row.season_from) : null,
-        season_to: row.season_to ? toYMD(row.season_to) : null,
-        destination_type: row.destination_type || null,
-        wet_or_dry: (row.wet_or_dry as "wet" | "dry" | null) ?? null,
-        url: row.url || null,
-        gift: row.gift || null,
-        phone: row.phone || null,
-        address1: row.address1 || null,
-        address2: row.address2 || null,
-        town: row.town || null,
-        region: row.region || null,
-        postal_code: row.postal_code || null,
-        description: row.description || null,
-        picture_url: row.picture_url || null,
-        // NEW fields normalised
-        arrival_notes: row.arrival_notes || null,
-        email: row.email || null,
-      };
+
+const payload: DestinationRow = {
+  ...row,
+  name: String(row.name || "").trim(),
+  season_from: row.season_from ? toYMD(row.season_from) : null,
+  season_to: row.season_to ? toYMD(row.season_to) : null,
+  destination_type: row.destination_type || null,
+  wet_or_dry: (row.wet_or_dry as "wet" | "dry" | null) ?? null,
+
+  // normalize ALL optional text fields
+  url: norm(row.url),
+  gift: norm(row.gift),
+  phone: norm(row.phone),
+  address1: norm(row.address1),
+  address2: norm(row.address2),
+  town: norm(row.town),
+  region: norm(row.region),
+  postal_code: norm(row.postal_code),
+  description: norm(row.description),
+  picture_url: norm(row.picture_url),
+
+  // NEW — crucial for the constraint
+  arrival_notes: norm(row.arrival_notes),
+  email: norm(row.email),
+};
+
 
       // basic guardrails for the check constraints
       const allowedWetDry = new Set(["wet", "dry", null]);
@@ -441,12 +453,15 @@ export default function DestinationEditPage({
               <label className="block text-sm">
                 <span className="text-neutral-700">Destination contact email</span>
                 <input
-                  type="email"
-                  className="w-full mt-1 border rounded-lg px-3 py-2"
-                  value={row.email ?? ""}
-                  onChange={(e) => update("email", e.target.value || null)}
-                  placeholder="destinations@operator.com"
-                />
+  type="email"
+  inputMode="email"
+  className="w-full mt-1 border rounded-lg px-3 py-2"
+  value={row.email ?? ""}
+  onChange={(e) => update("email", e.target.value)}
+  onBlur={(e) => update("email", e.target.value.trim())}
+  placeholder="destinations@operator.com"
+/>
+
               </label>
             </div>
 
