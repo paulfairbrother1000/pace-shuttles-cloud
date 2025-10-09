@@ -103,6 +103,7 @@ function Banner({ children }: { children: React.ReactNode }) {
 }
 
 /* ---------- Image URL normalizer (for Supabase public storage) ---------- */
+/* ---------- Image URL normalizer (for Supabase public storage) ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -112,28 +113,39 @@ function publicImage(input?: string | null): string | undefined {
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
   if (!supaHost) return undefined;
 
+  // If it's already an absolute URL...
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      const isLocal = u.hostname === "localhost" || /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(u.hostname);
-      const m = u.pathname.match(/\\/storage\\/v1\\/object\\/public\\/(.+)$/);
-      if (m) {
+      const isLocal =
+        u.hostname === "localhost" ||
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(u.hostname);
+
+      // If it's already pointing at a public object path, normalize it to our host and add cache-busting
+      const publicPrefix = "/storage/v1/object/public/";
+      if (u.pathname.startsWith(publicPrefix)) {
+        const rest = u.pathname.slice(publicPrefix.length); // everything after the prefix
         return (isLocal || u.hostname !== supaHost)
-          ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
+          ? `https://${supaHost}${publicPrefix}${rest}?v=5`
           : `${raw}?v=5`;
       }
-      return raw;
-    } catch { /* ignore */ }
+      return raw; // some other external URL
+    } catch {
+      return undefined;
+    }
   }
+
+  // If it's a public storage path (no origin)
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
   }
-  const key = raw.replace(/^\\/+/, "");
-  if (key.startsWith(`${bucket}/`)) {
-    return `https://${supaHost}/storage/v1/object/public/${key}?v=5`;
-  }
-  return `https://${supaHost}/storage/v1/object/public/${bucket}/${key}?v=5`;
+
+  // Otherwise treat it as a bucket key like "images/foo.jpg" or "foo.jpg"
+  const key = raw.replace(/^\/+/, "");
+  const normalizedKey = key.startsWith(`${bucket}/`) ? key : `${bucket}/${key}`;
+  return `https://${supaHost}/storage/v1/object/public/${normalizedKey}?v=5`;
 }
+
 
 function typeImgSrc(t: { picture_url?: string | null }) {
   return publicImage(t.picture_url);
