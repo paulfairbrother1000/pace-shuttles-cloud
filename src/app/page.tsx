@@ -1290,28 +1290,28 @@ export default function Page() {
 
               return (
                 <div key={r.key} className="space-y-2">
-  <JourneyCard
-    pickupName={pu?.name ?? "—"}
-    pickupImg={publicImage(pu?.picture_url)}
-    destName={de?.name ?? "—"}
-    destImg={publicImage(de?.picture_url)}
-    dateISO={r.dateISO}
-    timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
-    durationMins={r.route.approx_duration_mins ?? undefined}
-    vehicleType={vType}
-    soldOut={false}
-    priceLabel={hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
-    lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
-    errorMsg={overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` : err ?? undefined}
-    seats={selected}
-    onSeatsChange={(n) => handleSeatChange(r.key, n)}
-    onContinue={() => handleContinue(r.key, r.route.id)}
-    continueDisabled={false}
-    /* NEW: make images clickable */
-    onOpenPickup={() => openPickup(pu?.id)}
-    onOpenDestination={() => openDestination(de?.id)}
-  />
-</div>
+                  <JourneyCard
+                    pickupName={pu?.name ?? "—"}
+                    pickupImg={publicImage(pu?.picture_url)}
+                    destName={de?.name ?? "—"}
+                    destImg={publicImage(de?.picture_url)}
+                    dateISO={r.dateISO}
+                    timeStr={hhmmLocalToDisplay(r.route.pickup_time)}
+                    durationMins={r.route.approx_duration_mins ?? undefined}
+                    vehicleType={vType}
+                    soldOut={false}
+                    priceLabel={hasLivePrice ? currencyIntPounds(priceDisplay) : "—"}
+                    lowSeats={(remaining > 0 && remaining <= 5) ? remaining : undefined}
+                    errorMsg={overMaxAtPrice ? `Only ${q?.max_qty_at_price ?? 0} seats available at this price.` : err ?? undefined}
+                    seats={selected}
+                    onSeatsChange={(n) => handleSeatChange(r.key, n)}
+                    onContinue={() => handleContinue(r.key, r.route.id)}
+                    continueDisabled={false}
+                    /* NEW: make images clickable */
+                    onOpenPickup={() => openPickup(pu?.id)}
+                    onOpenDestination={() => openDestination(de?.id)}
+                  />
+                </div>
 
               );
             })
