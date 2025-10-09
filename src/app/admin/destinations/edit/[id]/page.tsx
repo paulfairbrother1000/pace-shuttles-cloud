@@ -50,8 +50,8 @@ function supa() {
   return null;
 }
 
-function slugify(s: string) {
-  return (s || "")
+function slugify(str: string) {
+  return (str || "")
     .toLowerCase()
     .replace(/&/g, "and")
     .replace(/[^a-z0-9]+/g, "-")
@@ -59,8 +59,8 @@ function slugify(s: string) {
 }
 
 /** empty → null; trims strings */
-const norm = (s: string | null | undefined) => {
-  const t = (s ?? "").trim();
+const norm = (val: string | null | undefined) => {
+  const t = (val ?? "").trim();
   return t.length ? t : null;
 };
 
@@ -84,8 +84,7 @@ function emptyDest(): DestinationRow {
     url: "",
     gift: "",
     arrival_notes: "",
-    // IMPORTANT: start as null, not ""
-    email: null,
+    email: null, // important: start as null
   };
 }
 
@@ -99,6 +98,7 @@ function publicImage(input?: string | null): string | undefined {
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
   if (!supaHost) return undefined;
 
+  // already absolute
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
@@ -209,7 +209,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
           const coercedWD: "wet" | "dry" | null =
             legacy === "wet" ? "wet" : legacy === "dry" ? "dry" : null;
 
-          // Robust email blank → null (can't rely on truthy check)
+          // Robust email blank → null
           const rawEmail =
             r.email === null ? null : (typeof r.email === "string" ? r.email : String(r.email));
           const trimmedEmail = rawEmail === null ? null : rawEmail.trim();
@@ -218,7 +218,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
           setRow({
             ...r,
             wet_or_dry: coercedWD,
-            email: cleanEmail, // ← this is the key fix
+            email: cleanEmail,
             season_from: r.season_from ? toYMD(r.season_from) : null,
             season_to: r.season_to ? toYMD(r.season_to) : null,
           });
@@ -241,87 +241,79 @@ export default function DestinationEditPage({ params }: { params: { id: string }
   }
 
   async function handleSave() {
-  if (!client) return;
-  setErr(null);
-  try {
-    // 0) Strong normalize email right now
-  const normalizedEmail = norm(row.email);
+    if (!client) return;
+    setErr(null);
+    try {
+      // strong normalize email
+      const normalizedEmail = norm(row.email);
 
-    // 1) Optional image upload (file wins over manual URL)
-    let picture_url: string | null = norm(row.picture_url);
-    if (file) {
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const key = `${FOLDER}/${slugify(row.name || "destination")}.${ext}`;
-      const { error: upErr } = await client.storage
-        .from(BUCKET)
-        .upload(key, file, {
-          upsert: true,
-          cacheControl: "3600",
-          contentType:
-            file.type || (ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg"),
-        });
-      if (upErr) throw upErr;
-      const { data: pub } = client.storage.from(BUCKET).getPublicUrl(key);
-      picture_url = pub?.publicUrl || picture_url;
+      // optional image upload (file wins over URL)
+      let picture_url: string | null = norm(row.picture_url);
+      if (file) {
+        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        const key = `${FOLDER}/${slugify(row.name || "destination")}.${ext}`;
+        const { error: upErr } = await client.storage
+          .from(BUCKET)
+          .upload(key, file, {
+            upsert: true,
+            cacheControl: "3600",
+            contentType:
+              file.type || (ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg"),
+          });
+        if (upErr) throw upErr;
+        const { data: pub } = client.storage.from(BUCKET).getPublicUrl(key);
+        picture_url = pub?.publicUrl || picture_url;
+      }
+
+      // normalize wet/dry strictly
+      const wd = (row.wet_or_dry ?? "").toString().toLowerCase();
+      const wet_or_dry: "wet" | "dry" | null = wd === "wet" ? "wet" : wd === "dry" ? "dry" : null;
+
+      // payload (omit email key if null/blank)
+      const payload: any = {
+        ...row,
+        name: String(row.name || "").trim(),
+        season_from: row.season_from ? toYMD(row.season_from) : null,
+        season_to: row.season_to ? toYMD(row.season_to) : null,
+        destination_type: norm(row.destination_type) as any,
+        wet_or_dry,
+        url: norm(row.url),
+        gift: norm(row.gift),
+        phone: norm(row.phone),
+        address1: norm(row.address1),
+        address2: norm(row.address2),
+        town: norm(row.town),
+        region: norm(row.region),
+        postal_code: norm(row.postal_code),
+        description: norm(row.description),
+        picture_url,
+        arrival_notes: norm(row.arrival_notes),
+      };
+      if (normalizedEmail) payload.email = normalizedEmail;
+
+      // quick client validation
+      if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
+        setErr("Please enter a valid email or leave it blank.");
+        return;
+      }
+
+      if (isCreate) {
+        const { error } = await client.from("destinations").insert(payload);
+        if (error) throw error;
+      } else {
+        const { error } = await client.from("destinations").update(payload).eq("id", params.id);
+        if (error) throw error;
+      }
+
+      router.push("/admin/destinations");
+    } catch (e: any) {
+      // surface the exact error to the banner
+      setErr(e?.message ?? String(e));
+      // and log the full error to the console for stack/location
+      // eslint-disable-next-line no-console
+      console.error(e);
     }
-
-// Optional: quick client validation to avoid obviously bad emails
-if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
-  setErr("Please enter a valid email or leave it blank.");
-  return;
-}
-
-console.debug("Saving destination payload.email:", payload.email ?? "(omitted)");
-
-
-    // 2) Normalize wet/dry strictly
-    const wd = (row.wet_or_dry ?? "").toString().toLowerCase();
-    const wet_or_dry: "wet" | "dry" | null = wd === "wet" ? "wet" : wd === "dry" ? "dry" : null;
-
-    // 3) Build payload (email is either a valid string or NULL — never "")
-const payload: any = {
-  ...row,
-  name: String(row.name || "").trim(),
-  season_from: row.season_from ? toYMD(row.season_from) : null,
-  season_to: row.season_to ? toYMD(row.season_to) : null,
-  destination_type: norm(row.destination_type) as any,
-  wet_or_dry,
-  url: norm(row.url),
-  gift: norm(row.gift),
-  phone: norm(row.phone),
-  address1: norm(row.address1),
-  address2: norm(row.address2),
-  town: norm(row.town),
-  region: norm(row.region),
-  postal_code: norm(row.postal_code),
-  description: norm(row.description),
-  picture_url,
-  arrival_notes: norm(row.arrival_notes),
-};
-
-    // (Optional UX) if user typed something non-empty but clearly not an email, stop here
-    if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
-      setErr("Please enter a valid email or leave it blank.");
-      return;
-    }
-
-    // Debug log (helps confirm what's being sent)
-    console.debug("Saving destination payload:", { email: payload.email, wet_or_dry: payload.wet_or_dry });
-
-    if (isCreate) {
-      const { error } = await client.from("destinations").insert(payload as any);
-      if (error) throw error;
-    } else {
-      const { error } = await client.from("destinations").update(payload as any).eq("id", params.id);
-      if (error) throw error;
-    }
-
-    router.push("/admin/destinations");
-  } catch (e: any) {
-    setErr(e?.message ?? String(e));
   }
-}
-
 
   return (
     <div className="px-4 py-6 mx-auto max-w-3xl space-y-6">
@@ -524,7 +516,7 @@ const payload: any = {
                     onChange={(e) => update("region", e.target.value || null)}
                   />
                 </label>
-                <label className="block text sm">
+                <label className="block text-sm">
                   <span className="text-neutral-700">Postal code</span>
                   <input
                     className="w-full mt-1 border rounded-lg px-3 py-2"
@@ -556,7 +548,7 @@ const payload: any = {
                 />
               </label>
 
-              <label className="block text sm">
+              <label className="block text-sm">
                 <span className="text-neutral-700">Arrival notes (shown to passengers)</span>
                 <textarea
                   className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[100px]"
