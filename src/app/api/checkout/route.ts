@@ -513,6 +513,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    import { sendBookingPaidEmail } from "@/src/lib/email";
+    await sendBookingPaidEmail(order.id);
+
+
     // success URL
     const url = `/orders/success2?orderId=${encodeURIComponent(inserted.id)}&s=${encodeURIComponent(inserted.success_token)}`;
 
