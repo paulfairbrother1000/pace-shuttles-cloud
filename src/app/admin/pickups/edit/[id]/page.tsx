@@ -24,6 +24,8 @@ type Row = {
   postal_code: string | null;
   transport_type_id: UUID | null;
   transport_type_place_id: UUID | null;
+  // NEW
+  arrival_notes: string | null;
 };
 
 const BUCKET = "images";
@@ -64,6 +66,8 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
     postal_code: null,
     transport_type_id: null,
     transport_type_place_id: null,
+    // NEW
+    arrival_notes: null,
   });
 
   const [file, setFile] = useState<File | null>(null);
@@ -105,9 +109,14 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
         setPlaces((pQ.data || []) as TransportPlace[]);
 
         if (!isCreate) {
-          const { data, error } = await sb.from("pickup_points").select("*").eq("id", params.id).maybeSingle();
+          const { data, error } = await sb
+            .from("pickup_points")
+            .select("*")
+            .eq("id", params.id)
+            .maybeSingle();
           if (error) throw error;
           if (!data) throw new Error("Pick-up point not found.");
+
           setRow(data as Row);
           setPreview(publicImage((data as Row).picture_url) || null);
         } else {
@@ -164,6 +173,8 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
         town: (row.town || "") || null,
         region: (row.region || "") || null,
         postal_code: (row.postal_code || "") || null,
+        // NEW
+        arrival_notes: (row.arrival_notes || "") || null,
         picture_url,
       };
 
@@ -328,6 +339,17 @@ export default function EditPickupPointPage({ params }: { params: { id: string }
                     className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[96px]"
                     value={row.description || ""}
                     onChange={(e) => update("description", e.target.value || null)}
+                  />
+                </label>
+
+                {/* NEW: Arrival notes */}
+                <label className="block text-sm">
+                  <span className="text-neutral-700">Arrival notes (shown to passengers)</span>
+                  <textarea
+                    className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[96px]"
+                    value={row.arrival_notes || ""}
+                    onChange={(e) => update("arrival_notes", e.target.value || null)}
+                    placeholder="e.g., Meet at the main marina gate. Allow 10 minutes for security. Look for the Pace Shuttles sign."
                   />
                 </label>
               </div>
