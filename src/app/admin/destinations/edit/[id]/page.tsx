@@ -204,14 +204,15 @@ export default function DestinationEditPage({ params }: { params: { id: string }
           if (!data) throw new Error("Destination not found.");
           const r = data as DestinationRow;
 
-          // Coerce legacy values to acceptable set for UI
+          // Coerce legacy wet/dry & email blanks on LOAD
           const legacy = (r.wet_or_dry ?? "").toString().toLowerCase();
-          const coerced: "wet" | "dry" | null =
+          const coercedWD: "wet" | "dry" | null =
             legacy === "wet" ? "wet" : legacy === "dry" ? "dry" : null;
 
           setRow({
             ...r,
-            wet_or_dry: coerced,
+            wet_or_dry: coercedWD,
+            email: r.email && r.email.trim().length === 0 ? null : r.email, // ← important
             season_from: r.season_from ? toYMD(r.season_from) : null,
             season_to: r.season_to ? toYMD(r.season_to) : null,
           });
@@ -280,7 +281,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
         description: norm(row.description),
         picture_url,
         arrival_notes: norm(row.arrival_notes),
-        email: norm(row.email),
+        email: norm(row.email), // ← important
       };
 
       if (isCreate) {
