@@ -245,7 +245,7 @@ export default function DestinationEditPage({ params }: { params: { id: string }
   setErr(null);
   try {
     // 0) Strong normalize email right now
-    const normalizedEmail = norm(row.email); // null if "", "   ", or undefined
+  const normalizedEmail = norm(row.email);
 
     // 1) Optional image upload (file wins over manual URL)
     let picture_url: string | null = norm(row.picture_url);
@@ -265,31 +265,39 @@ export default function DestinationEditPage({ params }: { params: { id: string }
       picture_url = pub?.publicUrl || picture_url;
     }
 
+// Optional: quick client validation to avoid obviously bad emails
+if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
+  setErr("Please enter a valid email or leave it blank.");
+  return;
+}
+
+console.debug("Saving destination payload.email:", payload.email ?? "(omitted)");
+
+
     // 2) Normalize wet/dry strictly
     const wd = (row.wet_or_dry ?? "").toString().toLowerCase();
     const wet_or_dry: "wet" | "dry" | null = wd === "wet" ? "wet" : wd === "dry" ? "dry" : null;
 
     // 3) Build payload (email is either a valid string or NULL — never "")
-    const payload: DestinationRow = {
-      ...row,
-      name: String(row.name || "").trim(),
-      season_from: row.season_from ? toYMD(row.season_from) : null,
-      season_to: row.season_to ? toYMD(row.season_to) : null,
-      destination_type: norm(row.destination_type) as any,
-      wet_or_dry,
-      url: norm(row.url),
-      gift: norm(row.gift),
-      phone: norm(row.phone),
-      address1: norm(row.address1),
-      address2: norm(row.address2),
-      town: norm(row.town),
-      region: norm(row.region),
-      postal_code: norm(row.postal_code),
-      description: norm(row.description),
-      picture_url,
-      arrival_notes: norm(row.arrival_notes),
-      email: normalizedEmail, // << key line
-    };
+const payload: any = {
+  ...row,
+  name: String(row.name || "").trim(),
+  season_from: row.season_from ? toYMD(row.season_from) : null,
+  season_to: row.season_to ? toYMD(row.season_to) : null,
+  destination_type: norm(row.destination_type) as any,
+  wet_or_dry,
+  url: norm(row.url),
+  gift: norm(row.gift),
+  phone: norm(row.phone),
+  address1: norm(row.address1),
+  address2: norm(row.address2),
+  town: norm(row.town),
+  region: norm(row.region),
+  postal_code: norm(row.postal_code),
+  description: norm(row.description),
+  picture_url,
+  arrival_notes: norm(row.arrival_notes),
+};
 
     // (Optional UX) if user typed something non-empty but clearly not an email, stop here
     if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
