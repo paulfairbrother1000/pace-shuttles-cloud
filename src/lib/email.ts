@@ -1,328 +1,257 @@
 // src/lib/email.ts
-import { Resend } from "resend";
+// Node-only; called from server routes (e.g. /api/checkout)
+export const runtime = "nodejs";
+
 import { createClient } from "@supabase/supabase-js";
 
-// ---------- ENV ----------
+/** ENV (required) */
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+// Resend (REST API — no SDK needed)
 const RESEND_API_KEY = process.env.RESEND_API_KEY!;
-const FROM_EMAIL = process.env.EMAIL_FROM || "Pace Shuttles <no-reply@paceshuttles.com>";
-const REPLY_TO = process.env.EMAIL_REPLY_TO || "support@paceshuttles.com";
-const PUBLIC_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://www.paceshuttles.com";
+const RESEND_FROM = process.env.RESEND_FROM || "Pace Shuttles <bookings@paceshuttles.com>";
 
-// ---------- RESEND ----------
-const resend = new Resend(RESEND_API_KEY);
-
-// ---------- SERVER-SIDE SUPABASE ----------
-function serverSB() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  return createClient(url, serviceRole, { auth: { persistSession: false } });
+/** Supabase admin client (server) */
+function sbAdmin() {
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
 }
 
-// ---------- Types (partial, just what we read) ----------
-type UUID = string;
+/** Helpers */
+function toMapsUrl(parts: Array<string | null | undefined>): string {
+  const q = parts.filter(Boolean).join(", ");
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+}
+function isWetTrip(wet_or_dry?: string | null) {
+  return (wet_or_dry || "").toLowerCase() === "wet";
+}
+function fmtMoney(n: number, ccy: string) {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: ccy }).format(n);
+}
 
-type OrderRow = {
-  id: UUID;
-  status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired";
-  currency: string;
-  total_cents: number;
-  route_id: UUID | null;
-  journey_date: string | null; // YYYY-MM-DD
-  qty: number | null;
-  lead_first_name: string | null;
-  lead_last_name: string | null;
-  lead_email: string | null;
-  lead_phone: string | null;
-  success_token: UUID;
-};
+/** Compose the email (HTML + text) from database entities */
+async function buildEmailForOrder(orderId: string) {
+  const admin = sbAdmin();
 
-type RouteRow = {
-  id: UUID;
-  route_name: string | null;
-  pickup_id: UUID | null;
-  destination_id: UUID | null;
-  pickup_time: string | null; // HH:mm
-  transport_type: string | null;
-  countries?: { timezone?: string | null } | null;
-};
+  // Order (source of truth for recipient + amounts)
+  const { data: order, error: oErr } = await admin
+    .from("orders")
+    .select(`
+      id, status, currency, total_amount_c, total_cents,
+      route_id, journey_date, qty,
+      lead_first_name, lead_last_name, lead_email, lead_phone
+    `)
+    .eq("id", orderId)
+    .maybeSingle();
+  if (oErr || !order) throw oErr || new Error("Order not found");
+  if (!order.lead_email) throw new Error("Order has no lead email");
 
-type PickupRow = {
-  id: UUID;
-  name: string;
-};
+  // Route + endpoints
+  const { data: route, error: rErr } = await admin
+    .from("routes")
+    .select(`id, route_name, pickup_id, destination_id, transport_type`)
+    .eq("id", order.route_id)
+    .maybeSingle();
+  if (rErr || !route) throw rErr || new Error("Route not found");
 
-type DestinationRow = {
-  id: UUID;
-  name: string;
-  url: string | null;
-  email: string | null;
-  phone: string | null;
-  wet_or_dry: "wet" | "dry" | null;
-  gift: string | null;
-};
+  const [{ data: pickup }, { data: dest }] = await Promise.all([
+    admin
+      .from("pickup_points")
+      .select(`id, name, address1, address2, town, region`)
+      .eq("id", route.pickup_id)
+      .maybeSingle(),
+    admin
+      .from("destinations")
+      .select(`id, name, url, email, phone, wet_or_dry, arrival_notes`)
+      .eq("id", route.destination_id)
+      .maybeSingle(),
+  ]);
 
-type JourneyRow = {
-  id: UUID;
-  departure_ts: string; // ISO
-  vehicle_id: UUID | null;
-};
-
-type VehicleRow = {
-  id: UUID;
-  name: string | null;
-  type_id: UUID | null;
-};
-
-type TransportTypeRow = {
-  id: UUID;
-  name: string;
-};
-
-// ---------- helpers ----------
-function poundsInt(cents: number, ccy: string) {
-  if (!Number.isFinite(cents)) return "—";
-  if (ccy.toUpperCase() === "GBP") {
-    return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(
-      Math.round(cents) / 100
-    );
+  // Find a departure time (best-effort) from journeys for that day
+  let departure_ts: string | null = null;
+  if (order.journey_date) {
+    const { data: j } = await admin
+      .from("journeys")
+      .select("departure_ts")
+      .eq("route_id", route.id)
+      .gte("departure_ts", `${order.journey_date}T00:00:00Z`)
+      .lt("departure_ts", `${order.journey_date}T23:59:59Z`)
+      .order("departure_ts", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    departure_ts = j?.departure_ts ?? null;
   }
-  try {
-    return new Intl.NumberFormat("en-GB", { style: "currency", currency: ccy.toUpperCase() }).format(
-      Math.round(cents) / 100
-    );
-  } catch {
-    return `£${(Math.round(cents) / 100).toFixed(2)}`;
-  }
-}
 
-function fmtDate(dISO: string, tz?: string | null, lang?: string) {
-  const d = new Date(dISO);
-  return new Intl.DateTimeFormat(lang || undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: tz || "UTC",
-  }).format(d);
-}
+  // Labels
+  const dt = departure_ts ? new Date(departure_ts) : null;
+  const journeyDate = order.journey_date || (dt ? dt.toISOString().slice(0, 10) : "—");
+  const journeyTime = dt ? dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+  const ccy = order.currency || "GBP";
 
-function fmtTimeLocal(hhmm?: string | null, lang?: string) {
-  if (!hhmm) return "—";
-  const [h, m] = hhmm.split(":").map((x) => parseInt(x, 10));
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  return d.toLocaleTimeString(lang || undefined, { hour: "2-digit", minute: "2-digit" });
-}
+  const paymentAmount =
+    typeof order.total_amount_c === "number"
+      ? order.total_amount_c
+      : ((order.total_cents || 0) / 100);
 
-function esc(x: string | null | undefined) {
-  return (x || "").trim();
-}
+  const paymentAmountLabel = fmtMoney(paymentAmount, ccy);
 
-// ---------- Email assembly ----------
-function buildEmail({
-  order,
-  route,
-  pickup,
-  destination,
-  journey,
-  vehicle,
-  transportType,
-}: {
-  order: OrderRow;
-  route: RouteRow | null;
-  pickup: PickupRow | null;
-  destination: DestinationRow | null;
-  journey: JourneyRow | null;
-  vehicle: VehicleRow | null;
-  transportType: TransportTypeRow | null;
-}) {
-  const leadFirst = esc(order.lead_first_name) || "Guest";
-  const routeName =
-    esc(route?.route_name) ||
-    `${esc(pickup?.name) || "Pick-up"} → ${esc(destination?.name) || "Destination"}`;
+  const pickupMaps = toMapsUrl([
+    pickup?.name,
+    pickup?.address1,
+    pickup?.address2,
+    pickup?.town,
+    pickup?.region,
+  ]);
 
-  const vehicleType = esc(transportType?.name) || esc(route?.transport_type) || "Shuttle";
-  const journeyDateISO =
-    order.journey_date ? `${order.journey_date}T12:00:00Z` : journey?.departure_ts || "";
-  const tz = route?.countries?.timezone || "UTC";
-  const dateHuman = journeyDateISO ? fmtDate(journeyDateISO, tz) : (order.journey_date || "—");
-  const timeHuman = fmtTimeLocal(route?.pickup_time, undefined);
-  const amount = poundsInt(order.total_cents, order.currency || "GBP");
-  const pickupName = esc(pickup?.name) || "Pick-up";
-  const destName = esc(destination?.name) || "Destination";
-
-  const wetBlock =
-    (destination?.wet_or_dry || "dry") === "wet"
-      ? `
-This journey doesn’t have a fixed mooring at the destination and so you will likely get wet when exiting the boat. Please bring a towel and appropriate clothing.`
-      : "";
-
-  const giftBlock = destination?.gift
-    ? `\nGift for Pace Shuttles' Guests: ${destination.gift}\n`
+  const wetAdvice = isWetTrip(dest?.wet_or_dry)
+    ? (dest?.arrival_notes?.trim() ||
+       "This journey doesn’t have a fixed mooring at the destination and so you may get wet when exiting the boat. Please bring a towel and appropriate clothing.")
     : "";
 
-  // No receipt yet → point to Account page
-  const receiptLine =
-    "You can find your booking details and confirmation on your account page on www.paceshuttles.com.";
+  // Subject
+  const subject = `Pace Shuttles – Booking Confirmation (${order.id})`;
 
-  const lines = [
-    `Dear ${leadFirst}`,
+  // Body (TEXT)
+  const text = [
+    `Dear ${order.lead_first_name || ""}`,
     ``,
     `Order Ref: ${order.id}`,
     ``,
-    `This is confirmation of your booking of a return ${vehicleType} trip between ${routeName} on ${dateHuman} at ${timeHuman}.`,
+    `This is confirmation of your booking of a return ${route.transport_type || "shuttle"} trip between ${route.route_name || ""} on ${journeyDate} at ${journeyTime}.`,
     ``,
-    `We have received your payment of ${amount}. ${receiptLine}`,
+    `We have received your payment of ${paymentAmountLabel}. You can find your booking details and confirmation on your account page on www.paceshuttles.com.`,
     ``,
-    wetBlock.trim(),
-    wetBlock ? `` : ``,
-    `Your journey will leave from ${pickupName}. Please arrive at least 10 minutes before departure time. Google map direction to ${pickupName} are available here.`,
+    wetAdvice ? wetAdvice : "",
+    wetAdvice ? "" : "",
+    `Your journey will leave from ${pickup?.name || "the departure point"}. Please arrive at least 10 minutes before departure time. Google map directions are available here: ${pickupMaps}`,
     ``,
-    `Just to remind you, Pace Shuttles have not made any reservations or arrangements for you and your party at ${destName}. If you are travelling for lunch or dinner, please ensure you have an appropriate reservation to avoid disappointment.`,
+    `Just to remind you, Pace Shuttles have not made any reservations or arrangements for you and your party at ${dest?.name || "the destination"}. If you are travelling for lunch or dinner, please ensure you have an appropriate reservation to avoid disappointment.`,
     ``,
-    `You can contact ${destName} in the following ways:`,
-    esc(destination?.url) || "—",
-    esc(destination?.email) || "—",
-    esc(destination?.phone) || "—",
+    `You can contact ${dest?.name || "the destination"} in the following ways:`,
+    dest?.url ? dest.url : "",
+    dest?.email ? String(dest.email) : "",
+    dest?.phone ? String(dest.phone) : "",
     ``,
-    `We shall contact you the day before departure to confirm arrangements. In the event that the trip has to be cancelled due to adverse weather, or other factors beyond our control, we shall confirm this with you and fully refund your fayre.`,
+    `We shall contact you the day before departure to confirm arrangements. In the event that the trip has to be cancelled due to adverse weather, or other factors beyond our control, we shall confirm this with you and fully refund your fare.`,
     ``,
     `Once again, thanks for booking with Pace Shuttles, we wish you an enjoyable trip.`,
     ``,
     `The Pace Shuttles Team`,
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-  const text = lines.join("\n");
-
-  // Minimal HTML (keep it simple for providers)
+  // Body (HTML)
   const html = `
-  <div style="font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5;color:#111">
-    <p>Dear ${leadFirst}</p>
-    <p><strong>Order Ref:</strong> ${order.id}</p>
-    <p>This is confirmation of your booking of a return <strong>${vehicleType}</strong> trip between <strong>${routeName}</strong> on <strong>${dateHuman}</strong> at <strong>${timeHuman}</strong>.</p>
-    <p>We have received your payment of <strong>${amount}</strong>. ${receiptLine}</p>
-    ${wetBlock ? `<p>${wetBlock}</p>` : ""}
-    <p>Your journey will leave from <strong>${pickupName}</strong>. Please arrive at least 10 minutes before departure time. Google map direction to ${pickupName} are available here.</p>
-    <p>Just to remind you, Pace Shuttles have not made any reservations or arrangements for you and your party at <strong>${destName}</strong>. If you are travelling for lunch or dinner, please ensure you have an appropriate reservation to avoid disappointment.</p>
-    ${giftBlock ? `<p>${giftBlock}</p>` : ""}
-    <p>You can contact ${destName} in the following ways:<br/>
-      ${destination?.url ? `<a href="${destination.url}">${destination.url}</a><br/>` : "—<br/>"}
-      ${destination?.email ? `<a href="mailto:${destination.email}">${destination.email}</a><br/>` : "—<br/>"}
-      ${destination?.phone ? `<a href="tel:${destination.phone}">${destination.phone}</a>` : "—"}
+  <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5;color:#111">
+    <p>Dear ${escapeHtml(order.lead_first_name || "")}</p>
+
+    <p><strong>Order Ref:</strong> ${escapeHtml(order.id)}</p>
+
+    <p>
+      This is confirmation of your booking of a return
+      <strong>${escapeHtml(route.transport_type || "shuttle")}</strong> trip between
+      <strong>${escapeHtml(route.route_name || "")}</strong> on
+      <strong>${escapeHtml(journeyDate)}</strong> at <strong>${escapeHtml(journeyTime)}</strong>.
     </p>
-    <p>We shall contact you the day before departure to confirm arrangements. In the event that the trip has to be cancelled due to adverse weather, or other factors beyond our control, we shall confirm this with you and fully refund your fayre.</p>
+
+    <p>
+      We have received your payment of <strong>${escapeHtml(paymentAmountLabel)}</strong>.
+      You can find your booking details and confirmation on your account page on
+      <a href="https://www.paceshuttles.com" target="_blank" rel="noopener">www.paceshuttles.com</a>.
+    </p>
+
+    ${
+      wetAdvice
+        ? `<p style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:12px"><strong>Wet trip advice:</strong> ${escapeHtml(
+            wetAdvice
+          )}</p>`
+        : ""
+    }
+
+    <p>
+      Your journey will leave from <strong>${escapeHtml(pickup?.name || "the departure point")}</strong>.
+      Please arrive at least 10 minutes before departure time.
+      <a href="${pickupMaps}" target="_blank" rel="noopener">Google map directions</a>.
+    </p>
+
+    <p>
+      Just to remind you, Pace Shuttles have not made any reservations or arrangements for you and your party at
+      <strong>${escapeHtml(dest?.name || "the destination")}</strong>.
+      If you are travelling for lunch or dinner, please ensure you have an appropriate reservation to avoid disappointment.
+    </p>
+
+    <p>You can contact <strong>${escapeHtml(dest?.name || "the destination")}</strong> in the following ways:<br/>
+      ${dest?.url ? `<a href="${escapeAttr(dest.url)}" target="_blank" rel="noopener">${escapeHtml(dest.url)}</a><br/>` : ""}
+      ${dest?.email ? `${escapeHtml(String(dest.email))}<br/>` : ""}
+      ${dest?.phone ? `${escapeHtml(String(dest.phone))}<br/>` : ""}
+    </p>
+
+    <p>
+      We shall contact you the day before departure to confirm arrangements.
+      In the event that the trip has to be cancelled due to adverse weather, or other factors beyond our control,
+      we shall confirm this with you and fully refund your fare.
+    </p>
+
     <p>Once again, thanks for booking with Pace Shuttles, we wish you an enjoyable trip.</p>
-    <p>The Pace Shuttles Team</p>
-  </div>
-  `.trim();
 
-  const subject = `Your Pace Shuttles booking — ${routeName} on ${dateHuman}`;
+    <p>— The Pace Shuttles Team</p>
+  </div>`.trim();
 
-  const toEmail = esc(order.lead_email) || ""; // must exist (enforced on the pay page)
-  return { toEmail, subject, text, html };
+  return {
+    to: order.lead_email as string,
+    subject,
+    html,
+    text,
+  };
 }
 
-// ---------- Public function you can call on payment success ----------
-export async function sendBookingPaidEmail(orderId: UUID) {
-  const supa = serverSB();
+/** Minimal HTML escapers (avoid XSS in emails) */
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function escapeAttr(s: string) {
+  return escapeHtml(s).replace(/'/g, "&#39;");
+}
 
-  // Pull the order (must be paid)
-  const { data: order, error: oErr } = await supa
-    .from("orders")
-    .select(
-      [
-        "id",
-        "status",
-        "currency",
-        "total_cents",
-        "route_id",
-        "journey_date",
-        "qty",
-        "lead_first_name",
-        "lead_last_name",
-        "lead_email",
-        "lead_phone",
-        "success_token",
-      ].join(",")
-    )
-    .eq("id", orderId)
-    .maybeSingle<OrderRow>();
-
-  if (oErr) throw oErr;
-  if (!order) throw new Error("Order not found");
-  if (order.status !== "paid") {
-    throw new Error(`Order ${orderId} is not paid (status=${order.status})`);
+/** Send email via Resend REST API (no SDK) */
+async function sendViaResend(opts: { to: string; subject: string; html: string; text: string }) {
+  if (!RESEND_API_KEY) {
+    console.warn("[email] RESEND_API_KEY missing; skipping send.");
+    return;
   }
-
-  // Route + joins
-  const { data: route } = await supa
-    .from("routes")
-    .select(
-      "id, route_name, pickup_id, destination_id, pickup_time, transport_type, countries(timezone)"
-    )
-    .eq("id", order.route_id)
-    .maybeSingle<RouteRow>();
-
-  const { data: pickup } = await supa
-    .from("pickup_points")
-    .select("id,name")
-    .eq("id", route?.pickup_id || "")
-    .maybeSingle<PickupRow>();
-
-  const { data: destination } = await supa
-    .from("destinations")
-    .select("id,name,url,email,phone,wet_or_dry,gift")
-    .eq("id", route?.destination_id || "")
-    .maybeSingle<DestinationRow>();
-
-  // Find journey for that route/day (if exists)
-  const { data: journey } = await supa
-    .from("journeys")
-    .select("id,departure_ts,vehicle_id")
-    .eq("route_id", order.route_id)
-    .gte("departure_ts", `${order.journey_date}T00:00:00Z`)
-    .lte("departure_ts", `${order.journey_date}T23:59:59Z`)
-    .maybeSingle<JourneyRow>();
-
-  const { data: vehicle } = journey?.vehicle_id
-    ? await supa
-        .from("vehicles")
-        .select("id,name,type_id")
-        .eq("id", journey.vehicle_id)
-        .maybeSingle<VehicleRow>()
-    : { data: null };
-
-  const { data: transportType } =
-    vehicle?.type_id
-      ? await supa
-          .from("transport_types")
-          .select("id,name")
-          .eq("id", vehicle.type_id)
-          .maybeSingle<TransportTypeRow>()
-      : { data: null };
-
-  const { toEmail, subject, text, html } = buildEmail({
-    order,
-    route: route || null,
-    pickup: pickup || null,
-    destination: destination || null,
-    journey: journey || null,
-    vehicle: vehicle || null,
-    transportType: transportType || null,
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM,
+      to: [opts.to],
+      subject: opts.subject,
+      html: opts.html,
+      text: opts.text,
+    }),
   });
 
-  if (!toEmail) throw new Error("Lead email missing on order");
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(`Resend send failed (${res.status}): ${msg}`);
+  }
+}
 
-  // Send via Resend
-  const { error } = await resend.emails.send({
-    from: FROM_EMAIL,
-    to: [toEmail],
-    replyTo: REPLY_TO,
-    subject,
-    text,
-    html,
-  });
-
-  if (error) throw error;
-
-  return { ok: true };
+/**
+ * Public API used by /api/checkout (or future payment webhooks):
+ * Sends the "booking paid" email to the lead passenger.
+ */
+export async function sendBookingPaidEmail(orderId: string): Promise<void> {
+  const built = await buildEmailForOrder(orderId);
+  await sendViaResend(built);
 }
