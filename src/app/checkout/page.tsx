@@ -83,6 +83,17 @@ async function getLiveQuote(routeId: string, dateISO: string, qty: number): Prom
   return null;
 }
 
+// utils/email-builders.ts
+export function toMapsUrl(parts: (string | null | undefined)[]) {
+  const q = parts.filter(Boolean).join(", ");
+  return q ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}` : "";
+}
+
+export function isWetTrip(wet_or_dry?: string | null) {
+  return (wet_or_dry || "").toLowerCase() === "wet";
+}
+
+
 export default function CheckoutPage() {
   const sp = useSearchParams();
   const qid = sp.get("qid");

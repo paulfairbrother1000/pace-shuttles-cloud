@@ -3,11 +3,23 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { createBrowserClient } from "@supabase/ssr";
 
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n);
 
 type Guest = { first_name: string; last_name: string };
+
+// Browser-only Supabase client
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
 export default function PayPage(): JSX.Element {
   const router = useRouter();
@@ -47,6 +59,45 @@ export default function PayPage(): JSX.Element {
   const [submitting, setSubmitting] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
+  /* ---------------- Prefill lead details from logged-in user ---------------- */
+  React.useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        if (!sb) return;
+
+        // Auth email (source of truth for email)
+        const { data: sess } = await sb.auth.getSession();
+        const authUser = sess?.session?.user;
+        const authEmail = authUser?.email || "";
+
+        if (!off && authEmail && !leadEmail) setLeadEmail(authEmail);
+
+        // Match app-profile row by users.auth_user_id = auth.users.id
+        if (authUser?.id) {
+          const { data, error } = await sb
+            .from("users")
+            .select("first_name,last_name,mobile")
+            .eq("auth_user_id", authUser.id)
+            .maybeSingle();
+
+          if (!error && data && !off) {
+            if (data.first_name && !leadFirst) setLeadFirst(String(data.first_name));
+            if (data.last_name && !leadLast) setLeadLast(String(data.last_name));
+            if (data.mobile != null && !leadPhone) setLeadPhone(String(data.mobile));
+            setLeadChoice("lead");
+          }
+        }
+      } catch {
+        /* swallow prefill errors */
+      }
+    })();
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function updateGuest(i: number, patch: Partial<Guest>) {
     setGuests((prev) => {
       const next = prev.slice();
@@ -55,20 +106,82 @@ export default function PayPage(): JSX.Element {
     });
   }
 
+  /* ---------------- Background email trigger (non-blocking) ---------------- */
+  function notifyBookingEmail(params: {
+    lead_first_name: string;
+    lead_last_name: string;
+    lead_email: string;
+    lead_phone: string;
+  }) {
+    try {
+      const payload = {
+        qid,
+        routeId,
+        date: dateISO,
+        qty,
+        token,
+        perSeatAllIn: allInC,
+        currency: ccy,
+        total,
+        ...params,
+      };
+      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+
+      // Prefer sendBeacon so navigation/redirect isn't blocked
+      const ok =
+        typeof navigator !== "undefined" && "sendBeacon" in navigator
+          ? navigator.sendBeacon("/api/email/booking-request", blob)
+          : false;
+
+      if (!ok) {
+        // Fallback fetch (non-blocking best-effort)
+        fetch("/api/email/booking-request", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => {});
+      }
+    } catch {
+      /* ignore email errors entirely */
+    }
+  }
+
+  /* ------------------------------- Submit ---------------------------------- */
   async function handlePayNow() {
     setErr(null);
 
-    // Required quote bits (must match server-side signed token context)
+    // Required quote bits (server will also verify)
     if (!routeId || !dateISO || !qty || !token || !Number.isFinite(allInC)) {
       setErr("Missing route/date/qty/token/price");
       return;
     }
 
-    // Require names for everyone (so the manifest is complete)
+    // Lead required: name + email + phone
     if (!leadFirst.trim() || !leadLast.trim()) {
       setErr("Lead passenger first/last name required.");
       return;
     }
+    if (!leadEmail.trim()) {
+      setErr("Lead passenger email is required.");
+      return;
+    }
+    if (!leadPhone.trim()) {
+      setErr("Lead passenger phone is required.");
+      return;
+    }
+    // Light validation (keep client simple; server does the heavy lifting)
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(leadEmail.trim());
+    if (!emailOk) {
+      setErr("Please enter a valid email address.");
+      return;
+    }
+    if (leadPhone.trim().replace(/[^\d+]/g, "").length < 6) {
+      setErr("Please enter a valid phone number.");
+      return;
+    }
+
+    // All guest names required
     for (let i = 0; i < guests.length; i++) {
       if (!guests[i].first_name.trim() || !guests[i].last_name.trim()) {
         setErr(`Guest ${i + 1} needs first and last name.`);
@@ -76,7 +189,7 @@ export default function PayPage(): JSX.Element {
       }
     }
 
-    // Build passengers with exactly one lead
+    // Build passengers (exactly one lead)
     const passengers = [
       { first_name: leadFirst.trim(), last_name: leadLast.trim(), is_lead: leadChoice === "lead" },
       ...guests.map((g, i) => ({
@@ -92,32 +205,32 @@ export default function PayPage(): JSX.Element {
 
     setSubmitting(true);
     try {
-      // ✅ Post to the unified checkout endpoint in snake_case
+      // ✅ Do not change contract names — server expects snake_case
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          // quote contract (server verifies this against the signature)
+          // Quote contract
           qid,
           routeId,
           date: dateISO,
           qty,
-          token,           // signed quote token
-          allInC,          // per-seat all-in (units)
-          ccy,             // currency code, defaults to GBP
+          token,   // signed quote token
+          allInC,  // per-seat all-in (GBP units)
+          ccy,
 
-          // lead contact (mirrored to orders.* by the API)
+          // Lead contact
           lead_first_name: leadFirst.trim(),
           lead_last_name: leadLast.trim(),
-          lead_email: leadEmail.trim() || null,
-          lead_phone: leadPhone.trim() || null,
+          lead_email: leadEmail.trim(),
+          lead_phone: leadPhone.trim(),
 
-          // names for manifest -> order_passengers
+          // Manifest
           passengers, // [{ first_name, last_name, is_lead }]
         }),
       });
 
-      // Not logged in → go to /login and bounce back here
+      // Not logged in → bounce to login and return here
       if (res.status === 401) {
         const returnTo =
           typeof window !== "undefined"
@@ -128,12 +241,19 @@ export default function PayPage(): JSX.Element {
       }
 
       const json = await res.json().catch(() => ({} as any));
-
       if (!res.ok || !json?.ok || !json?.url) {
         throw new Error(json?.error || "Payment failed.");
       }
 
-      // Success → server gives us canonical success URL
+      // Fire-and-forget booking email
+      notifyBookingEmail({
+        lead_first_name: leadFirst.trim(),
+        lead_last_name: leadLast.trim(),
+        lead_email: leadEmail.trim(),
+        lead_phone: leadPhone.trim(),
+      });
+
+      // Server supplies canonical success URL
       router.replace(json.url);
     } catch (e: any) {
       setErr(e?.message || "Network error.");
@@ -175,29 +295,34 @@ export default function PayPage(): JSX.Element {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input
             className="input"
-            placeholder="First name"
+            placeholder="First name *"
             value={leadFirst}
             onChange={(e) => setLeadFirst(e.target.value)}
+            required
           />
-        <input
+          <input
             className="input"
-            placeholder="Last name"
+            placeholder="Last name *"
             value={leadLast}
             onChange={(e) => setLeadLast(e.target.value)}
+            required
           />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input
             className="input"
-            placeholder="Email (optional)"
+            type="email"
+            placeholder="Email *"
             value={leadEmail}
             onChange={(e) => setLeadEmail(e.target.value)}
+            required
           />
           <input
             className="input"
-            placeholder="Phone (optional)"
+            placeholder="Phone *"
             value={leadPhone}
             onChange={(e) => setLeadPhone(e.target.value)}
+            required
           />
         </div>
 

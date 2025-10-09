@@ -9,6 +9,130 @@ import { createClient } from "@supabase/supabase-js";
 import * as QuoteToken from "@/lib/quoteToken";
 import type { QuotePayloadV1 } from "@/lib/quoteToken";
 
+
+// src/app/api/checkout/route.ts (add near the top)
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { toMapsUrl, isWetTrip } from "@/utils/email-builders";
+import { renderBookingEmailHTML, renderBookingEmailText } from "@/lib/email/templates";
+
+// Use a service key to read whatever we need server-side
+const supaAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!, // keep on server only
+  { auth: { persistSession: false } }
+);
+
+// lightweight mail sender – replace with your provider
+async function sendEmail(opts: { to: string; subject: string; html: string; text: string }) {
+  // Example: POST to your mail microservice or Resend/SendGrid SDK here.
+  // await fetch(process.env.MAIL_ENDPOINT!, { method:"POST", body: JSON.stringify(opts) });
+  console.log("DEBUG email to", opts.to, "subject", opts.subject);
+}
+
+async function sendBookingEmailForOrder(orderId: string) {
+  // 1) Pull the order
+  const { data: order, error: oErr } = await supaAdmin
+    .from("orders")
+    .select(`
+      id, status, currency, total_amount_c, total_cents,
+      route_id, journey_date, qty,
+      lead_first_name, lead_last_name, lead_email, lead_phone
+    `)
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (oErr || !order) throw oErr || new Error("Order not found");
+  if (!order.lead_email) return; // nowhere to send
+
+  // 2) Route (+ pickup & destination)
+  const { data: route, error: rErr } = await supaAdmin
+    .from("routes")
+    .select(`
+      id, route_name, pickup_id, destination_id, transport_type
+    `)
+    .eq("id", order.route_id)
+    .maybeSingle();
+
+  if (rErr || !route) throw rErr || new Error("Route not found");
+
+  const [{ data: pickup }, { data: dest }] = await Promise.all([
+    supaAdmin.from("pickup_points").select(`
+      id, name, address1, address2, town, region
+    `).eq("id", route.pickup_id).maybeSingle(),
+    supaAdmin.from("destinations").select(`
+      id, name, url, email, phone, wet_or_dry, arrival_notes
+    `).eq("id", route.destination_id).maybeSingle(),
+  ]);
+
+  // 3) Find a departure_ts (journeys) for that route & date (best-effort)
+  let departure_ts: string | null = null;
+  if (order.journey_date) {
+    const { data: jny } = await supaAdmin
+      .from("journeys")
+      .select("departure_ts")
+      .eq("route_id", route.id)
+      .gte("departure_ts", `${order.journey_date}T00:00:00Z`)
+      .lt("departure_ts", `${order.journey_date}T23:59:59Z`)
+      .order("departure_ts", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    departure_ts = jny?.departure_ts ?? null;
+  }
+
+  // 4) Compose the email input for your template
+  const dt = departure_ts ? new Date(departure_ts) : null;
+  const journeyDate = order.journey_date || (dt ? dt.toISOString().slice(0, 10) : "");
+  const journeyTime = dt ? dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
+  const paymentAmountLabel =
+    typeof order.total_amount_c === "number"
+      ? new Intl.NumberFormat("en-GB", { style: "currency", currency: order.currency || "GBP" })
+          .format(order.total_amount_c)
+      : (order.total_cents != null
+          ? new Intl.NumberFormat("en-GB", { style: "currency", currency: order.currency || "GBP" })
+              .format((order.total_cents || 0) / 100)
+          : "—");
+
+  const pickupMapsUrl = toMapsUrl([
+    pickup?.name,
+    pickup?.address1,
+    pickup?.address2,
+    pickup?.town,
+    pickup?.region,
+  ]);
+
+  const emailData = {
+    orderRef: order.id,
+    leadFirst: order.lead_first_name || "",
+    vehicleType: route.transport_type || "shuttle",
+    routeName: route.route_name || "",
+    journeyDate,
+    journeyTime,
+    paymentAmountLabel,
+    pickupName: pickup?.name || "",
+    pickupMapsUrl,
+    destinationName: dest?.name || "",
+    destinationUrl: dest?.url || "",
+    destinationEmail: dest?.email || "",
+    destinationPhone: dest?.phone || "",
+    isWet: isWetTrip(dest?.wet_or_dry),
+    wetAdviceFromDestination: dest?.arrival_notes || "",
+    logoUrl: "https://www.paceshuttles.com/pace-logo-email.png", // optional
+  };
+
+  const subject = `Pace Shuttles – Booking Confirmation (${emailData.orderRef})`;
+  const html = renderBookingEmailHTML(emailData);
+  const text = renderBookingEmailText(emailData);
+
+  await sendEmail({ to: order.lead_email, subject, html, text });
+}
+
+
+
+
+
+
 /* ---------- Env ---------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -391,6 +515,23 @@ export async function POST(req: NextRequest) {
 
     // success URL
     const url = `/orders/success2?orderId=${encodeURIComponent(inserted.id)}&s=${encodeURIComponent(inserted.success_token)}`;
+
+
+// ... after your successful order creation/update
+try {
+  // If your flow marks as paid later via webhook, move this call there:
+  if (newOrder.status === "paid") {
+    await sendBookingEmailForOrder(newOrder.id);
+  }
+  // TEMP (if you truly want it on button press *before* payment):
+  // await sendBookingEmailForOrder(newOrder.id);
+} catch (e) {
+  console.error("Email send failed (non-blocking):", e);
+}
+
+
+
+
 
     return NextResponse.json({ ok: true, order_id: inserted.id, booking_id: bookingId, url });
   } catch (e: any) {
