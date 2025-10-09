@@ -72,10 +72,7 @@ export function renderBookingEmailHTML(d: BookingEmailData): string {
 <html>
   <body style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color:#111827; line-height:1.45;">
     <div style="max-width:640px; margin:0 auto; padding:20px;">
-      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-        ${d.logoUrl ? `<img src="${d.logoUrl}" alt="Pace Shuttles" style="height:36px;" />` : ""}
-        <h1 style="margin:0; font-size:18px;">Booking confirmation — ${esc(d.orderRef)}</h1>
-      </div>
+      ${d.logoUrl ? `<div style="margin-bottom:12px;"><img src="${d.logoUrl}" alt="Pace Shuttles" style="height:36px;" /></div>` : ""}
 
       <p>Dear ${esc(d.leadFirst)},</p>
 

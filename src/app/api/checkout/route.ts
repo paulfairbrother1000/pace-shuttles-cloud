@@ -8,7 +8,7 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import * as QuoteToken from "@/lib/quoteToken";
 import type { QuotePayloadV1 } from "@/lib/quoteToken";
-import { sendBookingPaidEmail } from "@/lib/email";
+import { sendBookingPaidEmail, sendOperatorSaveTheDate } from "@/lib/email";
 
 /* ---------- Env ---------- */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -343,10 +343,11 @@ export async function POST(req: NextRequest) {
     // optional: create booking right away (dev)
     let bookingId: string | null = null;
     let becamePaidNow = false;
+    let journeyId: string | null = null;
 
     if (CREATE_BOOKING_IMMEDIATELY) {
       try {
-        const journeyId = await ensureJourneyId(routeId!, dateISO!);
+        journeyId = await ensureJourneyId(routeId!, dateISO!);
         const lead = paxRows.find((p) => p.is_lead);
         const customer_name = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ").trim() || "Guest";
 
@@ -361,7 +362,7 @@ export async function POST(req: NextRequest) {
             order_id: inserted.id,
             paid_at: new Date().toISOString(),
           })
-          .select("id")
+          .select("id, journey_id")
           .maybeSingle();
 
         if (bookErr) {
@@ -373,6 +374,7 @@ export async function POST(req: NextRequest) {
         }
 
         bookingId = booking?.id ?? null;
+        journeyId = journeyId || booking?.journey_id || null;
 
         const { error: updErr } = await admin
           .from("orders")
@@ -388,31 +390,40 @@ export async function POST(req: NextRequest) {
         } else {
           becamePaidNow = true;
         }
+
+        // ---- Operator “Save the Date” (idempotent & T-72 guarded in mailer) ----
+        try {
+          if (journeyId) {
+            await sendOperatorSaveTheDate(journeyId);
+          }
+        } catch (e) {
+          console.warn("[checkout] save-the-date email failed (non-blocking):", (e as any)?.message || e);
+        }
+        // -----------------------------------------------------------------------
+
       } catch (e: any) {
         console.warn("[/api/checkout] dev booking creation skipped:", e?.message ?? e);
       }
     }
 
-    
     // NOTE: In production with card payments, remove the above and
     // call sendBookingPaidEmail from your payment webhook once the order
     // status flips to 'paid'.
 
-// If the order became PAID in this handler, send the email now.
-if (becamePaidNow) {
-  try {
-    console.log(
-      "[checkout] sending booking email for order",
-      inserted.id,
-      "becamePaidNow=",
-      becamePaidNow
-    );
-    await sendBookingPaidEmail(inserted.id);
-  } catch (e) {
-    console.error("sendBookingPaidEmail failed (non-blocking):", e);
-  }
-}
-
+    // If the order became PAID in this handler, send the customer email now.
+    if (becamePaidNow) {
+      try {
+        console.log(
+          "[checkout] sending booking email for order",
+          inserted.id,
+          "becamePaidNow=",
+          becamePaidNow
+        );
+        await sendBookingPaidEmail(inserted.id);
+      } catch (e) {
+        console.error("sendBookingPaidEmail failed (non-blocking):", e);
+      }
+    }
 
     // success URL
     const url = `/orders/success2?orderId=${encodeURIComponent(inserted.id)}&s=${encodeURIComponent(
