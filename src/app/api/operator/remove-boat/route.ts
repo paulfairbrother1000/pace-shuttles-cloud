@@ -1,187 +1,187 @@
-// src/app/api/operator/remove-boat/route.ts
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 
-type UUID = string;
+/**
+ * POST /api/operator/remove-boat
+ * Body: { journey_id: uuid, vehicle_id: uuid }
+ *
+ * Removes all allocations for the given (journey, vehicle), then attempts
+ * to reassign those groups onto other active vehicles assigned to the route/journey.
+ * If all groups can be reallocated within capacity, it persists and returns the new lock set.
+ * If not, it returns 409 and does not mutate data.
+ */
 
-type Journey = { id: UUID; route_id: UUID; departure_ts: string; is_active: boolean };
-type Order   = { id: UUID; status: string; route_id: UUID | null; journey_date: string | null; qty: number | null };
-type RVA     = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean };
-type Vehicle = { id: UUID; active: boolean | null; maxseats: number | string | null; operator_id: UUID | null };
-
-type Party = { order_id: UUID; size: number };
-type Boat  = { vehicle_id: UUID; cap: number; preferred: boolean };
-
-function toDateISO(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function sbFromCookies() {
+  const jar = cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get: (n: string) => jar.get(n)?.value,
+        set: (n: string, v: string, o: any) => { try { jar.set({ name: n, value: v, ...o }); } catch {} },
+        remove: (n: string, o: any) => { try { jar.set({ name: n, value: "", ...o }); } catch {} },
+      },
+    }
+  );
 }
 
-/** Same allocation logic you use in the client: keep groups whole, prefer “preferred” boats, pack tightly. */
-function allocateDetailed(parties: Party[], boats: Boat[]) {
-  const sorted = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
-  const state = boats.map(b => ({
-    id: b.vehicle_id,
-    cap: Math.max(0, Math.floor(Number(b.cap) || 0)),
-    used: 0,
-    preferred: !!b.preferred,
-  }));
+type LockRow = { journey_id: string; vehicle_id: string; order_id: string; seats: number };
 
-  const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
-  const unassigned: { order_id: UUID; size: number }[] = [];
+export async function POST(req: NextRequest) {
+  const sb = sbFromCookies();
 
-  for (const g of sorted) {
-    const candidates = state
-      .map(s => ({ id: s.id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
-      .filter(c => c.free >= g.size)
-      .sort((a, b) => {
-        if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-        if (a.free !== b.free) return a.free - b.free;
-        return a.id.localeCompare(b.id);
-      });
+  const body = await req.json().catch(() => ({}));
+  const journey_id = (body?.journey_id || "").trim();
+  const vehicle_id = (body?.vehicle_id || "").trim();
 
-    if (!candidates.length) {
-      unassigned.push({ order_id: g.order_id, size: g.size });
-      continue;
-    }
-
-    const chosen = candidates[0];
-    chosen.ref.used += g.size;
-
-    const cur = byBoat.get(chosen.id) ?? { seats: 0, orders: [] as { order_id: UUID; size: number }[] };
-    cur.seats += g.size;
-    cur.orders.push({ order_id: g.order_id, size: g.size });
-    byBoat.set(chosen.id, cur);
+  if (!journey_id || !vehicle_id) {
+    return NextResponse.json({ error: "journey_id and vehicle_id are required" }, { status: 400 });
   }
 
-  const total = sorted.reduce((s, p) => s + p.size, 0);
-  return { byBoat, unassigned, total };
-}
+  // Load the journey and its route/operator
+  const { data: j, error: jErr } = await sb
+    .from("journeys")
+    .select("id, route_id, operator_id, departure_ts, is_active")
+    .eq("id", journey_id)
+    .maybeSingle();
+  if (jErr || !j) return NextResponse.json({ error: "Journey not found" }, { status: 404 });
 
-export async function POST(req: Request) {
-  try {
-    const { journey_id, vehicle_id } = (await req.json()) as {
-      journey_id?: string;
-      vehicle_id?: string;
-    };
+  // All current locks for this journey
+  const { data: allLocks, error: lErr } = await sb
+    .from("journey_vehicle_allocations")
+    .select("journey_id, vehicle_id, order_id, seats")
+    .eq("journey_id", journey_id);
 
-    if (!journey_id || !vehicle_id) {
-      return NextResponse.json({ error: "journey_id and vehicle_id are required" }, { status: 400 });
-    }
+  if (lErr) return NextResponse.json({ error: lErr.message }, { status: 500 });
 
-    // --- Supabase (server) with proper cookie wiring ---
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get: (name: string) => cookieStore.get(name)?.value,
-          set: (name: string, value: string, options: any) => cookieStore.set({ name, value, ...options }),
-          remove: (name: string, options: any) => cookieStore.set({ name, value: "", ...options, maxAge: 0 }),
-        },
-      }
-    );
+  // Groups to re-seat (all groups currently on the vehicle being removed)
+  const groupsToReassign: LockRow[] = (allLocks || []).filter(r => r.vehicle_id === vehicle_id);
 
-    // 1) Journey (to get route_id and the exact departure date)
-    const { data: j, error: jErr } = await supabase
-      .from("journeys")
-      .select("id,route_id,departure_ts,is_active")
-      .eq("id", journey_id)
-      .maybeSingle<Journey>();
-    if (jErr || !j) return NextResponse.json({ error: "Journey not found" }, { status: 404 });
+  // If no groups on this boat, we can simply delete its (empty) records and return the current state
+  // (deleting in case there are any stray rows)
+  // But still ensure reassignment can proceed (it's empty so trivial).
+  // Next: build the candidate boats we can move onto.
 
-    const journeyDate = toDateISO(new Date(j.departure_ts));
+  // Candidate (other) boats for this journey: from route_vehicle_assignments + vehicles.active
+  // NOTE: if you also have a direct journey->vehicle relation, extend this accordingly.
+  const { data: rvas } = await sb
+    .from("route_vehicle_assignments")
+    .select("route_id, vehicle_id, is_active, preferred")
+    .eq("route_id", j.route_id)
+    .eq("is_active", true);
 
-    // 2) All PAID orders for this route & date (these are the groups to maintain)
-    const { data: orders, error: oErr } = await supabase
-      .from("orders")
-      .select("id,status,route_id,journey_date,qty")
-      .eq("status", "paid")
-      .eq("route_id", j.route_id)
-      .eq("journey_date", journeyDate) as unknown as { data: Order[]; error: any };
-    if (oErr) return NextResponse.json({ error: oErr.message }, { status: 500 });
+  const candidateIds = new Set<string>((rvas || []).map(r => r.vehicle_id).filter(id => id !== vehicle_id));
 
-    const parties: Party[] =
-      (orders || [])
-        .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter(p => p.size > 0);
+  // Load capacities and ownership for those vehicles
+  const { data: vehicles } = await sb
+    .from("vehicles")
+    .select("id, operator_id, active, maxseats")
+    .in("id", Array.from(candidateIds));
 
-    // 3) Candidate boats for this journey = active RVAs + active vehicles, EXCLUDING the removed vehicle
-    const { data: rvas, error: rErr } = await supabase
-      .from("route_vehicle_assignments")
-      .select("route_id,vehicle_id,is_active,preferred")
-      .eq("route_id", j.route_id)
-      .eq("is_active", true) as unknown as { data: RVA[]; error: any };
-    if (rErr) return NextResponse.json({ error: rErr.message }, { status: 500 });
+  const candidates = (vehicles || [])
+    .filter(v => v.active === true && v.operator_id === j.operator_id)
+    .map(v => ({ id: v.id as string, cap: Math.max(0, Number(v.maxseats || 0)) }));
 
-    const vehIds = (rvas || []).map(r => r.vehicle_id);
-    const { data: vehicles, error: vErr } = await supabase
-      .from("vehicles")
-      .select("id,active,maxseats,operator_id")
-      .in("id", vehIds) as unknown as { data: Vehicle[]; error: any };
-    if (vErr) return NextResponse.json({ error: vErr.message }, { status: 500 });
+  // Current usage per candidate (already-locked groups on them)
+  const usage = new Map<string, number>();
+  (allLocks || []).forEach(r => {
+    if (r.vehicle_id === vehicle_id) return; // ignore the boat we’re removing
+    const prev = usage.get(r.vehicle_id) || 0;
+    usage.set(r.vehicle_id, prev + Number(r.seats || 0));
+  });
 
-    const vehById = new Map(vehicles.map(v => [v.id, v]));
-    const boats: Boat[] = (rvas || [])
-      .filter(r => r.is_active && r.vehicle_id !== vehicle_id)
-      .map(r => {
-        const v = vehById.get(r.vehicle_id);
-        const cap = Number(v?.maxseats ?? 0);
-        return v && v.active !== false
-          ? { vehicle_id: r.vehicle_id, cap: Number.isFinite(cap) ? cap : 0, preferred: !!r.preferred }
-          : null;
-      })
-      .filter(Boolean) as Boat[];
+  // Greedy reallocation: largest group first; place on boat with smallest free but sufficient
+  const groups = groupsToReassign
+    .map(g => ({ order_id: g.order_id, size: Number(g.seats || 0) }))
+    .filter(g => g.size > 0)
+    .sort((a, b) => b.size - a.size);
 
-    if (!boats.length) {
-      return NextResponse.json({ error: "No remaining boats to allocate to." }, { status: 409 });
-    }
+  // If there are no groups, we just delete any rows for the removed boat and return.
+  if (groups.length === 0) {
+    await sb
+      .from("journey_vehicle_allocations")
+      .delete()
+      .eq("journey_id", journey_id)
+      .eq("vehicle_id", vehicle_id);
 
-    // 4) Allocate all groups to the remaining boats
-    const alloc = allocateDetailed(parties, boats);
-    if (alloc.unassigned.length) {
-      // We require full reassignment (your policy), so fail and do nothing
+    // Return current locks (minus removed boat rows)
+    const remaining = (allLocks || []).filter(r => r.vehicle_id !== vehicle_id);
+    return NextResponse.json({ lock: remaining });
+  }
+
+  // Build free capacity for each candidate
+  const state = candidates.map(c => ({
+    id: c.id,
+    free: Math.max(0, c.cap - (usage.get(c.id) || 0)),
+  }));
+
+  // Make a mutable plan of { vehicle_id -> group sizes[] }
+  const plan = new Map<string, Array<{ order_id: string; size: number }>>();
+
+  for (const g of groups) {
+    // find sufficient boats sorted by (free asc, id)
+    const options = state
+      .filter(s => s.free >= g.size)
+      .sort((a, b) => (a.free !== b.free ? a.free - b.free : a.id.localeCompare(b.id)));
+    if (!options.length) {
       return NextResponse.json(
-        { error: "Reallocation failed: not enough capacity on remaining boats.", unassigned: alloc.unassigned },
+        { error: "No capacity on other boats to reassign all groups" },
         { status: 409 }
       );
     }
-
-    // 5) Persist: replace the journey’s lock with our computed lock
-    //    (simple & robust: delete all rows for this journey, then insert the new complete set)
-    const { error: delErr } = await supabase
-      .from("journey_vehicle_allocations")
-      .delete()
-      .eq("journey_id", journey_id);
-    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 });
-
-    const lockRows = [] as { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[];
-    for (const [veh, info] of alloc.byBoat.entries()) {
-      for (const o of info.orders) {
-        lockRows.push({
-          journey_id,
-          vehicle_id: veh,
-          order_id: o.order_id,
-          seats: o.size,
-        });
-      }
-    }
-
-    if (lockRows.length) {
-      const { error: insErr } = await supabase
-        .from("journey_vehicle_allocations")
-        .insert(lockRows);
-      if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ ok: true, lock: lockRows });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Internal error" }, { status: 500 });
+    const chosen = options[0];
+    chosen.free -= g.size;
+    const arr = plan.get(chosen.id) || [];
+    arr.push({ order_id: g.order_id, size: g.size });
+    plan.set(chosen.id, arr);
   }
-}
 
-export {};
+  // All groups can be reallocated. Apply changes in a small transactionish sequence.
+  // 1) Delete old rows for the removed boat.
+  const { error: delErr } = await sb
+    .from("journey_vehicle_allocations")
+    .delete()
+    .eq("journey_id", journey_id)
+    .eq("vehicle_id", vehicle_id);
+  if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 });
+
+  // 2) Insert the new rows for each target boat.
+  const inserts: LockRow[] = [];
+  for (const [vehId, list] of plan.entries()) {
+    for (const g of list) {
+      inserts.push({
+        journey_id,
+        vehicle_id: vehId,
+        order_id: g.order_id,
+        seats: g.size,
+      });
+    }
+  }
+
+  if (inserts.length) {
+    const { error: insErr } = await sb
+      .from("journey_vehicle_allocations")
+      .upsert(inserts, { onConflict: "journey_id,vehicle_id,order_id" });
+    if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
+  }
+
+  // 3) Return the new full lock set for this journey (fresh read)
+  const { data: freshLocks, error: freshErr } = await sb
+    .from("journey_vehicle_allocations")
+    .select("journey_id, vehicle_id, order_id, seats")
+    .eq("journey_id", journey_id);
+
+  if (freshErr) return NextResponse.json({ error: freshErr.message }, { status: 500 });
+
+  // Optional: a short “route” message for the UI
+  const summary = Array.from(plan.entries())
+    .map(([veh, list]) => `${list.reduce((s, x) => s + x.size, 0)} seats → ${veh.slice(0, 8)}`)
+    .join(" • ");
+
+  return NextResponse.json({
+    lock: freshLocks || [],
+    route: summary ? `Reassigned: ${summary}` : undefined,
+  });
+}

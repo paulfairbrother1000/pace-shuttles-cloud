@@ -392,6 +392,11 @@ export default function OperatorAdminJourneysPage() {
         }
 
 // current assignments (view)
+
+// ...when building 'assignee', only consider rows where role_label !== 'Crew'
+const lead = (aData || []).filter(r => (r.role_label ?? '').toLowerCase() !== 'crew');
+setAssigns(lead as any);
+
 if (journeyIds.length) {
   const { data: aData } = await sb
     .from("v_crew_assignments_min")
@@ -705,37 +710,50 @@ if (journeyIds.length) {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
 
-  async function onRemove(row: UiRow, boat: UiBoat) {
-    if (!boat.canRemove) return;
-    if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
+  // --- Remove a boat from a journey and reassign its groups (client) ---
+async function onRemove(row: UiRow, boat: UiBoat) {
+  if (!boat.canRemove) return;
+  if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
 
-    try {
-      const res = await fetch("/api/operator/remove-boat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ journey_id: row.journey.id, vehicle_id: boat.vehicle_id }),
-      });
+  try {
+    const res = await fetch("/api/operator/remove-boat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ journey_id: row.journey.id, vehicle_id: boat.vehicle_id }),
+    });
 
-      const body = await res.json();
-      if (!res.ok) throw new Error(body?.error || `Failed (${res.status})`);
-
-      const lockRows = body.lock as Array<{
-        journey_id: string;
-        vehicle_id: string;
-        order_id: string;
-        seats: number;
-      }>;
-      setLocksByJourney(prev => {
-        const m = new Map(prev);
-        m.set(row.journey.id, lockRows as any);
-        return m;
-      });
-
-      if (body?.route) alert(body.route);
-    } catch (e: any) {
-      alert(e?.message ?? "Remove failed");
+    // 4xx/5xx -> show message body when possible
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t || `Failed (${res.status})`);
     }
+
+    // Expecting { lock: Array<...>, route?: string }
+    const body = await res.json();
+
+    // Update the in-memory lock map for this journey so the table refreshes
+    const lockRows = body.lock as Array<{
+      journey_id: string;
+      vehicle_id: string;
+      order_id: string;
+      seats: number;
+    }>;
+
+    setLocksByJourney(prev => {
+      const m = new Map(prev);
+      m.set(row.journey.id, lockRows as any);
+      return m;
+    });
+
+    if (body?.route) {
+      // Optional breadcrumb text returned by the API (e.g., how groups were reshuffled)
+      alert(body.route);
+    }
+  } catch (e: any) {
+    alert(e?.message ?? "Remove failed");
   }
+}
+
 
 // replace the existing onAssign with this version
 async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
