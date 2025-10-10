@@ -1,11 +1,7 @@
 "use client";
 import { useState } from "react";
 
-type Props = {
-  quoteToken: string;
-  tncVersion: string;
-  onConsented: () => void;
-};
+type Props = { quoteToken: string; tncVersion: string; onConsented: () => void };
 
 export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }: Props) {
   const [checked, setChecked] = useState(false);
