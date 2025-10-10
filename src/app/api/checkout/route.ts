@@ -292,22 +292,24 @@ export async function POST(req: NextRequest) {
     const tax_per_seat_cents = Math.round(pay.tax_cents);
     const fees_per_seat_cents = Math.round(pay.fees_cents);
     const unit_price_cents = Math.round(perSeatFromToken * 100);
-    const qty = Math.max(1, Number(body.qty ?? body.seats ?? 0));
+
+    // qty/currency/date were declared earlier — do not redeclare. Resolve a safe date value:
+    const dateISOResolved = String(dateISO ?? pay.date);
+
+    // totals
     const base_cents_total = base_per_seat_cents * qty;
     const tax_cents_total = tax_per_seat_cents * qty;
     const fees_cents_total = fees_per_seat_cents * qty;
     const total_cents = Math.round(pay.total_cents);
-    const currency: string = (body.ccy || "GBP").toUpperCase();
 
     // detect which date column exists on public.orders
     const dateCol = await resolveOrdersDateColumn();
-    const dateISO = String(body.date || body.date_iso || pay.date);
 
     // build insert payload
     const orderPayload: Record<string, any> = {
       user_id: userId,
       status: "requires_payment",
-      currency,
+      currency, // from earlier
       route_id: routeId,
       qty,
       unit_price_cents,
@@ -322,7 +324,7 @@ export async function POST(req: NextRequest) {
       lead_email: body.lead_email ?? null,
       lead_phone: body.lead_phone ?? null,
     };
-    if (dateCol) orderPayload[dateCol] = dateISO;
+    if (dateCol) orderPayload[dateCol] = dateISOResolved;
 
     // insert order
     const admin = sbAdmin();
@@ -398,7 +400,7 @@ export async function POST(req: NextRequest) {
 
     if (CREATE_BOOKING_IMMEDIATELY) {
       try {
-        const journeyId = await ensureJourneyId(routeId!, dateISO!);
+        const journeyId = await ensureJourneyId(routeId!, dateISOResolved!);
         journeyIdForEmail = journeyId;
 
         const lead = paxRows.find((p) => p.is_lead);

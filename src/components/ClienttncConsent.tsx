@@ -1,4 +1,3 @@
-// src/components/ClientTnCConsent.tsx
 "use client";
 import { useState } from "react";
 
