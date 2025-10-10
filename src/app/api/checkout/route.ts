@@ -17,6 +17,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const QUOTE_SECRET = process.env.QUOTE_SIGNING_SECRET!;
 const CREATE_BOOKING_IMMEDIATELY =
   process.env.CREATE_BOOKING_IMMEDIATELY === "true";
+const CLIENT_TNC_VERSION = process.env.CLIENT_TNC_VERSION || "2025-10-10";
 
 /* ---------- Helpers ---------- */
 function sbAdmin() {
@@ -31,6 +32,30 @@ function asFraction(x: unknown): number {
   if (n > 1) n = n / 100;
   if (n > 1) n = 1;
   return n;
+}
+
+// Require a saved consent row for this quote/version
+async function assertClientTnCConsent(
+  supabase: ReturnType<typeof createServerClient>,
+  quoteToken: string,
+  tncVersion: string
+) {
+  const { data, error } = await supabase
+    .from("order_consents")
+    .select("id")
+    .eq("quote_token", quoteToken)
+    .eq("tnc_type", "client")
+    .eq("tnc_version", tncVersion)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`Consent lookup failed: ${error.message}`);
+  if (!data) {
+    const msg =
+      "You must confirm you have read and understood the Client Terms & Conditions before continuing.";
+    const help = { code: "CONSENT_REQUIRED", tncVersion };
+    throw Object.assign(new Error(msg), { status: 400, help });
+  }
 }
 
 async function ensureJourneyId(
@@ -166,7 +191,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // verify quote token
+    // Verify SSOT quote token (throws if invalid)
     type VerifyOk = { ok: true; payload: QuotePayloadV1 };
     type VerifyErr = { ok: false; error?: string; code?: string };
     const v = (await QuoteToken.verifyQuote(token, {
@@ -188,7 +213,6 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
     const pay = v.payload as QuotePayloadV1;
 
     // exact-match context
@@ -204,6 +228,19 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Build server Supabase client (needed for consent check + user lookup)
+    const jar = await cookies();
+    const sb = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
+      cookies: {
+        get: (name: string) => jar.get(name)?.value,
+        set: (name, value, options) => jar.set(name, value, options),
+        remove: (name, options) => jar.set(name, "", { ...options, maxAge: 0 }),
+      },
+    });
+
+    // ENFORCE: client T&Cs consent exists for this quote + current version
+    await assertClientTnCConsent(sb, token, CLIENT_TNC_VERSION);
 
     // per-seat from token (authoritative)
     const perSeatFromToken = pay.qty > 0 ? pay.total_cents / pay.qty / 100 : 0;
@@ -226,14 +263,6 @@ export async function POST(req: NextRequest) {
     }
 
     // authenticated user
-    const jar = await cookies();
-    const sb = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
-      cookies: {
-        get: (name: string) => jar.get(name)?.value,
-        set: (name, value, options) => jar.set(name, value, options),
-        remove: (name, options) => jar.set(name, "", { ...options, maxAge: 0 }),
-      },
-    });
     const { data: auth, error: authErr } = await sb.auth.getUser();
     if (authErr) {
       console.error("CHECKOUT_DB_ERROR: getUser", {
@@ -263,13 +292,16 @@ export async function POST(req: NextRequest) {
     const tax_per_seat_cents = Math.round(pay.tax_cents);
     const fees_per_seat_cents = Math.round(pay.fees_cents);
     const unit_price_cents = Math.round(perSeatFromToken * 100);
+    const qty = Math.max(1, Number(body.qty ?? body.seats ?? 0));
     const base_cents_total = base_per_seat_cents * qty;
     const tax_cents_total = tax_per_seat_cents * qty;
     const fees_cents_total = fees_per_seat_cents * qty;
     const total_cents = Math.round(pay.total_cents);
+    const currency: string = (body.ccy || "GBP").toUpperCase();
 
     // detect which date column exists on public.orders
     const dateCol = await resolveOrdersDateColumn();
+    const dateISO = String(body.date || body.date_iso || pay.date);
 
     // build insert payload
     const orderPayload: Record<string, any> = {
@@ -563,15 +595,19 @@ export async function POST(req: NextRequest) {
       url,
     });
   } catch (e: any) {
+    const status = e?.status ?? 500;
+    const payload: Record<string, any> = {
+      ok: false,
+      error: e?.message || "Internal Server Error",
+    };
+    if (e?.help) payload.help = e.help; // includes { code: "CONSENT_REQUIRED", tncVersion }
     console.error("CHECKOUT_DB_ERROR: handler", {
       message: e?.message ?? String(e),
       code: e?.code ?? null,
       details: e?.details ?? null,
       hint: e?.hint ?? null,
+      help: e?.help ?? null,
     });
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Internal Server Error" },
-      { status: 500 }
-    );
+    return NextResponse.json(payload, { status });
   }
 }
