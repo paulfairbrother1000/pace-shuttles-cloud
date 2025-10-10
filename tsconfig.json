@@ -44,3 +44,11 @@
     "dist"
   ]
 }
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  }
+}
