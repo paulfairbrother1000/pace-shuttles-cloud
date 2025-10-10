@@ -38,14 +38,15 @@ function asFraction(x: unknown): number {
  * Require a saved consent row for this quote/version.
  * Strategy:
  *  1) Try exact version match (preferred).
- *  2) Fallback: accept the most recent client consent for this quote_token.
+ *  2) Fallback: accept any client consent for this quote_token (version-agnostic).
+ *     (No assumptions about available columns like created_at / accepted_at.)
  */
 async function assertClientTnCConsent(
   supabase: ReturnType<typeof createServerClient>,
   quoteToken: string,
   tncVersionRequired: string
 ) {
-  // 1) Exact match
+  // 1) Exact version match
   {
     const { data, error } = await supabase
       .from("order_consents")
@@ -62,19 +63,18 @@ async function assertClientTnCConsent(
         { status: 400 }
       );
     }
-    if (data) return;
+    if (data) return; // exact match found
   }
 
-  // 2) Most recent consent for this quote (version-agnostic fallback)
+  // 2) Version-agnostic fallback (any consent row for this quote_token)
   {
     const { data, error } = await supabase
       .from("order_consents")
-      .select("id, tnc_version, created_at")
+      .select("id, tnc_version")
       .eq("quote_token", quoteToken)
       .eq("tnc_type", "client")
-      .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle(); // no ordering; accepts any existing consent
 
     if (error) {
       throw Object.assign(
@@ -82,7 +82,6 @@ async function assertClientTnCConsent(
         { status: 400 }
       );
     }
-
     if (data) {
       if (data.tnc_version !== tncVersionRequired) {
         console.warn("[checkout] consent version drift", {
@@ -91,7 +90,7 @@ async function assertClientTnCConsent(
           quoteToken,
         });
       }
-      return;
+      return; // accept fallback consent
     }
   }
 
@@ -282,7 +281,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ENFORCE: client T&Cs consent exists (pref exact version; fallback to latest)
+    // ENFORCE: client T&Cs consent exists (exact version preferred; fallback accepted)
     await assertClientTnCConsent(sb, token, CLIENT_TNC_VERSION);
 
     // per-seat from token (authoritative)
