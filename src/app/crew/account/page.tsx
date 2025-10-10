@@ -35,6 +35,37 @@ type AssignRow = {
   vehicle_name: string | null;
 };
 
+// Near top: new type
+type PaxKey = string; // `${journey_id}_${vehicle_id}`
+
+// After you set rows (inside the big useEffect once rows are known), fetch pax totals:
+const [paxByKey, setPaxByKey] = useState<Record<PaxKey, number>>({});
+
+useEffect(() => {
+  (async () => {
+    if (!rows.length) { setPaxByKey({}); return; }
+    const keys = rows.map(r => ({ journey_id: r.journey_id, vehicle_id: r.vehicle_id }));
+    // dedupe keys
+    const uniq = Array.from(new Set(keys.map(k => `${k.journey_id}_${k.vehicle_id}`)))
+      .map(k => ({ journey_id: k.split("_")[0], vehicle_id: k.split("_")[1] }));
+
+    const { data, error } = await sb
+      .from("journey_vehicle_allocations")
+      .select("journey_id, vehicle_id, seats");
+    if (error) { console.warn(error.message); return; }
+
+    const map: Record<PaxKey, number> = {};
+    (data || []).forEach(r => {
+      const k = `${r.journey_id}_${r.vehicle_id}`;
+      map[k] = (map[k] || 0) + Number(r.seats || 0);
+    });
+    setPaxByKey(map);
+  })();
+}, [rows]);
+
+
+
+
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
 async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
@@ -134,6 +165,17 @@ export default function CrewAccountPage() {
     [rows]
   );
 
+function t24Badge(ts?: string | null) {
+  if (!ts) return "—";
+  const dep = new Date(ts).getTime();
+  const now = Date.now();
+  const diffH = (dep - now) / (1000 * 60 * 60);
+  if (diffH <= 24) return "Locked";
+  const left = Math.floor(diffH - 24);
+  return `Locks in ${left}h`;
+}
+
+
   function formatDateTime(ts?: string | null) {
     if (!ts) return { date: "—", time: "—" };
     const d = new Date(ts);
@@ -209,9 +251,15 @@ export default function CrewAccountPage() {
                     <td className="p-3">{r.destination_name ?? "—"}</td>
                     <td className="p-3">{date}</td>
                     <td className="p-3">{time}</td>
-                    <td className="p-3">—{/* TODO: vehicle type label when ready */}</td>
+                    <td className="p-3">
+  {(() => {
+    const k = `${r.journey_id}_${r.vehicle_id}`;
+    const n = paxByKey[k];
+    return Number.isFinite(n) ? n : "—";
+  })()}
+</td>
                     <td className="p-3">{r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}</td>
-                    <td className="p-3">—{/* TODO: pax count when ready */}</td>
+                    <td className="p-3">{t24Badge(r.departure_ts)}</td>
                     <td className="p-3">{tLabel(r.status_simple)}</td>
                     <td className="p-3 text-right">
                       <div className="flex gap-2 justify-end">

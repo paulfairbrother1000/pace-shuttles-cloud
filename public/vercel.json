@@ -1,5 +1,8 @@
 {
   "crons": [
     { "path": "/api/jobs/maintain", "schedule": "*/15 * * * *" }
+    { "path": "/api/system/t24-dispatch", "schedule": "*/10 * * * *" },
+    { "path": "/api/system/auto-release", "schedule": "0 * * * *" }
+    { "path": "/api/system/assignment-queue-worker", "schedule": "*/1 * * * *" },
   ]
 }

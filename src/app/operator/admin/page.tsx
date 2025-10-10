@@ -393,10 +393,10 @@ export default function OperatorAdminJourneysPage() {
 
         // current assignments (view)
         if (journeyIds.length) {
-          const { data: aData } = await sb
-            .from("v_journey_staff_min")
-            .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
-            .in("journey_id", journeyIds);
+const { data: aData } = await sb
+  .from("v_crew_assignments_min")
+  .select("assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label")
+  .in("journey_id", journeyIds);
           setAssigns(((aData || []) as AssignView[]) ?? []);
         } else {
           setAssigns([]);
@@ -728,36 +728,51 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID) {
-    const key = `${journeyId}_${vehicleId}`;
-    setAssigning(key);
-    try {
-      const res = await fetch("/api/operator/assign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, staff_id: staffId }),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Assign failed");
-      }
-      const { data: aData } = await sb!
-        .from("v_journey_staff_min")
-        .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
-        .eq("journey_id", journeyId)
-        .eq("vehicle_id", vehicleId);
-      const updated = (aData || []) as AssignView[];
-      setAssigns(prev => {
-        const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
-        updated.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-        return Array.from(m.values());
-      });
-    } catch (e: any) {
-      alert(e?.message ?? "Assign failed");
-    } finally {
-      setAssigning(null);
+// replace the existing onAssign with this version
+async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+  const key = `${journeyId}_${vehicleId}`;
+  setAssigning(key);
+  try {
+    const res = await fetch("/api/ops/assign/lead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, ...(staffId ? { staff_id: staffId } : {}) }),
+    });
+
+    const body = await res.json().catch(() => ({}));
+
+    if (res.status === 409) {
+      alert("Already assigned. Refreshing…");
+    } else if (res.status === 422) {
+      alert(body?.error || "Captain unavailable");
+      return;
+    } else if (!res.ok) {
+      throw new Error(body?.error || `Assign failed (${res.status})`);
+    } else {
+      // success toast alternative:
+      // alert("Captain assigned");
     }
+
+    // Refresh just this journey/vehicle assignment from the view
+    const { data: aData } = await sb!
+      .from("v_journey_staff_min")
+      .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
+      .eq("journey_id", journeyId)
+      .eq("vehicle_id", vehicleId);
+
+    const updated = (aData || []) as AssignView[];
+    setAssigns(prev => {
+      const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
+      updated.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+      return Array.from(m.values());
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "Assign failed");
+  } finally {
+    setAssigning(null);
   }
+}
+
 
   const eligibleStaff = useMemo(() => {
     const list = staff.slice();
@@ -962,14 +977,13 @@ export default function OperatorAdminJourneysPage() {
                                     (!selected && eligibleStaff.length !== 1)
                                   }
                                   onClick={() =>
-                                    onAssign(
-                                      row.journey.id,
-                                      b.vehicle_id,
-                                      (eligibleStaff.length === 1 && !selected
-                                        ? eligibleStaff[0]?.id
-                                        : selected) as UUID
-                                    )
-                                  }
+  onAssign(
+    row.journey.id,
+    b.vehicle_id,
+    (eligibleStaff.length === 1 && !selected ? eligibleStaff[0]?.id : selected) as UUID | undefined
+  )
+}
+
                                 >
                                   {assigning === key ? "Assigning…" : "Assign"}
                                 </button>
