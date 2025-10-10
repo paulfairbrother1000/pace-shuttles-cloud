@@ -36,19 +36,20 @@ function asFraction(x: unknown): number {
 
 /**
  * Require a saved consent row for this quote/version.
+ * Uses SERVICE ROLE to bypass RLS so existing rows are always visible.
  * Strategy:
  *  1) Try exact version match (preferred).
  *  2) Fallback: accept any client consent for this quote_token (version-agnostic).
- *     (No assumptions about available columns like created_at / accepted_at.)
  */
 async function assertClientTnCConsent(
-  supabase: ReturnType<typeof createServerClient>,
   quoteToken: string,
   tncVersionRequired: string
 ) {
+  const admin = sbAdmin();
+
   // 1) Exact version match
   {
-    const { data, error } = await supabase
+    const { data, error } = await admin
       .from("order_consents")
       .select("id, tnc_version")
       .eq("quote_token", quoteToken)
@@ -68,13 +69,13 @@ async function assertClientTnCConsent(
 
   // 2) Version-agnostic fallback (any consent row for this quote_token)
   {
-    const { data, error } = await supabase
+    const { data, error } = await admin
       .from("order_consents")
       .select("id, tnc_version")
       .eq("quote_token", quoteToken)
       .eq("tnc_type", "client")
       .limit(1)
-      .maybeSingle(); // no ordering; accepts any existing consent
+      .maybeSingle();
 
     if (error) {
       throw Object.assign(
@@ -271,7 +272,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Build server Supabase client (needed for consent check + user lookup)
+    // Build server Supabase client for auth & misc reads
     const jar = await cookies();
     const sb = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
       cookies: {
@@ -281,8 +282,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ENFORCE: client T&Cs consent exists (exact version preferred; fallback accepted)
-    await assertClientTnCConsent(sb, token, CLIENT_TNC_VERSION);
+    // ENFORCE: client T&Cs consent exists (service role lookup, version fallback)
+    await assertClientTnCConsent(token, CLIENT_TNC_VERSION);
 
     // per-seat from token (authoritative)
     const perSeatFromToken = pay.qty > 0 ? pay.total_cents / pay.qty / 100 : 0;
