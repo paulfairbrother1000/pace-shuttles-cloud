@@ -3,7 +3,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
-import CaptainPicker from "@/app/operator-admin/routes/components/CaptainPicker";
 
 type UUID = string;
 
@@ -88,20 +87,22 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
         site_admin: siteAdmin,
       };
     }
-  } catch {}
+  } catch {
+    // fall through to profile attempt
+  }
 
   try {
     const { data: ures } = await sb.auth.getUser();
     const uid = ures?.user?.id;
     if (!uid) return null;
 
-    const { data, error } = await sb
+    const { data } = await sb
       .from("profiles")
       .select("id, operator_admin, operator_id, site_admin")
       .eq("id", uid)
       .maybeSingle();
 
-    if (error || !data) return null;
+    if (!data) return null;
 
     return {
       id: data.id as string,
@@ -157,15 +158,15 @@ type AssignView = {
   status_simple: "allocated" | "confirmed" | "complete";
   first_name: string | null;
   last_name: string | null;
+  role_label?: string | null;
 };
 
 /* ---------------- Helpers ---------------- */
-function toDateISO(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+const toDateISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+
 function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
   const now = new Date();
   const dep = new Date(tsISO);
@@ -185,20 +186,24 @@ type DetailedAlloc = {
   total: number;
 };
 function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
-  const sorted = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
-  const state = boats.map(b => ({
+  const sorted = [...(parties ?? [])]
+    .filter((p) => p.size > 0)
+    .sort((a, b) => b.size - a.size);
+
+  const state = (boats ?? []).map((b) => ({
     vehicle_id: b.vehicle_id,
     cap: Math.max(0, Math.floor(Number(b.cap) || 0)),
     used: 0,
     preferred: !!b.preferred,
   }));
+
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
   const unassigned: { order_id: UUID; size: number }[] = [];
 
   for (const g of sorted) {
     const candidates = state
-      .map(s => ({ id: s.vehicle_id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
-      .filter(c => c.free >= g.size)
+      .map((s) => ({ id: s.vehicle_id, free: s.cap - s.used, preferred: s.preferred, ref: s }))
+      .filter((c) => c.free >= g.size)
       .sort((a, b) => {
         if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
         if (a.free !== b.free) return a.free - b.free;
@@ -304,8 +309,8 @@ export default function OperatorAdminJourneysPage() {
         if (off) return;
 
         setJourneys(js);
-        const routeIds = Array.from(new Set(js.map(j => j.route_id)));
-        const journeyIds = js.map(j => j.id);
+        const routeIds = Array.from(new Set(js.map((j) => j.route_id)));
+        const journeyIds = js.map((j) => j.id);
 
         const [rQ, puQ, deQ] = await Promise.all([
           sb.from("routes").select("id,pickup_id,destination_id").in("id", routeIds),
@@ -340,7 +345,7 @@ export default function OperatorAdminJourneysPage() {
         setVehicles((vQ.data || []) as Vehicle[]);
         setOperators((oQ.data || []) as Operator[]);
 
-        const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
+        const dateSet = new Set(js.map((j) => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await sb
           .from("orders")
@@ -373,14 +378,15 @@ export default function OperatorAdminJourneysPage() {
           setLocksByJourney(new Map());
         }
 
-        // staff for this operator
+        // crew/staff for this operator (alphabetical)
         if (operatorId) {
           const { data: sData } = await sb
             .from("operator_staff")
             .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
             .eq("operator_id", operatorId)
             .eq("active", true);
-          const srows = (sData || []) as StaffRow[];
+
+          const srows = ((sData as StaffRow[]) ?? []).slice();
           srows.sort((a, b) => {
             const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
             const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
@@ -391,25 +397,18 @@ export default function OperatorAdminJourneysPage() {
           setStaff([]);
         }
 
-        // current assignments (LEADS only; exclude pure "Crew")
+        // current assignments (view)
         if (journeyIds.length) {
           const { data: aData } = await sb
             .from("v_crew_assignments_min")
             .select(
-              "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+              "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
             )
             .in("journey_id", journeyIds);
 
-          const lead = ((aData || []) as any[])
-            .filter(r => (r.role_label ?? "").toLowerCase() !== "crew")
-            .map(r => ({
-              journey_id: r.journey_id as UUID,
-              vehicle_id: r.vehicle_id as UUID,
-              staff_id: r.staff_id as UUID,
-              status_simple: r.status_simple as AssignView["status_simple"],
-              first_name: r.first_name as string | null,
-              last_name: r.last_name as string | null,
-            }));
+          const lead = ((aData as AssignView[]) ?? []).filter(
+            (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+          );
           setAssigns(lead);
         } else {
           setAssigns([]);
@@ -428,67 +427,39 @@ export default function OperatorAdminJourneysPage() {
   /* ---------------- Lookups ---------------- */
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
-    routes.forEach(r => m.set(r.id, r));
+    (routes ?? []).forEach((r) => m.set(r.id, r));
     return m;
   }, [routes]);
 
   const pickupNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    pickups.forEach(p => m.set(p.id, p.name));
+    (pickups ?? []).forEach((p) => m.set(p.id, p.name));
     return m;
   }, [pickups]);
 
   const destNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    destinations.forEach(d => m.set(d.id, d.name));
+    (destinations ?? []).forEach((d) => m.set(d.id, d.name));
     return m;
   }, [destinations]);
 
   const vehicleById = useMemo(() => {
     const m = new Map<UUID, Vehicle>();
-    vehicles.forEach(v => m.set(v.id, v));
+    (vehicles ?? []).forEach((v) => m.set(v.id, v));
     return m;
   }, [vehicles]);
 
   const operatorNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    operators.forEach(o => m.set(o.id, o.name || "—"));
+    (operators ?? []).forEach((o) => m.set(o.id, o.name || "—"));
     return m;
   }, [operators]);
 
   const assignByKey = useMemo(() => {
     const m = new Map<string, AssignView>();
-    assigns.forEach(a => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
+    (assigns ?? []).forEach((a) => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
     return m;
   }, [assigns]);
-
-  /* ------------ small helper: refresh a single assignment row ---------- */
-  async function refreshAssignmentsFor(journeyId: UUID, vehicleId?: UUID) {
-    if (!sb) return;
-    const q = sb
-      .from("v_crew_assignments_min")
-      .select(
-        "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-      )
-      .eq("journey_id", journeyId);
-    const { data } = await (vehicleId ? q.eq("vehicle_id", vehicleId) : q);
-    const lead = ((data || []) as any[])
-      .filter(r => (r.role_label ?? "").toLowerCase() !== "crew")
-      .map(r => ({
-        journey_id: r.journey_id as UUID,
-        vehicle_id: r.vehicle_id as UUID,
-        staff_id: r.staff_id as UUID,
-        status_simple: r.status_simple as AssignView["status_simple"],
-        first_name: r.first_name as string | null,
-        last_name: r.last_name as string | null,
-      }));
-
-    setAssigns(prev => {
-      const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
-      lead.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-      return Array.from(m.values());
-    });
-  }
 
   /* ---------------- Build rows ---------------- */
   type UiBoat = {
@@ -519,10 +490,10 @@ export default function OperatorAdminJourneysPage() {
   };
 
   const rows: UiRow[] = useMemo(() => {
-    if (!journeys.length || !operatorId) return [];
+    if (!(journeys ?? []).length || !operatorId) return [];
 
     const ordersByKey = new Map<string, Order[]>();
-    for (const o of orders) {
+    for (const o of orders ?? []) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
       const k = `${o.route_id}_${o.journey_date}`;
       const arr = ordersByKey.get(k) ?? [];
@@ -531,7 +502,7 @@ export default function OperatorAdminJourneysPage() {
     }
 
     const rvasByRoute = new Map<UUID, RVA[]>();
-    for (const r of rvas) {
+    for (const r of rvas ?? []) {
       if (!r.is_active) continue;
       const arr = rvasByRoute.get(r.route_id) ?? [];
       arr.push(r);
@@ -540,7 +511,7 @@ export default function OperatorAdminJourneysPage() {
 
     const out: UiRow[] = [];
 
-    for (const j of journeys) {
+    for (const j of journeys ?? []) {
       const r = routeById.get(j.route_id);
       if (!r) continue;
 
@@ -550,13 +521,13 @@ export default function OperatorAdminJourneysPage() {
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
       const parties: Party[] = oArr
-        .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter(g => g.size > 0);
+        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter((g) => g.size > 0);
       if (!parties.length) continue;
 
-      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
+      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
       const allBoatsForJourney: Boat[] = rvaArr
-        .map(x => {
+        .map((x) => {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const cap = Number(v?.maxseats ?? 0);
@@ -602,7 +573,7 @@ export default function OperatorAdminJourneysPage() {
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
+            preferred: !!rvaArr.find?.((x) => x.vehicle_id === vehId)?.preferred,
             groups,
             canRemove: false,
             statusPill: assignee
@@ -620,7 +591,7 @@ export default function OperatorAdminJourneysPage() {
 
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
-          const groups = (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a);
+          const groups = (entry?.orders ?? []).map((o) => o.size).sort((a, b) => b - a);
           groupsByBoat.set(b.vehicle_id, groups);
           dbTotal += seats;
 
@@ -652,7 +623,7 @@ export default function OperatorAdminJourneysPage() {
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
+            preferred: !!rvaArr.find?.((x) => x.vehicle_id === b.vehicle_id)?.preferred,
             groups,
             canRemove: false,
             statusPill,
@@ -668,8 +639,8 @@ export default function OperatorAdminJourneysPage() {
         const groups = groupsByBoat.get(vehId) || [];
         if (groups.length === 0) return { ok: true };
 
-        const myOtherBoats: Boat[] = allBoatsForJourney
-          .map(b => {
+        const myOtherBoats: Boat[] = (allBoatsForJourney ?? [])
+          .map((b) => {
             const v = vehicleById.get(b.vehicle_id);
             return !v || v.operator_id !== operatorId || b.vehicle_id === vehId ? null : b;
           })
@@ -681,7 +652,7 @@ export default function OperatorAdminJourneysPage() {
           size,
         }));
 
-        const boatsWithRemaining: Boat[] = myOtherBoats.map(b => {
+        const boatsWithRemaining: Boat[] = myOtherBoats.map((b) => {
           const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
           return { ...b, cap: Math.max(0, b.cap - already) };
         });
@@ -692,15 +663,15 @@ export default function OperatorAdminJourneysPage() {
           : { ok: false, reason: "No capacity on other boats" };
       };
 
-      const perBoatDecorated = perBoat.map(b => {
+      const perBoatDecorated = perBoat.map((b) => {
         const { ok, reason } = computeRemove(b.vehicle_id);
         return { ...b, canRemove: ok, cannotReason: reason };
       });
 
       perBoatDecorated.sort((a, b) => {
-        const ap = a.preferred ? 0 : 1;
-        const bp = b.preferred ? 0 : 1;
-        if (ap !== bp) return ap - bp;
+        const ap = b.preferred ? 1 : 0;
+        const bp = a.preferred ? 1 : 0;
+        if (ap !== bp) return bp - ap;
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
@@ -730,17 +701,35 @@ export default function OperatorAdminJourneysPage() {
     );
 
     return out;
-  }, [journeys, orders, rvas, vehicles, routes, pickups, destinations, operatorId, locksByJourney, operators, assigns]);
+  }, [
+    journeys,
+    orders,
+    rvas,
+    vehicles,
+    routes,
+    pickups,
+    destinations,
+    operatorId,
+    locksByJourney,
+    operators,
+    assigns,
+    routeById,
+    pickupNameById,
+    destNameById,
+    vehicleById,
+    operatorNameById,
+    assignByKey,
+  ]);
 
   /* ---------------- Actions ---------------- */
   function onManifest(journeyId: UUID, vehicleId: UUID) {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
 
-  // --- Remove a boat from a journey and reassign its groups (client) ---
   async function onRemove(row: UiRow, boat: UiBoat) {
     if (!boat.canRemove) return;
-    if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
+    if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`))
+      return;
 
     try {
       const res = await fetch("/api/operator/remove-boat", {
@@ -755,14 +744,15 @@ export default function OperatorAdminJourneysPage() {
       }
 
       const body = await res.json();
-      const lockRows = body.lock as Array<{
+
+      const lockRows = (body.lock ?? []) as Array<{
         journey_id: string;
         vehicle_id: string;
         order_id: string;
         seats: number;
       }>;
 
-      setLocksByJourney(prev => {
+      setLocksByJourney((prev) => {
         const m = new Map(prev);
         m.set(row.journey.id, lockRows as any);
         return m;
@@ -774,7 +764,6 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // Inline assign kept for compatibility (not used when CaptainPicker present)
   async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
     const key = `${journeyId}_${vehicleId}`;
     setAssigning(key);
@@ -792,14 +781,32 @@ export default function OperatorAdminJourneysPage() {
       const body = await res.json().catch(() => ({}));
 
       if (res.status === 409) {
-        // already assigned, just refresh
+        alert("Already assigned. Refreshing…");
       } else if (res.status === 422) {
         alert(body?.error || "Captain unavailable");
         return;
       } else if (!res.ok) {
         throw new Error(body?.error || `Assign failed (${res.status})`);
       }
-      await refreshAssignmentsFor(journeyId, vehicleId);
+
+      // Refresh just this journey/vehicle assignment from the view
+      const { data: aData } = await sb!
+        .from("v_crew_assignments_min")
+        .select(
+          "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+        )
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId);
+
+      const updated = ((aData as AssignView[]) ?? []).filter(
+        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+      );
+
+      setAssigns((prev) => {
+        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+        return Array.from(m.values());
+      });
     } catch (e: any) {
       alert(e?.message ?? "Assign failed");
     } finally {
@@ -808,7 +815,7 @@ export default function OperatorAdminJourneysPage() {
   }
 
   const eligibleStaff = useMemo(() => {
-    const list = staff.slice();
+    const list = (staff ?? []).slice();
     list.sort((a, b) => {
       const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
       const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
@@ -819,7 +826,13 @@ export default function OperatorAdminJourneysPage() {
 
   function assigneeName(b: UiBoat) {
     return b.assignee?.name ?? null;
-  }
+    }
+
+  const lockedOperatorName =
+    psUser?.operator_admin && psUser?.operator_id
+      ? psUser?.operator_name ||
+        (operators?.find?.((o) => o.id === psUser.operator_id)?.name ?? psUser.operator_id)
+      : "";
 
   /* ---------------- Render ---------------- */
   return (
@@ -832,7 +845,7 @@ export default function OperatorAdminJourneysPage() {
           </p>
         </div>
         <div className="text-sm text-neutral-600">
-          {psUser?.operator_name ?? (psUser?.operator_admin ? psUser?.operator_id : "")}
+          {lockedOperatorName || (psUser?.operator_admin ? psUser?.operator_id : "")}
         </div>
       </header>
 
@@ -854,7 +867,7 @@ export default function OperatorAdminJourneysPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {rows.map(row => (
+          {rows.map((row) => (
             <section
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
@@ -913,7 +926,7 @@ export default function OperatorAdminJourneysPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {row.perBoat.map(b => {
+                    {row.perBoat.map((b) => {
                       const key = `${row.journey.id}_${b.vehicle_id}`;
                       const selected = selectedStaff[key];
 
@@ -951,7 +964,7 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + CaptainPicker when unassigned */}
+                          {/* Status + inline assignee */}
                           <td className="p-3">
                             <span
                               className="px-2 py-1 rounded text-xs"
@@ -974,18 +987,63 @@ export default function OperatorAdminJourneysPage() {
                             >
                               {b.statusPill.label}
                             </span>
+                            {!assigneeName(b) &&
+                              (row.horizon === "T72" || row.horizon === ">72h") && (
+                                <div className="mt-2 flex items-center gap-2">
+                                  {eligibleStaff.length <= 1 ? (
+                                    <span className="text-xs">
+                                      {eligibleStaff[0]
+                                        ? `${eligibleStaff[0].first_name ?? ""} ${
+                                            eligibleStaff[0].last_name ?? ""
+                                          }`.trim()
+                                        : "No staff"}
+                                    </span>
+                                  ) : (
+                                    <select
+                                      className="border rounded px-2 py-1 text-xs"
+                                      value={selected || ""}
+                                      onChange={(e) =>
+                                        setSelectedStaff((prev) => ({
+                                          ...prev,
+                                          [key]: e.target.value as UUID,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Select crew…</option>
+                                      {eligibleStaff.map((s) => {
+                                        const name =
+                                          `${s.last_name ?? ""} ${s.first_name ?? ""}`.trim() ||
+                                          "Unnamed";
+                                        return (
+                                          <option key={s.id} value={s.id}>
+                                            {name}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
+                                  )}
 
-                            {!assigneeName(b) && (row.horizon === "T72" || row.horizon === ">72h") && (
-                              <div className="mt-3">
-                                <CaptainPicker
-                                  operatorId={operatorId!}
-                                  journeyId={row.journey.id}
-                                  vehicleId={b.vehicle_id}
-                                  departureTs={row.journey.departure_ts}
-                                  onAssigned={() => refreshAssignmentsFor(row.journey.id, b.vehicle_id)}
-                                />
-                              </div>
-                            )}
+                                  <button
+                                    className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                    style={{ backgroundColor: "#111827" }}
+                                    disabled={
+                                      assigning === key ||
+                                      (!selected && eligibleStaff.length !== 1)
+                                    }
+                                    onClick={() =>
+                                      onAssign(
+                                        row.journey.id,
+                                        b.vehicle_id,
+                                        (eligibleStaff.length === 1 && !selected
+                                          ? eligibleStaff[0]?.id
+                                          : selected) as UUID | undefined
+                                      )
+                                    }
+                                  >
+                                    {assigning === key ? "Assigning…" : "Assign"}
+                                  </button>
+                                </div>
+                              )}
                           </td>
 
                           <td className="p-3 space-x-2">
