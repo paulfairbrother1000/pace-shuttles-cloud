@@ -1,6 +1,7 @@
 // src/app/checkout/names/page.tsx
 "use client";
 
+
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import ClientTnCConsent from "@/components/ClientTnCConsent";

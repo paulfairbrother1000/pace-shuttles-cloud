@@ -4,6 +4,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import ClientTnCConsent from "@/components/ClientTnCConsent";
 
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n);
@@ -56,91 +57,95 @@ export default function PayPage(): JSX.Element {
   // which person is lead? "lead" (the lead form) or a guest index 0..(qty-2)
   const [leadChoice, setLeadChoice] = React.useState<"lead" | number>("lead");
 
+  // consent + UI state
+  const [consented, setConsented] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
+  // Keep client/server versions aligned. Client can also fall back safely.
+  const tncVersion = process.env.NEXT_PUBLIC_CLIENT_TNC_VERSION ?? "2025-10-10";
+
   // Prefill from Supabase: users.first_name, users.last_name, users.mobile; email from auth
-React.useEffect(() => {
-  let off = false;
-  (async () => {
-    try {
-      if (!sb) return;
+  React.useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        if (!sb) return;
 
-      // 1) Auth session
-      const { data: auth } = await sb.auth.getUser();
-      const authedEmail = auth?.user?.email || "";
-      const authedId = auth?.user?.id || "";
+        // 1) Auth session
+        const { data: auth } = await sb.auth.getUser();
+        const authedEmail = auth?.user?.email || "";
+        const authedId = auth?.user?.id || "";
 
-      // Email: prefer auth email (authoritative)
-      if (!off && authedEmail && !leadEmail) setLeadEmail(authedEmail);
+        // Email: prefer auth email (authoritative)
+        if (!off && authedEmail && !leadEmail) setLeadEmail(authedEmail);
 
-      // 2) Try users.auth_user_id first (ideal case)
-      let first: string | null = null;
-      let last: string | null = null;
-      let phone: string | null = null;
+        // 2) Try users.auth_user_id first (ideal case)
+        let first: string | null = null;
+        let last: string | null = null;
+        let phone: string | null = null;
 
-      if (authedId) {
-        const { data: byAuthId } = await sb
-          .from("users")
-          .select("first_name,last_name,mobile")
-          .eq("auth_user_id", authedId)
-          .maybeSingle();
+        if (authedId) {
+          const { data: byAuthId } = await sb
+            .from("users")
+            .select("first_name,last_name,mobile")
+            .eq("auth_user_id", authedId)
+            .maybeSingle();
 
-        if (byAuthId) {
-          first = (byAuthId.first_name ?? null) as any;
-          last  = (byAuthId.last_name ?? null) as any;
-          phone = byAuthId.mobile != null ? String(byAuthId.mobile) : null;
-        }
-      }
-
-      // 3) Fallback: match by email (common if auth_user_id wasn’t filled yet)
-      if ((!first || !last || !phone) && authedEmail) {
-        const { data: byEmail } = await sb
-          .from("users")
-          .select("first_name,last_name,mobile")
-          .ilike("email", authedEmail)   // case-insensitive
-          .maybeSingle();
-
-        if (byEmail) {
-          if (!first) first = (byEmail.first_name ?? null) as any;
-          if (!last)  last  = (byEmail.last_name  ?? null) as any;
-          if (!phone) phone = byEmail.mobile != null ? String(byEmail.mobile) : null;
-        }
-      }
-
-      // 4) Final fallback: auth user_metadata (if you ever store full_name there)
-      if (!first || !last) {
-        const meta = (auth?.user?.user_metadata ?? {}) as Record<string, any>;
-        const fullName: string | undefined =
-          meta.full_name || meta.name || meta["fullName"] || meta["given_name"];
-        if (fullName && (!first || !last)) {
-          const parts = String(fullName).trim().split(/\s+/);
-          if (parts.length >= 2) {
-            if (!first) first = parts[0];
-            if (!last)  last  = parts.slice(1).join(" ");
-          } else if (parts.length === 1 && !first) {
-            first = parts[0];
+          if (byAuthId) {
+            first = (byAuthId.first_name ?? null) as any;
+            last  = (byAuthId.last_name  ?? null) as any;
+            phone = byAuthId.mobile != null ? String(byAuthId.mobile) : null;
           }
         }
-        if (!first && meta.first_name) first = String(meta.first_name);
-        if (!last  && meta.last_name)  last  = String(meta.last_name);
-      }
 
-      if (!off) {
-        if (first && !leadFirst) setLeadFirst(first);
-        if (last  && !leadLast)  setLeadLast(last);
-        if (phone && !leadPhone) setLeadPhone(phone);
-      }
-    } catch {
-      // ignore prefill errors, user can still type manually
-    }
-  })();
-  return () => {
-    off = true;
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+        // 3) Fallback: match by email
+        if ((!first || !last || !phone) && authedEmail) {
+          const { data: byEmail } = await sb
+            .from("users")
+            .select("first_name,last_name,mobile")
+            .ilike("email", authedEmail)
+            .maybeSingle();
 
+          if (byEmail) {
+            if (!first) first = (byEmail.first_name ?? null) as any;
+            if (!last)  last  = (byEmail.last_name  ?? null) as any;
+            if (!phone) phone = byEmail.mobile != null ? String(byEmail.mobile) : null;
+          }
+        }
+
+        // 4) Final fallback: auth user_metadata
+        if (!first || !last) {
+          const meta = (auth?.user?.user_metadata ?? {}) as Record<string, any>;
+          const fullName: string | undefined =
+            meta.full_name || meta.name || meta["fullName"] || meta["given_name"];
+          if (fullName && (!first || !last)) {
+            const parts = String(fullName).trim().split(/\s+/);
+            if (parts.length >= 2) {
+              if (!first) first = parts[0];
+              if (!last)  last  = parts.slice(1).join(" ");
+            } else if (parts.length === 1 && !first) {
+              first = parts[0];
+            }
+          }
+          if (!first && meta.first_name) first = String(meta.first_name);
+          if (!last  && meta.last_name)  last  = String(meta.last_name);
+        }
+
+        if (!off) {
+          if (first && !leadFirst) setLeadFirst(first);
+          if (last  && !leadLast)  setLeadLast(last);
+          if (phone && !leadPhone) setLeadPhone(phone);
+        }
+      } catch {
+        // ignore prefill errors
+      }
+    })();
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function updateGuest(i: number, patch: Partial<Guest>) {
     setGuests((prev) => {
@@ -171,14 +176,12 @@ React.useEffect(() => {
       };
       const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
 
-      // Prefer sendBeacon so navigation/redirect isn't blocked
       const ok =
         typeof navigator !== "undefined" && "sendBeacon" in navigator
           ? navigator.sendBeacon("/api/email/booking-request", blob)
           : false;
 
       if (!ok) {
-        // Fallback fetch (non-blocking best-effort)
         fetch("/api/email/booking-request", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -187,7 +190,7 @@ React.useEffect(() => {
         }).catch(() => {});
       }
     } catch {
-      /* ignore email errors entirely */
+      /* ignore email errors */
     }
   }
 
@@ -214,13 +217,12 @@ React.useEffect(() => {
       setErr("Lead passenger phone is required.");
       return;
     }
-    // Light validation (keep client simple; server does the heavy lifting)
-    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(leadEmail.trim());
+    const emailOk = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(leadEmail.trim());
     if (!emailOk) {
       setErr("Please enter a valid email address.");
       return;
     }
-    if (leadPhone.trim().replace(/[^\d+]/g, "").length < 6) {
+    if (leadPhone.trim().replace(/[^\\d+]/g, "").length < 6) {
       setErr("Please enter a valid phone number.");
       return;
     }
@@ -228,7 +230,7 @@ React.useEffect(() => {
     // All guest names required
     for (let i = 0; i < guests.length; i++) {
       if (!guests[i].first_name.trim() || !guests[i].last_name.trim()) {
-        setErr(`Guest ${i + 1} needs first and last name.`);
+        setErr(\`Guest \${i + 1} needs first and last name.\`);
         return;
       }
     }
@@ -247,9 +249,13 @@ React.useEffect(() => {
       return;
     }
 
+    if (!consented) {
+      setErr("You must confirm you have read and understood the Client Terms & Conditions before continuing.");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      // ✅ Do not change contract names — server expects snake_case
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -285,6 +291,14 @@ React.useEffect(() => {
       }
 
       const json = await res.json().catch(() => ({} as any));
+
+      // If server still says consent missing, show a clear banner
+      if (res.status === 400 && json?.help?.code === "CONSENT_REQUIRED") {
+        setErr("You must confirm you have read and understood the Client Terms & Conditions before continuing.");
+        setSubmitting(false);
+        return;
+      }
+
       if (!res.ok || !json?.ok || !json?.url) {
         throw new Error(json?.error || "Payment failed.");
       }
@@ -415,12 +429,21 @@ React.useEffect(() => {
         </p>
       </div>
 
+      {/* ---- Client Terms & Conditions consent (required) ---- */}
+      <div id="client-tnc-consent" className="rounded-2xl border p-4">
+        <ClientTnCConsent
+          quoteToken={token}
+          tncVersion={tncVersion}
+          onConsented={() => setConsented(true)}
+        />
+      </div>
+
       {err && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700 text-sm">{err}</div>
       )}
 
       <div className="flex items-center gap-3">
-        <button onClick={handlePayNow} disabled={submitting} className="btn-primary" type="button">
+        <button onClick={handlePayNow} disabled={!consented || submitting} className="btn-primary" type="button">
           {submitting ? "Processing…" : "Proceed to payment"}
         </button>
         <button onClick={() => router.back()} disabled={submitting} className="btn-secondary" type="button">
@@ -429,12 +452,16 @@ React.useEffect(() => {
       </div>
 
       <p className="text-xs text-gray-500">
-        By continuing, you agree to our terms and acknowledge this is a test flow while we wire up payments.
+        By continuing, you agree to our terms. You can{" "}
+        <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
+          read the Client Terms &amp; Conditions here
+        </a>.
       </p>
 
       <style jsx global>{`
         .input { border:1px solid #e5e7eb; border-radius:.75rem; padding:.6rem .9rem; width:100%; }
         .btn-primary { border-radius: .75rem; background:#000; color:#fff; padding:.5rem 1rem; font-size:.9rem; }
+        .btn-primary[disabled] { opacity:.5; cursor:not-allowed; }
         .btn-secondary { border-radius: .75rem; border:1px solid #e5e7eb; padding:.5rem 1rem; font-size:.9rem; }
       `}</style>
     </div>
