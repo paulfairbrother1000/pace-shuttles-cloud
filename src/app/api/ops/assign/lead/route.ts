@@ -1,96 +1,113 @@
-// src/app/api/ops/assign/lead/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-// IMPORTANT: your mailer exports are named, not default:
-import { sendMail } from "@/lib/mailer"; // ✅ named import
+import { createServerClient } from "@supabase/ssr";
 
-export async function POST(req: NextRequest) {
-  const { journey_id, vehicle_id, staff_id } = await req.json().catch(() => ({}));
-  if (!journey_id || !vehicle_id) {
-    return NextResponse.json({ error: "journey_id and vehicle_id required" }, { status: 400 });
-  }
-
-  const cookieStore = cookies();
-  const sb = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (n: string) => cookieStore.get(n)?.value } }
-  );
-
-  // Basic operator auth/context (best-effort)
-  const { data: ures } = await sb.auth.getUser();
-  if (!ures?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  // 1) validate journey/vehicle
-  const { data: j } = await sb
-    .from("journeys")
-    .select("id, route_id, departure_ts")
-    .eq("id", journey_id)
-    .maybeSingle();
-  if (!j) return NextResponse.json({ error: "Journey not found" }, { status: 404 });
-
-  const { data: v } = await sb
-    .from("vehicles")
-    .select("id, operator_id, name")
-    .eq("id", vehicle_id)
-    .maybeSingle();
-  if (!v) return NextResponse.json({ error: "Vehicle not found" }, { status: 404 });
-
-  // 2) if staff_id omitted, pick an eligible captain (very simple fallback)
-  let targetStaffId = staff_id as string | undefined;
-  if (!targetStaffId) {
-    const { data: staff } = await sb
-      .from("operator_staff")
-      .select("id, active, jobrole")
-      .eq("operator_id", v.operator_id)
-      .eq("active", true);
-    const captains = (staff || []).filter(s => (s.jobrole || "").toLowerCase() === "captain");
-    targetStaffId = captains[0]?.id;
-    if (!targetStaffId) {
-      return NextResponse.json({ error: "No eligible captain found" }, { status: 422 });
-    }
-  }
-
-  // 3) ensure not already assigned a lead (role != Crew) for this journey+vehicle
-  const { data: exists } = await sb
-    .from("journey_assignments")
-    .select("id, role_label, status_simple")
-    .eq("journey_id", journey_id)
-    .eq("vehicle_id", vehicle_id)
-    .neq("role_label", "Crew")
-    .limit(1);
-  if (exists && exists.length) {
-    return NextResponse.json({ error: "Lead already exists" }, { status: 409 });
-  }
-
-  // 4) insert/allocate lead
-  const { data: ins, error: insErr } = await sb
-    .from("journey_assignments")
-    .insert({
-      journey_id,
-      vehicle_id,
-      staff_id: targetStaffId,
-      role_label: "Captain",
-      status_simple: "allocated",
-      assigned_at: new Date().toISOString(),
-    })
-    .select("id")
-    .maybeSingle();
-
-  if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
-
-  // 5) optional: email notification (safe-guarded)
+/**
+ * Assign (or reassign) a lead crew member to a journey+vehicle.
+ * Body: { journey_id: string, vehicle_id: string, staff_id?: string }
+ * Returns: 200 { ok: true, assignment_id } | 409 already has a lead | 422 invalid
+ */
+export async function POST(req: Request) {
   try {
-    // You can adjust subject/html templates as you like
-    await sendMail({
-      to: [], // fill if you want an immediate captain mail here; otherwise leave empty
-      subject: "New assignment",
-      html: `<p>You have been assigned as Captain.</p>`,
-    });
-  } catch {
-    // ignore mail errors
-  }
+    const { journey_id, vehicle_id, staff_id } = await req.json();
 
-  return NextResponse.json({ ok: true, assignment_id: ins?.id });
+    if (!journey_id || !vehicle_id) {
+      return NextResponse.json(
+        { error: "Missing required fields." },
+        { status: 400 }
+      );
+    }
+
+    const cookieStore = cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get: (name: string) => cookieStore.get(name)?.value,
+          set: (name: string, value: string, options: any) =>
+            cookieStore.set({ name, value, ...options }),
+          remove: (name: string, options: any) =>
+          cookieStore.set({ name, value: "", ...options }),
+        },
+      }
+    );
+
+    // 1) If a lead already exists and is still active, refuse.
+    {
+      const { data: existing, error: existErr } = await supabase
+        .from("journey_assignments")
+        .select("id")
+        .eq("journey_id", journey_id)
+        .eq("vehicle_id", vehicle_id)
+        .eq("is_lead", true)
+        .is("completed_at", null)
+        .limit(1);
+
+      if (existErr) {
+        return NextResponse.json(
+          { error: existErr.message || "Check failed" },
+          { status: 500 }
+        );
+      }
+      if (existing && existing.length > 0) {
+        return NextResponse.json(
+          { error: "Lead already assigned." },
+          { status: 409 }
+        );
+      }
+    }
+
+    // 2) Optional: if staff_id specified, make sure the staff exists and is active
+    if (staff_id) {
+      const { data: s, error: sErr } = await supabase
+        .from("operator_staff")
+        .select("id, active")
+        .eq("id", staff_id)
+        .maybeSingle();
+
+      if (sErr) {
+        return NextResponse.json(
+          { error: sErr.message || "Staff lookup failed" },
+          { status: 500 }
+        );
+      }
+      if (!s || s.active === false) {
+        return NextResponse.json(
+          { error: "Staff is not available/active." },
+          { status: 422 }
+        );
+      }
+    }
+
+    // 3) Insert new lead assignment (role_id can be null; views derive labels)
+    const nowIso = new Date().toISOString();
+    const { data: ins, error: insErr } = await supabase
+      .from("journey_assignments")
+      .insert({
+        journey_id,
+        vehicle_id,
+        staff_id: staff_id ?? null,
+        is_lead: true,
+        status_simple: "allocated",
+        assigned_at: nowIso,
+        created_at: nowIso,
+      })
+      .select("id")
+      .single();
+
+    if (insErr) {
+      return NextResponse.json(
+        { error: insErr.message || "Insert failed" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, assignment_id: ins?.id }, { status: 200 });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message ?? "Server error" },
+      { status: 500 }
+    );
+  }
 }

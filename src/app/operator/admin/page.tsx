@@ -675,6 +675,21 @@ export default function OperatorAdminJourneysPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
+
+// after: const perBoatDecorated = perBoat.map(...).sort(...);
+
+// --- NEW: skip journeys with zero demand for this operator ---
+const hasAnyInterest =
+  perBoatDecorated.length > 0 &&
+  perBoatDecorated.some(b => (b.db ?? 0) > 0 || (b.groups?.length ?? 0) > 0);
+
+if (!hasAnyInterest) {
+  // nothing for this operator on this journey — skip it
+  continue;
+}
+
+
+
       out.push({
         journey: j,
         pickup: pickupNameById.get(r.pickup_id) ?? "—",
