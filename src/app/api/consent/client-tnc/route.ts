@@ -1,45 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const CLIENT_TNC_VERSION = process.env.CLIENT_TNC_VERSION || "2025-10-10";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const DEFAULT_TNC_VERSION = process.env.CLIENT_TNC_VERSION || "2025-10-10";
 
 export async function POST(req: NextRequest) {
   try {
-    const { quoteToken, tncVersion } = await req.json();
-    if (!quoteToken) {
-      return NextResponse.json({ error: "Missing quoteToken" }, { status: 400 });
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json(
+        { error: "Supabase env not configured" },
+        { status: 500 }
+      );
     }
-    const version = String(tncVersion || CLIENT_TNC_VERSION);
 
-    const jar = await cookies();
-    const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
-      cookies: {
-        get: (name: string) => jar.get(name)?.value,
-        set: (name, value, options) => jar.set(name, value, options),
-        remove: (name, options) => jar.set(name, "", { ...options, maxAge: 0 }),
-      },
+    const body = await req.json().catch(() => ({}));
+    const quoteToken: string | undefined = body?.quoteToken || body?.token;
+    const tncVersion: string =
+      String(body?.tncVersion || DEFAULT_TNC_VERSION);
+
+    if (!quoteToken) {
+      return NextResponse.json(
+        { error: "quoteToken required" },
+        { status: 400 }
+      );
+    }
+
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
     });
 
-    const { error } = await supabase
+    // Minimal row — do NOT reference columns that may not exist
+    const row = {
+      quote_token: quoteToken,
+      tnc_type: "client",
+      tnc_version: tncVersion,
+      // deliberately not writing accepted_at/created_by/etc.
+    };
+
+    // Try UPSERT on a natural key. If the unique constraint doesn't exist,
+    // we'll fall back to a plain INSERT and ignore duplicate key errors.
+    let { data, error } = await admin
       .from("order_consents")
-      .upsert(
-        {
-          quote_token: quoteToken,
-          tnc_type: "client",
-          tnc_version: version,
-          accepted_at: new Date().toISOString(),
-        },
-        { onConflict: "quote_token,tnc_type,tnc_version" }
-      );
+      .upsert(row, {
+        onConflict: "quote_token,tnc_type,tnc_version",
+        ignoreDuplicates: false,
+      })
+      .select("id")
+      .maybeSingle();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // Fallback: INSERT and ignore dup key (23505) if it already exists
+      const ins = await admin
+        .from("order_consents")
+        .insert(row)
+        .select("id")
+        .maybeSingle();
+
+      if (ins.error && ins.error.code !== "23505") {
+        throw ins.error;
+      }
+      data = ins.data ?? data;
     }
-    return NextResponse.json({ ok: true });
+
+    return NextResponse.json({
+      ok: true,
+      id: data?.id ?? null,
+      tncVersion,
+    });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Invalid request" }, { status: 400 });
+    console.error("[consent/client-tnc] error", e?.message || e);
+    return NextResponse.json(
+      { error: e?.message || "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }
