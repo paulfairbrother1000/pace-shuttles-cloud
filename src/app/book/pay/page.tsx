@@ -4,7 +4,6 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-import ClientTnCConsent from "@/components/ClientTnCConsent";
 
 const gbp = (n: number) =>
   new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n);
@@ -34,7 +33,6 @@ export default function PayPage(): JSX.Element {
   const token = qs.get("token") || qs.get("quoteToken") || ""; // quote token
   const allInC = Number(qs.get("allInC") || qs.get("perSeatAllIn") || "0"); // per-seat all-in (GBP)
   const ccy = (qs.get("ccy") || "GBP").toUpperCase();
-
   const total = React.useMemo(() => allInC * qty, [allInC, qty]);
 
   // lead + contact
@@ -58,29 +56,29 @@ export default function PayPage(): JSX.Element {
   const [leadChoice, setLeadChoice] = React.useState<"lead" | number>("lead");
 
   // consent + UI state
+  const [consentChecked, setConsentChecked] = React.useState(false);
   const [consented, setConsented] = React.useState(false);
+  const [savingConsent, setSavingConsent] = React.useState(false);
+
   const [submitting, setSubmitting] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
 
   // Keep client/server versions aligned. Client can also fall back safely.
   const tncVersion = process.env.NEXT_PUBLIC_CLIENT_TNC_VERSION ?? "2025-10-10";
 
-  // Prefill from Supabase: users.first_name, users.last_name, users.mobile; email from auth
+  // Prefill from Supabase
   React.useEffect(() => {
     let off = false;
     (async () => {
       try {
         if (!sb) return;
 
-        // 1) Auth session
         const { data: auth } = await sb.auth.getUser();
         const authedEmail = auth?.user?.email || "";
         const authedId = auth?.user?.id || "";
 
-        // Email: prefer auth email (authoritative)
         if (!off && authedEmail && !leadEmail) setLeadEmail(authedEmail);
 
-        // 2) Try users.auth_user_id first (ideal case)
         let first: string | null = null;
         let last: string | null = null;
         let phone: string | null = null;
@@ -91,7 +89,6 @@ export default function PayPage(): JSX.Element {
             .select("first_name,last_name,mobile")
             .eq("auth_user_id", authedId)
             .maybeSingle();
-
           if (byAuthId) {
             first = (byAuthId.first_name ?? null) as any;
             last  = (byAuthId.last_name  ?? null) as any;
@@ -99,14 +96,12 @@ export default function PayPage(): JSX.Element {
           }
         }
 
-        // 3) Fallback: match by email
         if ((!first || !last || !phone) && authedEmail) {
           const { data: byEmail } = await sb
             .from("users")
             .select("first_name,last_name,mobile")
             .ilike("email", authedEmail)
             .maybeSingle();
-
           if (byEmail) {
             if (!first) first = (byEmail.first_name ?? null) as any;
             if (!last)  last  = (byEmail.last_name  ?? null) as any;
@@ -114,7 +109,6 @@ export default function PayPage(): JSX.Element {
           }
         }
 
-        // 4) Final fallback: auth user_metadata
         if (!first || !last) {
           const meta = (auth?.user?.user_metadata ?? {}) as Record<string, any>;
           const fullName: string | undefined =
@@ -153,6 +147,29 @@ export default function PayPage(): JSX.Element {
       next[i] = { ...next[i], ...patch };
       return next;
     });
+  }
+
+  /* ---------------- Save T&C consent ---------------- */
+  async function saveConsent() {
+    if (!consentChecked || savingConsent || !token) return;
+    setSavingConsent(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/consent/client-tnc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteToken: token, tncVersion }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `Failed to record consent (${res.status})`);
+      }
+      setConsented(true);
+    } catch (e: any) {
+      setErr(e?.message || "Could not save your T&C acceptance. Please try again.");
+    } finally {
+      setSavingConsent(false);
+    }
   }
 
   /* ---------------- Background email trigger (non-blocking) ---------------- */
@@ -217,12 +234,12 @@ export default function PayPage(): JSX.Element {
       setErr("Lead passenger phone is required.");
       return;
     }
-    const emailOk = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(leadEmail.trim());
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(leadEmail.trim());
     if (!emailOk) {
       setErr("Please enter a valid email address.");
       return;
     }
-    if (leadPhone.trim().replace(/[^\\d+]/g, "").length < 6) {
+    if (leadPhone.trim().replace(/[^\d+]/g, "").length < 6) {
       setErr("Please enter a valid phone number.");
       return;
     }
@@ -230,7 +247,7 @@ export default function PayPage(): JSX.Element {
     // All guest names required
     for (let i = 0; i < guests.length; i++) {
       if (!guests[i].first_name.trim() || !guests[i].last_name.trim()) {
-        setErr(\`Guest \${i + 1} needs first and last name.\`);
+        setErr(`Guest ${i + 1} needs first and last name.`);
         return;
       }
     }
@@ -241,7 +258,7 @@ export default function PayPage(): JSX.Element {
       ...guests.map((g, i) => ({
         first_name: g.first_name.trim(),
         last_name: g.last_name.trim(),
-        is_lead: leadChoice === i, // guest index
+        is_lead: leadChoice === i,
       })),
     ];
     if (passengers.filter((p) => p.is_lead).length !== 1) {
@@ -265,7 +282,7 @@ export default function PayPage(): JSX.Element {
           routeId,
           date: dateISO,
           qty,
-          token,   // signed quote token
+          token,
           allInC,  // per-seat all-in (GBP units)
           ccy,
 
@@ -276,11 +293,10 @@ export default function PayPage(): JSX.Element {
           lead_phone: leadPhone.trim(),
 
           // Manifest
-          passengers, // [{ first_name, last_name, is_lead }]
+          passengers,
         }),
       });
 
-      // Not logged in → bounce to login and return here
       if (res.status === 401) {
         const returnTo =
           typeof window !== "undefined"
@@ -292,7 +308,6 @@ export default function PayPage(): JSX.Element {
 
       const json = await res.json().catch(() => ({} as any));
 
-      // If server still says consent missing, show a clear banner
       if (res.status === 400 && json?.help?.code === "CONSENT_REQUIRED") {
         setErr("You must confirm you have read and understood the Client Terms & Conditions before continuing.");
         setSubmitting(false);
@@ -311,7 +326,6 @@ export default function PayPage(): JSX.Element {
         lead_phone: leadPhone.trim(),
       });
 
-      // Server supplies canonical success URL
       router.replace(json.url);
     } catch (e: any) {
       setErr(e?.message || "Network error.");
@@ -351,37 +365,12 @@ export default function PayPage(): JSX.Element {
       <div className="rounded-2xl border p-4 space-y-4">
         <div className="text-sm font-medium">Lead passenger *</div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input
-            className="input"
-            placeholder="First name *"
-            value={leadFirst}
-            onChange={(e) => setLeadFirst(e.target.value)}
-            required
-          />
-          <input
-            className="input"
-            placeholder="Last name *"
-            value={leadLast}
-            onChange={(e) => setLeadLast(e.target.value)}
-            required
-          />
+          <input className="input" placeholder="First name *" value={leadFirst} onChange={(e) => setLeadFirst(e.target.value)} required />
+          <input className="input" placeholder="Last name *" value={leadLast} onChange={(e) => setLeadLast(e.target.value)} required />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input
-            className="input"
-            type="email"
-            placeholder="Email *"
-            value={leadEmail}
-            onChange={(e) => setLeadEmail(e.target.value)}
-            required
-          />
-          <input
-            className="input"
-            placeholder="Phone *"
-            value={leadPhone}
-            onChange={(e) => setLeadPhone(e.target.value)}
-            required
-          />
+          <input className="input" type="email" placeholder="Email *" value={leadEmail} onChange={(e) => setLeadEmail(e.target.value)} required />
+          <input className="input" placeholder="Phone *" value={leadPhone} onChange={(e) => setLeadPhone(e.target.value)} required />
         </div>
 
         {guests.length > 0 && (
@@ -389,38 +378,16 @@ export default function PayPage(): JSX.Element {
             <div className="text-sm font-medium">Additional passengers</div>
             {guests.map((g, i) => (
               <div key={i} className="grid grid-cols-[1rem_1fr_1fr] gap-3 items-center">
-                <input
-                  type="radio"
-                  name="leadPick"
-                  aria-label="Mark as lead"
-                  checked={leadChoice === i}
-                  onChange={() => setLeadChoice(i)}
-                />
-                <input
-                  className="input"
-                  placeholder={`Guest ${i + 1} – first name`}
-                  value={g.first_name}
-                  onChange={(e) => updateGuest(i, { first_name: e.target.value })}
-                />
-                <input
-                  className="input"
-                  placeholder={`Guest ${i + 1} – last name`}
-                  value={g.last_name}
-                  onChange={(e) => updateGuest(i, { last_name: e.target.value })}
-                />
+                <input type="radio" name="leadPick" aria-label="Mark as lead" checked={leadChoice === i} onChange={() => setLeadChoice(i)} />
+                <input className="input" placeholder={`Guest ${i + 1} – first name`} value={g.first_name} onChange={(e) => updateGuest(i, { first_name: e.target.value })} />
+                <input className="input" placeholder={`Guest ${i + 1} – last name`} value={g.last_name} onChange={(e) => updateGuest(i, { last_name: e.target.value })} />
               </div>
             ))}
           </div>
         )}
 
-        {/* Lead selector for the lead fields themselves */}
         <div className="flex items-center gap-2 pt-1">
-          <input
-            type="radio"
-            name="leadPick"
-            checked={leadChoice === "lead"}
-            onChange={() => setLeadChoice("lead")}
-          />
+          <input type="radio" name="leadPick" checked={leadChoice === "lead"} onChange={() => setLeadChoice("lead")} />
           <span className="text-sm">Set the above person as lead</span>
         </div>
 
@@ -431,11 +398,37 @@ export default function PayPage(): JSX.Element {
 
       {/* ---- Client Terms & Conditions consent (required) ---- */}
       <div id="client-tnc-consent" className="rounded-2xl border p-4">
-        <ClientTnCConsent
-          quoteToken={token}
-          tncVersion={tncVersion}
-          onConsented={() => setConsented(true)}
-        />
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            className="mt-1 h-5 w-5"
+            checked={consentChecked}
+            onChange={(e) => setConsentChecked(e.target.checked)}
+            aria-describedby="tnc-help"
+          />
+          <span className="text-sm leading-6">
+            I confirm I’ve <strong>read and understood</strong>{" "}
+            <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
+              the Client Terms &amp; Conditions
+            </a>{" "}
+            and agree to be bound by them.
+            <div id="tnc-help" className="text-xs text-neutral-600 mt-1">
+              No cancellations. Reschedule up to <strong>T-72</strong> (subject to availability) within <strong>12 months</strong>.
+            </div>
+          </span>
+        </label>
+
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={saveConsent}
+            disabled={!consentChecked || savingConsent || !token}
+            className={`px-4 py-2 rounded-xl border text-sm ${!consentChecked || savingConsent || !token ? "opacity-50 cursor-not-allowed" : ""}`}
+            aria-disabled={!consentChecked || savingConsent || !token}
+          >
+            {savingConsent ? "Saving…" : consented ? "✔ Accepted" : "I agree"}
+          </button>
+        </div>
       </div>
 
       {err && (
