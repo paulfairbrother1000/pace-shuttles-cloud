@@ -19,14 +19,13 @@ export default function NamesPage() {
     return "";
   }, [searchParams]);
 
-  const tncVersion =
-    process.env.NEXT_PUBLIC_CLIENT_TNC_VERSION ?? "2025-10-10";
+  const tncVersion = process.env.NEXT_PUBLIC_CLIENT_TNC_VERSION ?? "2025-10-10";
 
   const [consented, setConsented] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // TODO: Build this from real form state
+  // TODO: Replace with your actual form state
   const payload = {
     token: quoteToken,
     routeId: "...",
@@ -48,17 +47,13 @@ export default function NamesPage() {
     if (!consented || submitting) return;
     setSubmitting(true);
     setErr(null);
-
     try {
       const res = await submitCheckout(payload);
       if (!res.ok) {
-        // e.g. { help: { code: "CONSENT_REQUIRED", tncVersion } } or other error
         setErr(res?.error || "Checkout failed.");
         return;
       }
-      if (res.data?.url) {
-        window.location.href = res.data.url;
-      }
+      if (res.data?.url) window.location.href = res.data.url;
     } catch (e: any) {
       setErr(e?.message || "Something went wrong.");
     } finally {
@@ -70,9 +65,9 @@ export default function NamesPage() {
     <div className="mx-auto max-w-2xl p-6">
       <h1 className="text-2xl font-semibold">Passenger details</h1>
 
-      {/* Your passenger form fields here */}
+      {/* TODO: your passenger form fields here */}
 
-      {/* Client T&C consent */}
+      {/* Client T&C consent (link opens /legal/client-terms in a new tab) */}
       <div id="client-tnc-consent" className="mt-8">
         <ClientTnCConsent
           quoteToken={quoteToken}

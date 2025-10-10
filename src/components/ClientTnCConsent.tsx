@@ -1,4 +1,3 @@
-// src/components/ClientTncConsent.tsx
 "use client";
 import { useState } from "react";
 
@@ -8,7 +7,11 @@ type Props = {
   onConsented: () => void;
 };
 
-export default function ClientTncConsent({ quoteToken, tncVersion, onConsented }: Props) {
+/**
+ * Renders a checkbox + "I agree" action to persist consent for the given quoteToken/tncVersion.
+ * On success, calls onConsented() so the caller can enable the proceed button.
+ */
+export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }: Props) {
   const [checked, setChecked] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +39,7 @@ export default function ClientTncConsent({ quoteToken, tncVersion, onConsented }
   }
 
   return (
-    <div className="mt-6 rounded-2xl border border-neutral-200 p-4 bg-white" id="client-tnc-consent">
+    <div className="mt-6 rounded-2xl border border-neutral-200 p-4">
       <label className="flex items-start gap-3">
         <input
           type="checkbox"
@@ -46,9 +49,14 @@ export default function ClientTncConsent({ quoteToken, tncVersion, onConsented }
           aria-describedby="tnc-help"
         />
         <span className="text-sm leading-6">
-          I confirm I’ve <strong>read and understood</strong> the{" "}
-          <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
-            Client Terms &amp; Conditions
+          I confirm I’ve <strong>read and understood</strong>{" "}
+          <a
+            href="/legal/client-terms"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            the Client Terms &amp; Conditions
           </a>{" "}
           and agree to be bound by them.
           <div id="tnc-help" className="text-xs text-neutral-600 mt-1">
@@ -57,6 +65,23 @@ export default function ClientTncConsent({ quoteToken, tncVersion, onConsented }
           </div>
         </span>
       </label>
+
+      <details className="mt-3 text-sm">
+        <summary className="cursor-pointer select-none underline">Quick preview of key points</summary>
+        <ul className="mt-2 list-disc pl-5 text-neutral-700">
+          <li>Pace Shuttles acts as an intermediary/booking platform (not the carrier).</li>
+          <li>Travel is under the operator’s insurance; follow crew instructions at all times.</li>
+          <li>No cancellations; rescheduling allowed up to T-72 within 12 months, subject to availability.</li>
+          <li>We don’t store card details; payments are via an external provider.</li>
+          <li>Only manifest data is shared with operators/destinations.</li>
+        </ul>
+        <p className="mt-2 text-xs text-neutral-500">
+          This is a summary. Please read the full{" "}
+          <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
+            Client Terms &amp; Conditions
+          </a>.
+        </p>
+      </details>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
