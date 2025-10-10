@@ -34,28 +34,71 @@ function asFraction(x: unknown): number {
   return n;
 }
 
-// Require a saved consent row for this quote/version
+/**
+ * Require a saved consent row for this quote/version.
+ * Strategy:
+ *  1) Try exact version match (preferred).
+ *  2) Fallback: accept the most recent client consent for this quote_token.
+ */
 async function assertClientTnCConsent(
   supabase: ReturnType<typeof createServerClient>,
   quoteToken: string,
-  tncVersion: string
+  tncVersionRequired: string
 ) {
-  const { data, error } = await supabase
-    .from("order_consents")
-    .select("id")
-    .eq("quote_token", quoteToken)
-    .eq("tnc_type", "client")
-    .eq("tnc_version", tncVersion)
-    .limit(1)
-    .maybeSingle();
+  // 1) Exact match
+  {
+    const { data, error } = await supabase
+      .from("order_consents")
+      .select("id, tnc_version")
+      .eq("quote_token", quoteToken)
+      .eq("tnc_type", "client")
+      .eq("tnc_version", tncVersionRequired)
+      .limit(1)
+      .maybeSingle();
 
-  if (error) throw new Error(`Consent lookup failed: ${error.message}`);
-  if (!data) {
-    const msg =
-      "You must confirm you have read and understood the Client Terms & Conditions before continuing.";
-    const help = { code: "CONSENT_REQUIRED", tncVersion };
-    throw Object.assign(new Error(msg), { status: 400, help });
+    if (error) {
+      throw Object.assign(
+        new Error(`Consent lookup failed: ${error.message}`),
+        { status: 400 }
+      );
+    }
+    if (data) return;
   }
+
+  // 2) Most recent consent for this quote (version-agnostic fallback)
+  {
+    const { data, error } = await supabase
+      .from("order_consents")
+      .select("id, tnc_version, created_at")
+      .eq("quote_token", quoteToken)
+      .eq("tnc_type", "client")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw Object.assign(
+        new Error(`Consent lookup failed: ${error.message}`),
+        { status: 400 }
+      );
+    }
+
+    if (data) {
+      if (data.tnc_version !== tncVersionRequired) {
+        console.warn("[checkout] consent version drift", {
+          have: data.tnc_version,
+          want: tncVersionRequired,
+          quoteToken,
+        });
+      }
+      return;
+    }
+  }
+
+  const msg =
+    "You must confirm you have read and understood the Client Terms & Conditions before continuing.";
+  const help = { code: "CONSENT_REQUIRED", tncVersion: tncVersionRequired };
+  throw Object.assign(new Error(msg), { status: 400, help });
 }
 
 async function ensureJourneyId(
@@ -239,7 +282,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // ENFORCE: client T&Cs consent exists for this quote + current version
+    // ENFORCE: client T&Cs consent exists (pref exact version; fallback to latest)
     await assertClientTnCConsent(sb, token, CLIENT_TNC_VERSION);
 
     // per-seat from token (authoritative)
@@ -309,7 +352,7 @@ export async function POST(req: NextRequest) {
     const orderPayload: Record<string, any> = {
       user_id: userId,
       status: "requires_payment",
-      currency, // from earlier
+      currency,
       route_id: routeId,
       qty,
       unit_price_cents,
