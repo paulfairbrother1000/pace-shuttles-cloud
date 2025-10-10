@@ -38,6 +38,7 @@ type StaffRow = {
   type_id: string | null;        // legacy single
   type_ids: string[] | null;     // NEW multi
   pronoun: "he" | "she" | "they" | null; // NEW
+  email: string | null;          // NEW
 };
 
 /* ---------- Helpers ---------- */
@@ -103,6 +104,7 @@ export default function EditStaffPage() {
   const [status, setStatus] = useState("Active");
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
+  const [email, setEmail] = useState("");              // NEW
   const [licenses, setLicenses] = useState("");
   const [notes, setNotes] = useState("");
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -166,6 +168,7 @@ export default function EditStaffPage() {
       setStatus(s.status ?? "Active");
       setFirst(s.first_name ?? "");
       setLast(s.last_name ?? "");
+      setEmail(s.email ?? "");                         // NEW
       setLicenses(s.licenses ?? "");
       setNotes(s.notes ?? "");
       setPhotoUrl(await resolveStorageUrl(s.photo_url || null));
@@ -234,6 +237,7 @@ export default function EditStaffPage() {
           pronoun,
           first_name: first.trim(),
           last_name: last.trim(),
+          email: email.trim() || null,   // NEW
           status,
           licenses: licenses.trim() || null,
           notes: notes.trim() || null,
@@ -280,6 +284,7 @@ export default function EditStaffPage() {
           pronoun,
           first_name: first.trim(),
           last_name: last.trim(),
+          email: email.trim() || null,   // NEW
           status,
           licenses: licenses.trim() || null,
           notes: notes.trim() || null,
@@ -441,8 +446,8 @@ export default function EditStaffPage() {
             </div>
           </div>
 
-          {/* Status + Pronoun + Names */}
-          <div className="grid md:grid-cols-4 gap-4">
+          {/* Status + Pronoun + Names + Email */}
+          <div className="grid md:grid-cols-5 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Status</label>
               <select
@@ -485,6 +490,18 @@ export default function EditStaffPage() {
                 value={last}
                 onChange={(e) => setLast(e.target.value)}
               />
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-600 mb-1">Email</label>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                type="email"
+                placeholder="captain@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <p className="text-xs text-neutral-500 mt-1">Used for automated captain emails.</p>
             </div>
           </div>
 

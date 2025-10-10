@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { sendEmail } from "@/lib/mailer";
-import { buildOperatorLeadAssignedHTML } from "@/lib/email-templates"; // minor addition included earlier? If not, inline below.
 
 function sb() {
   const jar = cookies();
@@ -19,7 +18,6 @@ const BATCH = Number(process.env.CAQ_WORKER_BATCH || 25);
 export async function POST(_req: NextRequest) {
   const supabase = sb();
   try {
-    // 1) Pull a small batch of unprocessed queue items
     const { data: queue, error } = await supabase
       .from("captain_assignment_queue")
       .select("*")
@@ -28,14 +26,12 @@ export async function POST(_req: NextRequest) {
       .limit(BATCH);
 
     if (error) throw error;
-    if (!queue || queue.length === 0) {
-      return NextResponse.json({ ok: true, processed: 0 });
-    }
+    if (!queue?.length) return NextResponse.json({ ok: true, processed: 0 });
 
     let processed = 0;
 
     for (const q of queue) {
-      // Load the context for nice emails
+      // Load context for email
       const [{ data: j }, { data: v }] = await Promise.all([
         supabase
           .from("journeys")
@@ -48,23 +44,17 @@ export async function POST(_req: NextRequest) {
           .eq("id", q.vehicle_id)
           .maybeSingle(),
       ]);
-
       if (!j || !v) continue;
 
       const { data: route } = await supabase
         .from("routes")
-        .select("id, route_name, name, pickup_id, destination_id")
+        .select("id, route_name, name")
         .eq("id", j.route_id)
         .maybeSingle();
 
-      const [{ data: pickup }, { data: dest }] = await Promise.all([
-        supabase.from("pickup_points").select("id,name").eq("id", route?.pickup_id).maybeSingle(),
-        supabase.from("destinations").select("id,name").eq("id", route?.destination_id).maybeSingle(),
-      ]);
-
       const { data: staff } = await supabase
         .from("operator_staff")
-        .select("id, first_name, last_name, user_id")
+        .select("id, first_name, last_name, email")
         .eq("id", q.staff_id)
         .maybeSingle();
 
@@ -81,11 +71,9 @@ export async function POST(_req: NextRequest) {
       const captainName = `${staff?.first_name ?? ""} ${staff?.last_name ?? ""}`.trim() || "Captain";
       const vehicleName = v?.name || "Vehicle";
 
-      // 2) Build captain email (if we captured staff_email in the queue)
-      const toCaptain = q.staff_email || null;
-      const toOperator  = op?.admin_email || null;
+      const toCaptain = (q as any).staff_email || staff?.email || null;
+      const toOperator = op?.admin_email || null;
 
-      // Keep email simple for assignment (T-24 will send the rich manifest)
       const htmlCaptain = `
         <div style="font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial">
           <p>Hi ${captainName},</p>
@@ -103,7 +91,6 @@ export async function POST(_req: NextRequest) {
         </div>
       `;
 
-      // 3) Send emails (captain if we have an address; always operator as fallback)
       try {
         if (toCaptain) {
           await sendEmail({
@@ -119,17 +106,16 @@ export async function POST(_req: NextRequest) {
             html: htmlOperator,
           });
         }
-      } catch (e) {
-        // Do NOT mark processed if mailing failed; it will retry next tick.
+      } catch {
+        // Keep it in the queue to retry next tick
         continue;
       }
 
-      // 4) Mark processed
-      const { error: upErr } = await supabase
+      // Mark processed
+      await supabase
         .from("captain_assignment_queue")
         .update({ processed_at: new Date().toISOString() })
         .eq("id", q.id);
-      if (upErr) continue;
 
       processed += 1;
     }
@@ -140,5 +126,5 @@ export async function POST(_req: NextRequest) {
   }
 }
 
-// GET wrapper to support Vercel Cron
+// GET wrapper (Vercel Cron)
 export async function GET(req: NextRequest) { /* @ts-ignore */ return POST(req); }

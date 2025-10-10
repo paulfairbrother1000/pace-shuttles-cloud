@@ -391,16 +391,25 @@ export default function OperatorAdminJourneysPage() {
           setStaff([]);
         }
 
-        // current assignments (view)
-        if (journeyIds.length) {
-const { data: aData } = await sb
-  .from("v_crew_assignments_min")
-  .select("assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label")
-  .in("journey_id", journeyIds);
-          setAssigns(((aData || []) as AssignView[]) ?? []);
-        } else {
-          setAssigns([]);
-        }
+// current assignments (view)
+if (journeyIds.length) {
+  const { data: aData } = await sb
+    .from("v_crew_assignments_min")
+    .select("assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label")
+    .in("journey_id", journeyIds);
+
+  setAssigns(((aData || []) as any[]).map(a => ({
+    journey_id: (a as any).journey_id,
+    vehicle_id: (a as any).vehicle_id,
+    staff_id: (a as any).staff_id,
+    status_simple: (a as any).status_simple,
+    first_name: (a as any).first_name,
+    last_name: (a as any).last_name,
+  })));
+} else {
+  setAssigns([]);
+}
+
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
