@@ -1,9 +1,14 @@
+// src/components/ClientTncConsent.tsx
 "use client";
 import { useState } from "react";
 
-type Props = { quoteToken: string; tncVersion: string; onConsented: () => void };
+type Props = {
+  quoteToken: string;
+  tncVersion: string;
+  onConsented: () => void;
+};
 
-export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }: Props) {
+export default function ClientTncConsent({ quoteToken, tncVersion, onConsented }: Props) {
   const [checked, setChecked] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +36,7 @@ export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }
   }
 
   return (
-    <div className="mt-6 rounded-2xl border border-neutral-200 p-4">
+    <div className="mt-6 rounded-2xl border border-neutral-200 p-4 bg-white" id="client-tnc-consent">
       <label className="flex items-start gap-3">
         <input
           type="checkbox"
@@ -68,4 +73,4 @@ export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }
       </div>
     </div>
   );
-}   
+}
