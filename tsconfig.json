@@ -20,16 +20,6 @@
     "types": ["node"],
     "plugins": [{ "name": "next" }]
   },
-  "include": [
-    "next-env.d.ts",
-    "src/**/*",
-    ".next/types/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    ".next",
-    "dist"
-  ]
+  "include": ["next-env.d.ts", "src/**/*", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next", "dist"]
 }
-"baseUrl": ".",
-"paths": { "@/*": ["src/*"] }
