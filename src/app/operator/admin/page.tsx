@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import CaptainPicker from "@/app/operator-admin/routes/components/CaptainPicker";
 
 type UUID = string;
 
@@ -116,7 +117,7 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
 
 /* ---------------- DB row types ---------------- */
 type Journey = { id: UUID; route_id: UUID; departure_ts: string; is_active: boolean };
-type Route = { id: UUID; pickup_id: UUID; destination_id: UUID }; // no transport_type_id
+type Route = { id: UUID; pickup_id: UUID; destination_id: UUID };
 type Pickup = { id: UUID; name: string };
 type Destination = { id: UUID; name: string };
 type RVA = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean };
@@ -306,7 +307,6 @@ export default function OperatorAdminJourneysPage() {
         const routeIds = Array.from(new Set(js.map(j => j.route_id)));
         const journeyIds = js.map(j => j.id);
 
-        // FIX: removed transport_type_id from select
         const [rQ, puQ, deQ] = await Promise.all([
           sb.from("routes").select("id,pickup_id,destination_id").in("id", routeIds),
           sb.from("pickup_points").select("id,name"),
@@ -373,7 +373,7 @@ export default function OperatorAdminJourneysPage() {
           setLocksByJourney(new Map());
         }
 
-        // crew/staff for this operator (alphabetical)
+        // staff for this operator
         if (operatorId) {
           const { data: sData } = await sb
             .from("operator_staff")
@@ -391,30 +391,29 @@ export default function OperatorAdminJourneysPage() {
           setStaff([]);
         }
 
-// current assignments (view)
+        // current assignments (LEADS only; exclude pure "Crew")
+        if (journeyIds.length) {
+          const { data: aData } = await sb
+            .from("v_crew_assignments_min")
+            .select(
+              "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+            )
+            .in("journey_id", journeyIds);
 
-// ...when building 'assignee', only consider rows where role_label !== 'Crew'
-const lead = (aData || []).filter(r => (r.role_label ?? '').toLowerCase() !== 'crew');
-setAssigns(lead as any);
-
-if (journeyIds.length) {
-  const { data: aData } = await sb
-    .from("v_crew_assignments_min")
-    .select("assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label")
-    .in("journey_id", journeyIds);
-
-  setAssigns(((aData || []) as any[]).map(a => ({
-    journey_id: (a as any).journey_id,
-    vehicle_id: (a as any).vehicle_id,
-    staff_id: (a as any).staff_id,
-    status_simple: (a as any).status_simple,
-    first_name: (a as any).first_name,
-    last_name: (a as any).last_name,
-  })));
-} else {
-  setAssigns([]);
-}
-
+          const lead = ((aData || []) as any[])
+            .filter(r => (r.role_label ?? "").toLowerCase() !== "crew")
+            .map(r => ({
+              journey_id: r.journey_id as UUID,
+              vehicle_id: r.vehicle_id as UUID,
+              staff_id: r.staff_id as UUID,
+              status_simple: r.status_simple as AssignView["status_simple"],
+              first_name: r.first_name as string | null,
+              last_name: r.last_name as string | null,
+            }));
+          setAssigns(lead);
+        } else {
+          setAssigns([]);
+        }
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
@@ -462,6 +461,34 @@ if (journeyIds.length) {
     assigns.forEach(a => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
     return m;
   }, [assigns]);
+
+  /* ------------ small helper: refresh a single assignment row ---------- */
+  async function refreshAssignmentsFor(journeyId: UUID, vehicleId?: UUID) {
+    if (!sb) return;
+    const q = sb
+      .from("v_crew_assignments_min")
+      .select(
+        "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+      )
+      .eq("journey_id", journeyId);
+    const { data } = await (vehicleId ? q.eq("vehicle_id", vehicleId) : q);
+    const lead = ((data || []) as any[])
+      .filter(r => (r.role_label ?? "").toLowerCase() !== "crew")
+      .map(r => ({
+        journey_id: r.journey_id as UUID,
+        vehicle_id: r.vehicle_id as UUID,
+        staff_id: r.staff_id as UUID,
+        status_simple: r.status_simple as AssignView["status_simple"],
+        first_name: r.first_name as string | null,
+        last_name: r.last_name as string | null,
+      }));
+
+    setAssigns(prev => {
+      const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
+      lead.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+      return Array.from(m.values());
+    });
+  }
 
   /* ---------------- Build rows ---------------- */
   type UiBoat = {
@@ -711,95 +738,74 @@ if (journeyIds.length) {
   }
 
   // --- Remove a boat from a journey and reassign its groups (client) ---
-async function onRemove(row: UiRow, boat: UiBoat) {
-  if (!boat.canRemove) return;
-  if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
+  async function onRemove(row: UiRow, boat: UiBoat) {
+    if (!boat.canRemove) return;
+    if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
 
-  try {
-    const res = await fetch("/api/operator/remove-boat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ journey_id: row.journey.id, vehicle_id: boat.vehicle_id }),
-    });
+    try {
+      const res = await fetch("/api/operator/remove-boat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ journey_id: row.journey.id, vehicle_id: boat.vehicle_id }),
+      });
 
-    // 4xx/5xx -> show message body when possible
-    if (!res.ok) {
-      const t = await res.text();
-      throw new Error(t || `Failed (${res.status})`);
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || `Failed (${res.status})`);
+      }
+
+      const body = await res.json();
+      const lockRows = body.lock as Array<{
+        journey_id: string;
+        vehicle_id: string;
+        order_id: string;
+        seats: number;
+      }>;
+
+      setLocksByJourney(prev => {
+        const m = new Map(prev);
+        m.set(row.journey.id, lockRows as any);
+        return m;
+      });
+
+      if (body?.route) alert(body.route);
+    } catch (e: any) {
+      alert(e?.message ?? "Remove failed");
     }
-
-    // Expecting { lock: Array<...>, route?: string }
-    const body = await res.json();
-
-    // Update the in-memory lock map for this journey so the table refreshes
-    const lockRows = body.lock as Array<{
-      journey_id: string;
-      vehicle_id: string;
-      order_id: string;
-      seats: number;
-    }>;
-
-    setLocksByJourney(prev => {
-      const m = new Map(prev);
-      m.set(row.journey.id, lockRows as any);
-      return m;
-    });
-
-    if (body?.route) {
-      // Optional breadcrumb text returned by the API (e.g., how groups were reshuffled)
-      alert(body.route);
-    }
-  } catch (e: any) {
-    alert(e?.message ?? "Remove failed");
   }
-}
 
+  // Inline assign kept for compatibility (not used when CaptainPicker present)
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+    const key = `${journeyId}_${vehicleId}`;
+    setAssigning(key);
+    try {
+      const res = await fetch("/api/ops/assign/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          journey_id: journeyId,
+          vehicle_id: vehicleId,
+          ...(staffId ? { staff_id: staffId } : {}),
+        }),
+      });
 
-// replace the existing onAssign with this version
-async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
-  const key = `${journeyId}_${vehicleId}`;
-  setAssigning(key);
-  try {
-    const res = await fetch("/api/ops/assign/lead", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, ...(staffId ? { staff_id: staffId } : {}) }),
-    });
+      const body = await res.json().catch(() => ({}));
 
-    const body = await res.json().catch(() => ({}));
-
-    if (res.status === 409) {
-      alert("Already assigned. Refreshing…");
-    } else if (res.status === 422) {
-      alert(body?.error || "Captain unavailable");
-      return;
-    } else if (!res.ok) {
-      throw new Error(body?.error || `Assign failed (${res.status})`);
-    } else {
-      // success toast alternative:
-      // alert("Captain assigned");
+      if (res.status === 409) {
+        // already assigned, just refresh
+      } else if (res.status === 422) {
+        alert(body?.error || "Captain unavailable");
+        return;
+      } else if (!res.ok) {
+        throw new Error(body?.error || `Assign failed (${res.status})`);
+      }
+      await refreshAssignmentsFor(journeyId, vehicleId);
+    } catch (e: any) {
+      alert(e?.message ?? "Assign failed");
+    } finally {
+      setAssigning(null);
     }
-
-    // Refresh just this journey/vehicle assignment from the view
-    const { data: aData } = await sb!
-      .from("v_journey_staff_min")
-      .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
-      .eq("journey_id", journeyId)
-      .eq("vehicle_id", vehicleId);
-
-    const updated = (aData || []) as AssignView[];
-    setAssigns(prev => {
-      const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
-      updated.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-      return Array.from(m.values());
-    });
-  } catch (e: any) {
-    alert(e?.message ?? "Assign failed");
-  } finally {
-    setAssigning(null);
   }
-}
-
 
   const eligibleStaff = useMemo(() => {
     const list = staff.slice();
@@ -945,7 +951,7 @@ async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
                             )}
                           </td>
 
-                          {/* Status + inline assignee */}
+                          {/* Status + CaptainPicker when unassigned */}
                           <td className="p-3">
                             <span
                               className="px-2 py-1 rounded text-xs"
@@ -968,52 +974,16 @@ async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
                             >
                               {b.statusPill.label}
                             </span>
+
                             {!assigneeName(b) && (row.horizon === "T72" || row.horizon === ">72h") && (
-                              <div className="mt-2 flex items-center gap-2">
-                                {eligibleStaff.length <= 1 ? (
-                                  <span className="text-xs">
-                                    {eligibleStaff[0]
-                                      ? `${eligibleStaff[0].first_name ?? ""} ${eligibleStaff[0].last_name ?? ""}`.trim()
-                                      : "No staff"}
-                                  </span>
-                                ) : (
-                                  <select
-                                    className="border rounded px-2 py-1 text-xs"
-                                    value={selected || ""}
-                                    onChange={e =>
-                                      setSelectedStaff(prev => ({ ...prev, [key]: e.target.value as UUID }))
-                                    }
-                                  >
-                                    <option value="">Select crew…</option>
-                                    {eligibleStaff.map(s => {
-                                      const name = `${s.last_name ?? ""} ${s.first_name ?? ""}`.trim() || "Unnamed";
-                                      return (
-                                        <option key={s.id} value={s.id}>
-                                          {name}
-                                        </option>
-                                      );
-                                    })}
-                                  </select>
-                                )}
-
-                                <button
-                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
-                                  style={{ backgroundColor: "#111827" }}
-                                  disabled={
-                                    assigning === key ||
-                                    (!selected && eligibleStaff.length !== 1)
-                                  }
-                                  onClick={() =>
-  onAssign(
-    row.journey.id,
-    b.vehicle_id,
-    (eligibleStaff.length === 1 && !selected ? eligibleStaff[0]?.id : selected) as UUID | undefined
-  )
-}
-
-                                >
-                                  {assigning === key ? "Assigning…" : "Assign"}
-                                </button>
+                              <div className="mt-3">
+                                <CaptainPicker
+                                  operatorId={operatorId!}
+                                  journeyId={row.journey.id}
+                                  vehicleId={b.vehicle_id}
+                                  departureTs={row.journey.departure_ts}
+                                  onAssigned={() => refreshAssignmentsFor(row.journey.id, b.vehicle_id)}
+                                />
                               </div>
                             )}
                           </td>

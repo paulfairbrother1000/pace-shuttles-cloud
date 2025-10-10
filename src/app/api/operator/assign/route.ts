@@ -2,6 +2,12 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { assignLead } from "@/lib/opsAssign";
+
+// ...
+await assignLead(journeyId, vehicleId, staffId);
+// then refresh your v_journey_staff_min / v_crew_assignments_min read as you already do
+
 
 /**
  * Assign (or reassign) a lead crew member to a journey+vehicle.
