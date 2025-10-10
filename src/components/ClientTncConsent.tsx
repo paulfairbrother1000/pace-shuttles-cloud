@@ -68,4 +68,4 @@ export default function ClientTnCConsent({ quoteToken, tncVersion, onConsented }
       </div>
     </div>
   );
-}
+}   
