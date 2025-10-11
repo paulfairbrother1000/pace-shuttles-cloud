@@ -41,16 +41,27 @@ type Order = {
 
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-/* ---- Crew assignments (view) ---- */
+/* ---------- Crew types ---------- */
+type StaffRow = {
+  id: UUID; // operator_staff.id
+  user_id: UUID | null;
+  operator_id: UUID;
+  first_name: string | null;
+  last_name: string | null;
+  active: boolean | null;
+  role_id: UUID | null;
+  jobrole: string | null;
+};
+
 type AssignView = {
   assignment_id: UUID;
   journey_id: UUID;
   vehicle_id: UUID;
-  staff_id: UUID | null;
-  status_simple: "allocated" | "confirmed" | "complete" | null;
+  staff_id: UUID;
+  status_simple: "allocated" | "confirmed" | "complete";
   first_name: string | null;
   last_name: string | null;
-  role_label: string | null; // "Captain" / "Crew" etc
+  role_label?: string | null;
 };
 
 /* ---------- Client Helpers ---------- */
@@ -124,6 +135,14 @@ type DetailedAlloc = {
   total: number;
 };
 
+/** Preferred only wins within same operator; otherwise deterministic id tiebreak */
+function boatTieBreak(a: Boat, b: Boat) {
+  if ((a.operator_id || null) === (b.operator_id || null)) {
+    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+  }
+  return a.vehicle_id.localeCompare(b.vehicle_id);
+}
+
 function allocateDetailed(
   parties: Party[],
   boats: Boat[],
@@ -131,6 +150,8 @@ function allocateDetailed(
 ): DetailedAlloc {
   const horizon = opts?.horizon ?? ">72h";
 
+  // Sort boats: cheapest first (unknown prices = same tier), then preferred within same operator,
+  // then deterministic by id.
   const boatRank = (a: Boat, b: Boat) => {
     const pa = a.price_cents ?? 0;
     const pb = b.price_cents ?? 0;
@@ -144,6 +165,7 @@ function allocateDetailed(
 
   const boatsSorted = [...boats].sort(boatRank);
 
+  // Working state
   type W = {
     def: Boat;
     used: number;
@@ -172,7 +194,7 @@ function allocateDetailed(
 
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  // Phase A — seed to MIN
+  // Phase A — seed vehicles to MIN in price order
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -191,7 +213,7 @@ function allocateDetailed(
     remaining.push(...next);
   }
 
-  // Phase B — fill up to MAX
+  // Phase B — after all seeded to MIN, fill cheapest-first up to MAX
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -210,14 +232,17 @@ function allocateDetailed(
     remaining.push(...next);
   }
 
+  // Anything still left cannot fit
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
-  // T-72 rebalance: see earlier explanation in your original file
+  // T-72 rebalancer:
+  // Ensure all ACTIVE boats are >= min, allowing at most ONE to be min-1.
   if (horizon === "T72") {
     const active = () => [...work.values()].filter(w => w.used > 0);
     const underMin = () => active().filter(w => w.used < w.def.min);
     const overMin = () => active().filter(w => w.used > w.def.min);
 
+    // Try to move smallest fitting group from donor (>min) to receiver (<min)
     const tryMove = (donor: W, receiver: W) => {
       const free = receiver.def.max - receiver.used;
       if (free <= 0) return false;
@@ -228,10 +253,13 @@ function allocateDetailed(
       for (const g of sorted) {
         if (g.size > free) continue;
         const donorWouldBe = donor.used - g.size;
-        if (donorWouldBe < donor.def.min) continue;
+        if (donorWouldBe < donor.def.min) continue; // don't push donor below min
 
+        // prefer exact hit if possible
         const recvWouldBe = receiver.used + g.size;
-        if (recvWouldBe === receiver.def.min) { pick = g; break; }
+        if (recvWouldBe === receiver.def.min) {
+          pick = g; break;
+        }
         pick = pick ?? g;
       }
       if (!pick) return false;
@@ -255,6 +283,7 @@ function allocateDetailed(
       return true;
     };
 
+    // Raise receivers to min where possible
     let changed = true;
     while (changed) {
       changed = false;
@@ -269,6 +298,7 @@ function allocateDetailed(
       }
     }
 
+    // Ensure at most ONE under-min boat; try to merge additional under-mins into others
     const activeW = () => [...work.values()].filter(w => w.used > 0);
     let under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     while (under.length > 1) {
@@ -332,14 +362,19 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   });
 
   const total = groups.reduce((s, g) => s + g.size, 0);
-  if (!ranked.length) throw new Error("No vehicles available for this route.");
+  if (!ranked.length) {
+    throw new Error("No vehicles available for this route.");
+  }
 
   let chosen: Boat[] | null = null;
   for (let k = 1; k <= ranked.length; k++) {
     const subset = ranked.slice(0, k);
     const minSum = subset.reduce((s, b) => s + b.min, 0);
     const maxSum = subset.reduce((s, b) => s + b.max, 0);
-    if (total >= minSum && total <= maxSum) { chosen = subset; break; }
+    if (total >= minSum && total <= maxSum) {
+      chosen = subset;
+      break;
+    }
   }
   if (!chosen) {
     for (let k = 1; k <= ranked.length; k++) {
@@ -401,7 +436,10 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
       const free = b.def.max - b.used;
       if (free < g.size) continue;
       const projected = b.used + g.size;
-      if (projected < bestLoad) { bestLoad = projected; target = i; }
+      if (projected < bestLoad) {
+        bestLoad = projected;
+        target = i;
+      }
     }
     if (target === -1) {
       throw new Error("A group cannot fit within max capacities. Consider opening another boat.");
@@ -410,8 +448,12 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   }
 
   for (const b of buckets) {
-    if (b.used > 0 && b.used < b.def.min) throw new Error(`Boat would run below min (${b.used} < ${b.def.min}).`);
-    if (b.used > b.def.max) throw new Error(`Boat would exceed max (${b.used} > ${b.def.max}).`);
+    if (b.used > 0 && b.used < b.def.min) {
+      throw new Error(`Boat would run below min (${b.used} < ${b.def.min}).`);
+    }
+    if (b.used > b.def.max) {
+      throw new Error(`Boat would exceed max (${b.used} > ${b.def.max}).`);
+    }
   }
 
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
@@ -419,7 +461,10 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     if (b.used <= 0) continue;
     byBoat.set(
       b.def.vehicle_id,
-      { seats: b.used, orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })) }
+      {
+        seats: b.used,
+        orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })),
+      }
     );
   }
   return { byBoat, unassigned: [], total };
@@ -444,8 +489,11 @@ export default function AdminPage() {
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
-  // NEW: assignments
+  // Crew/assignments
   const [assigns, setAssigns] = useState<AssignView[]>([]);
+  const [staffByOperator, setStaffByOperator] = useState<Map<UUID, StaffRow[]>>(new Map());
+  const [assigning, setAssigning] = useState<string | null>(null); // key journeyId_vehicleId
+  const [selectedStaff, setSelectedStaff] = useState<Record<string, UUID>>({}); // key -> staff_id
 
   useEffect(() => {
     let off = false;
@@ -545,7 +593,7 @@ export default function AdminPage() {
           setLocksByJourney(new Map());
         }
 
-        // 6) NEW — current lead assignments (view)
+        // 6) current lead assignments for these journeys (view)
         if (journeyIds.length) {
           const { data: aData } = await supabase
             .from("v_crew_assignments_min")
@@ -554,13 +602,47 @@ export default function AdminPage() {
             )
             .in("journey_id", journeyIds);
 
-          // filter to non-“crew” rows (i.e., lead/captain roles)
           const lead = ((aData as AssignView[]) ?? []).filter(
             (r) => (r.role_label ?? "").toLowerCase() !== "crew"
           );
           setAssigns(lead);
         } else {
           setAssigns([]);
+        }
+
+        // 7) staff lists per operator for all involved vehicles
+        const operatorIds = Array.from(
+          new Set((vQ.data || []).map((v: any) => v.operator_id).filter(Boolean))
+        ) as UUID[];
+
+        if (operatorIds.length) {
+          const { data: sData } = await supabase
+            .from("operator_staff")
+            .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
+            .in("operator_id", operatorIds)
+            .eq("active", true);
+
+          const map = new Map<UUID, StaffRow[]>();
+          (sData as StaffRow[] | null)?.forEach((s) => {
+            const key = s.operator_id;
+            const arr = map.get(key) ?? [];
+            arr.push(s);
+            map.set(key, arr);
+          });
+
+          // sort each operator's staff by name
+          for (const [key, arr] of map.entries()) {
+            arr.sort((a, b) => {
+              const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
+              const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
+              return an.localeCompare(bn);
+            });
+            map.set(key, arr);
+          }
+
+          setStaffByOperator(map);
+        } else {
+          setStaffByOperator(new Map());
         }
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
@@ -604,7 +686,6 @@ export default function AdminPage() {
     return m;
   }, [operators]);
 
-  // NEW: assignment by JV key
   const assignByKey = useMemo(() => {
     const m = new Map<string, AssignView>();
     (assigns ?? []).forEach((a) => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
@@ -616,13 +697,14 @@ export default function AdminPage() {
     vehicle_id: UUID | "__unassigned__";
     vehicle_name: string;
     operator_name: string;
+    operator_id?: UUID | null;
     db: number;                   // customers on this boat
     min: number | null;
     max: number | null;
     preferred?: boolean;
     groups: number[];             // group sizes (chips)
-    assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] } | null; // NEW
-    statusPill?: { label: string; tone: "green" | "amber" | "gray" | "neutral" }; // NEW
+    // current assignee, if any
+    assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] };
   };
 
   type UiRow = {
@@ -646,7 +728,7 @@ export default function AdminPage() {
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
     boats?: Boat[];
-    atRiskBelowMin?: boolean;
+    atRiskBelowMin?: boolean;     // T-72 gating
   };
 
   const rows: UiRow[] = useMemo(() => {
@@ -720,22 +802,7 @@ export default function AdminPage() {
       let dbTotal = 0;
       let unassigned = 0;
 
-      const assigneeFor = (journeyId: UUID, vehicleId: UUID): UiBoat["assignee"] => {
-        const a = assignByKey.get(`${journeyId}_${vehicleId}`);
-        if (a && a.staff_id) {
-          const name = `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed";
-          return { staff_id: a.staff_id, name, status: a.status_simple };
-        }
-        return null;
-      };
-
-      const pillFor = (assignee: UiBoat["assignee"]): UiBoat["statusPill"] => {
-        if (assignee) return { label: `Assigned — ${assignee.name}`, tone: "green" };
-        return { label: "Awaiting crew assignment", tone: "amber" };
-      };
-
       if (isLocked) {
-        // Build per-boat view from saved rows
         const groupByVeh = new Map<UUID, { seats: number; groups: number[] }>();
         for (const row of locked) {
           const cur = groupByVeh.get(row.vehicle_id) ?? { seats: 0, groups: [] };
@@ -750,44 +817,65 @@ export default function AdminPage() {
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
 
-          const assignee = assigneeFor(j.id, vehId);
+          // current assignee (lead)
+          const a = assignByKey.get(`${j.id}_${vehId}`);
+          const assignee =
+            a && a.staff_id
+              ? {
+                  staff_id: a.staff_id,
+                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  status: a.status_simple,
+                }
+              : undefined;
 
           perBoat.push({
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
             operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+            operator_id: v?.operator_id ?? null,
             db: data.seats,
             min,
             max,
             preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
             assignee,
-            statusPill: pillFor(assignee),
           });
         }
 
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
 
+        // Include boats with zero today so ops still see them (>72h only)
         if (!isT72orT24(horizon)) {
           for (const b of boats) {
             if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
             const v = vehicleById.get(b.vehicle_id);
-            const assignee = assigneeFor(j.id, b.vehicle_id);
+
+            const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
+            const assignee =
+              a && a.staff_id
+                ? {
+                    staff_id: a.staff_id,
+                    name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                    status: a.status_simple,
+                  }
+                : undefined;
+
             perBoat.push({
               vehicle_id: b.vehicle_id,
               vehicle_name: v?.name ?? "Unknown",
               operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+              operator_id: v?.operator_id ?? null,
               db: 0,
               min: v?.minseats != null ? Number(v.minseats) : null,
               max: v?.maxseats != null ? Number(v.maxseats) : null,
               preferred: !!rvaArr.find(x => x.vehicle_id)?.preferred,
               groups: [],
               assignee,
-              statusPill: pillFor(assignee),
             });
           }
         } else {
+          // At T-72/T-24: hide zero-customer boats
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
           }
@@ -800,23 +888,32 @@ export default function AdminPage() {
           const seats = entry?.seats ?? 0;
           dbTotal += seats;
 
-          const assignee = assigneeFor(j.id, b.vehicle_id);
+          const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
+          const assignee =
+            a && a.staff_id
+              ? {
+                  staff_id: a.staff_id,
+                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  status: a.status_simple,
+                }
+              : undefined;
 
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
             operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+            operator_id: v?.operator_id ?? null,
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
             preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
             groups: (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a),
             assignee,
-            statusPill: pillFor(assignee),
           });
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
 
+        // At T-72/T-24: hide zero-customer boats (release)
         if (isT72orT24(horizon)) {
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
@@ -824,7 +921,7 @@ export default function AdminPage() {
         }
       }
 
-      // Sort: by operator name, then preferred, then vehicle name
+      // Sort: by operator name, then within same operator preferred first, then vehicle name
       perBoat.sort((a, b) => {
         const ao = a.operator_name || "";
         const bo = b.operator_name || "";
@@ -833,6 +930,7 @@ export default function AdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
+      // T-72 "at risk" flag (any running boat below min)
       const atRiskBelowMin =
         isT72orT24(horizon) &&
         perBoat.some(b => b.db > 0 && b.min != null && b.db < (b.min as number));
@@ -861,6 +959,7 @@ export default function AdminPage() {
       });
     }
 
+    // Operator filter (keep journeys with at least one row for that operator)
     const filtered =
       operatorFilter === "all"
         ? out
@@ -911,11 +1010,13 @@ export default function AdminPage() {
         return;
       }
 
+      // Prevent finalise at T-72 if below min
       if (row.horizon === "T72" && row.atRiskBelowMin) {
         setErr("Cannot finalise at T-72: one or more boats would run below their minimum seats.");
         return;
       }
 
+      // Run strict T-24 allocator (final shuffle)
       let finalAlloc: DetailedAlloc;
       try {
         finalAlloc = allocateFinalT24(row.parties, row.boats);
@@ -924,11 +1025,13 @@ export default function AdminPage() {
         return;
       }
 
+      // Validate: no unassigned; all running boats >= min
       if (finalAlloc.unassigned.length > 0) {
         setErr("Cannot finalise: some groups could not be assigned within capacities.");
         return;
       }
 
+      // Persist
       const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] = [];
       for (const [vehId, data] of finalAlloc.byBoat.entries()) {
         for (const o of data.orders) {
@@ -941,6 +1044,7 @@ export default function AdminPage() {
         }
       }
 
+      // Replace existing rows for this journey
       const del = await supabase
         .from("journey_vehicle_allocations")
         .delete()
@@ -954,6 +1058,7 @@ export default function AdminPage() {
         if (ins.error) throw ins.error;
       }
 
+      // Refresh locks state for this journey
       const { data: lockData, error: lockErr } = await supabase
         .from("journey_vehicle_allocations")
         .select("journey_id,vehicle_id,order_id,seats")
@@ -989,6 +1094,58 @@ export default function AdminPage() {
     }
   }
 
+  /* ---------- Crew: assign lead ---------- */
+
+  async function onAssignLead(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+    const key = `${journeyId}_${vehicleId}`;
+    setAssigning(key);
+    try {
+      const res = await fetch("/api/ops/assign/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          journey_id: journeyId,
+          vehicle_id: vehicleId,
+          ...(staffId ? { staff_id: staffId } : {}),
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 409) {
+        alert("Already assigned. Refreshing…");
+      } else if (res.status === 422) {
+        alert(body?.error || "Captain unavailable");
+        return;
+      } else if (!res.ok) {
+        throw new Error(body?.error || `Assign failed (${res.status})`);
+      }
+
+      // Refresh just this journey/vehicle from the view
+      const { data: aData } = await supabase!
+        .from("v_crew_assignments_min")
+        .select(
+          "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+        )
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId);
+
+      const updated = ((aData as AssignView[]) ?? []).filter(
+        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+      );
+
+      setAssigns((prev) => {
+        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+        return Array.from(m.values());
+      });
+    } catch (e: any) {
+      alert(e?.message ?? "Assign failed");
+    } finally {
+      setAssigning(null);
+    }
+  }
+
   /* ---------- Render ---------- */
   return (
     <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
@@ -1014,7 +1171,7 @@ export default function AdminPage() {
       </header>
 
       <p className="text-neutral-600 text-sm">
-        Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist.
+        Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist. Assign crew leads inline per boat.
       </p>
 
       {err && (
@@ -1091,6 +1248,7 @@ export default function AdminPage() {
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
+                  {/* Finalise / Unlock */}
                   {(row.horizon === "T24" || row.horizon === "T72") && (
                     row.isLocked ? (
                       <>
@@ -1137,92 +1295,140 @@ export default function AdminPage() {
                       <th className="text-right p-3">Min</th>
                       <th className="text-right p-3">Max</th>
                       <th className="text-left p-3">Groups</th>
-                      {/* NEW column */}
-                      <th className="text-left p-3">Status</th>
+                      <th className="text-left p-3">Lead</th>
                       <th className="text-left p-3">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {row.perBoat.map(b => (
-                      <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
-                        <td className="p-3">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{b.vehicle_name}</span>
-                            {b.preferred && b.vehicle_name !== "Unassigned" && (
-                              <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
-                                preferred
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="p-3">{b.operator_name}</td>
-                        <td className="p-3 text-right">{b.db}</td>
-                        <td className="p-3 text-right">{b.min ?? "—"}</td>
-                        <td className="p-3 text-right">{b.max ?? "—"}</td>
-                        <td className="p-3">
-                          {b.groups.length === 0 ? (
-                            <span className="text-neutral-400">—</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-1">
-                              {b.groups.map((g, i) => (
-                                <span
-                                  key={i}
-                                  className="inline-flex items-center justify-center rounded-lg border px-2 text-xs"
-                                  style={{ minWidth: 24, height: 24 }}
-                                >
-                                  {g}
+                    {row.perBoat.map(b => {
+                      const key = `${row.journey.id}_${b.vehicle_id}`;
+                      const selected = selectedStaff[key];
+
+                      const staffOptions =
+                        (b.operator_id && staffByOperator.get(b.operator_id)) || [];
+
+                      const currentLead = b.assignee?.name ?? null;
+                      const canAssign = (row.horizon === "T72" || row.horizon === ">72h");
+
+                      return (
+                        <tr key={key} className="border-t align-top">
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">{b.vehicle_name}</span>
+                              {b.preferred && b.vehicle_name !== "Unassigned" && (
+                                <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                                  preferred
                                 </span>
-                              ))}
+                              )}
                             </div>
-                          )}
-                        </td>
+                          </td>
+                          <td className="p-3">{b.operator_name}</td>
+                          <td className="p-3 text-right">{b.db}</td>
+                          <td className="p-3 text-right">{b.min ?? "—"}</td>
+                          <td className="p-3 text-right">{b.max ?? "—"}</td>
+                          <td className="p-3">
+                            {b.groups.length === 0 ? (
+                              <span className="text-neutral-400">—</span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {b.groups.map((g, i) => (
+                                  <span
+                                    key={i}
+                                    className="inline-flex items-center justify-center rounded-lg border px-2 text-xs"
+                                    style={{ minWidth: 24, height: 24 }}
+                                  >
+                                    {g}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
 
-                        {/* NEW: Status pill */}
-                        <td className="p-3">
-                          {b.statusPill ? (
-                            <span
-                              className="px-2 py-1 rounded text-xs"
-                              style={{
-                                background:
-                                  b.statusPill.tone === "green"
-                                    ? "#dcfce7"
-                                    : b.statusPill.tone === "amber"
-                                    ? "#fef3c7"
-                                    : b.statusPill.tone === "gray"
-                                    ? "#f3f4f6"
-                                    : "#eef2ff",
-                                color:
-                                  b.statusPill.tone === "green"
-                                    ? "#166534"
-                                    : b.statusPill.tone === "amber"
-                                    ? "#92400e"
-                                    : "#374151",
-                              }}
-                            >
-                              {b.statusPill.label}
-                            </span>
-                          ) : (
-                            <span className="text-neutral-400 text-xs">—</span>
-                          )}
-                        </td>
+                          {/* Lead cell */}
+                          <td className="p-3">
+                            {currentLead ? (
+                              <div className="flex items-center gap-2">
+                                <span className="px-2 py-1 rounded text-xs" style={{ background: "#dcfce7", color: "#166534" }}>
+                                  {b.assignee?.status === "confirmed" ? "Confirmed — " : "Assigned — "}
+                                  {currentLead}
+                                </span>
+                              </div>
+                            ) : canAssign ? (
+                              <div className="flex items-center gap-2">
+                                {staffOptions.length <= 1 ? (
+                                  <span className="text-xs">
+                                    {staffOptions[0]
+                                      ? `${staffOptions[0].first_name ?? ""} ${staffOptions[0].last_name ?? ""}`.trim()
+                                      : "No staff"}
+                                  </span>
+                                ) : (
+                                  <select
+                                    className="border rounded px-2 py-1 text-xs"
+                                    value={selected || ""}
+                                    onChange={(e) =>
+                                      setSelectedStaff((prev) => ({
+                                        ...prev,
+                                        [key]: e.target.value as UUID,
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Select crew…</option>
+                                    {staffOptions.map((s) => {
+                                      const name =
+                                        `${s.last_name ?? ""} ${s.first_name ?? ""}`.trim() ||
+                                        "Unnamed";
+                                      return (
+                                        <option key={s.id} value={s.id}>
+                                          {name}
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                )}
+                                <button
+                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                  style={{ backgroundColor: "#111827" }}
+                                  disabled={
+                                    assigning === key ||
+                                    (!selected && staffOptions.length !== 1)
+                                  }
+                                  onClick={() =>
+                                    onAssignLead(
+                                      row.journey.id,
+                                      b.vehicle_id as UUID,
+                                      (staffOptions.length === 1 && !selected
+                                        ? staffOptions[0]?.id
+                                        : selected) as UUID | undefined
+                                    )
+                                  }
+                                >
+                                  {assigning === key ? "Assigning…" : "Assign"}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 text-xs">—</span>
+                            )}
+                          </td>
 
-                        <td className="p-3">
-                          {(row.horizon === "T24" || row.horizon === "T72") && b.vehicle_id !== "__unassigned__" ? (
-                            <button
-                              className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                              style={{ backgroundColor: "#2563eb" }}
-                              onClick={() =>
-                                (window.location.href = `/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
-                              }
-                            >
-                              Manifest
-                            </button>
-                          ) : (
-                            <span className="text-neutral-400 text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                          <td className="p-3">
+                            {(row.horizon === "T24" || row.horizon === "T72") &&
+                              b.vehicle_id !== "__unassigned__" ? (
+                              <button
+                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                style={{ backgroundColor: "#2563eb" }}
+                                onClick={() =>
+                                  (window.location.href = `/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
+                                }
+                              >
+                                Manifest
+                              </button>
+                            ) : (
+                              <span className="text-neutral-400 text-xs">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
