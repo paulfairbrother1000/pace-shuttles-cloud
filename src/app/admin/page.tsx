@@ -41,6 +41,18 @@ type Order = {
 
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
+/* ---- Crew assignments (view) ---- */
+type AssignView = {
+  assignment_id: UUID;
+  journey_id: UUID;
+  vehicle_id: UUID;
+  staff_id: UUID | null;
+  status_simple: "allocated" | "confirmed" | "complete" | null;
+  first_name: string | null;
+  last_name: string | null;
+  role_label: string | null; // "Captain" / "Crew" etc
+};
+
 /* ---------- Client Helpers ---------- */
 const supabase =
   typeof window !== "undefined" &&
@@ -112,14 +124,6 @@ type DetailedAlloc = {
   total: number;
 };
 
-/** Preferred only wins within same operator; otherwise deterministic id tiebreak */
-function boatTieBreak(a: Boat, b: Boat) {
-  if ((a.operator_id || null) === (b.operator_id || null)) {
-    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-  }
-  return a.vehicle_id.localeCompare(b.vehicle_id);
-}
-
 function allocateDetailed(
   parties: Party[],
   boats: Boat[],
@@ -127,8 +131,6 @@ function allocateDetailed(
 ): DetailedAlloc {
   const horizon = opts?.horizon ?? ">72h";
 
-  // Sort boats: cheapest first (unknown prices = same tier), then preferred within same operator,
-  // then deterministic by id.
   const boatRank = (a: Boat, b: Boat) => {
     const pa = a.price_cents ?? 0;
     const pb = b.price_cents ?? 0;
@@ -142,7 +144,6 @@ function allocateDetailed(
 
   const boatsSorted = [...boats].sort(boatRank);
 
-  // Working state
   type W = {
     def: Boat;
     used: number;
@@ -171,7 +172,7 @@ function allocateDetailed(
 
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  // Phase A — seed vehicles to MIN in price order
+  // Phase A — seed to MIN
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -190,7 +191,7 @@ function allocateDetailed(
     remaining.push(...next);
   }
 
-  // Phase B — after all seeded to MIN, fill cheapest-first up to MAX
+  // Phase B — fill up to MAX
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -209,17 +210,14 @@ function allocateDetailed(
     remaining.push(...next);
   }
 
-  // Anything still left cannot fit
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
-  // T-72 rebalancer:
-  // Ensure all ACTIVE boats are >= min, allowing at most ONE to be min-1.
+  // T-72 rebalance: see earlier explanation in your original file
   if (horizon === "T72") {
     const active = () => [...work.values()].filter(w => w.used > 0);
     const underMin = () => active().filter(w => w.used < w.def.min);
     const overMin = () => active().filter(w => w.used > w.def.min);
 
-    // Try to move smallest fitting group from donor (>min) to receiver (<min)
     const tryMove = (donor: W, receiver: W) => {
       const free = receiver.def.max - receiver.used;
       if (free <= 0) return false;
@@ -230,13 +228,10 @@ function allocateDetailed(
       for (const g of sorted) {
         if (g.size > free) continue;
         const donorWouldBe = donor.used - g.size;
-        if (donorWouldBe < donor.def.min) continue; // don't push donor below min
+        if (donorWouldBe < donor.def.min) continue;
 
-        // prefer exact hit if possible
         const recvWouldBe = receiver.used + g.size;
-        if (recvWouldBe === receiver.def.min) {
-          pick = g; break;
-        }
+        if (recvWouldBe === receiver.def.min) { pick = g; break; }
         pick = pick ?? g;
       }
       if (!pick) return false;
@@ -260,7 +255,6 @@ function allocateDetailed(
       return true;
     };
 
-    // Raise receivers to min where possible
     let changed = true;
     while (changed) {
       changed = false;
@@ -275,7 +269,6 @@ function allocateDetailed(
       }
     }
 
-    // Ensure at most ONE under-min boat; try to merge additional under-mins into others
     const activeW = () => [...work.values()].filter(w => w.used > 0);
     let under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
     while (under.length > 1) {
@@ -327,15 +320,9 @@ function allocateDetailed(
 }
 
 /* ---------- Final (T-24) allocator ---------- */
-/**
- * Deterministic T-24 finaliser: choose the smallest number of boats that can run,
- * assign groups so that ALL boats >= min, none exceed max, and balance loads.
- * Throws with a human-readable reason if impossible.
- */
 function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
   const ranked = [...boats].sort((a, b) => {
-    // cheaper first, then preferred within operator, then id
     const pa = a.price_cents ?? 0;
     const pb = b.price_cents ?? 0;
     if (pa !== pb) return pa - pb;
@@ -345,22 +332,15 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   });
 
   const total = groups.reduce((s, g) => s + g.size, 0);
-  if (!ranked.length) {
-    throw new Error("No vehicles available for this route.");
-  }
+  if (!ranked.length) throw new Error("No vehicles available for this route.");
 
-  // Try k = 1..n boats; pick smallest k that can legally host 'total' (mins/maxs window)
   let chosen: Boat[] | null = null;
   for (let k = 1; k <= ranked.length; k++) {
     const subset = ranked.slice(0, k);
     const minSum = subset.reduce((s, b) => s + b.min, 0);
     const maxSum = subset.reduce((s, b) => s + b.max, 0);
-    if (total >= minSum && total <= maxSum) {
-      chosen = subset;
-      break;
-    }
+    if (total >= minSum && total <= maxSum) { chosen = subset; break; }
   }
-  // fallback: smallest k with capacity, but we will still enforce mins for any running boat
   if (!chosen) {
     for (let k = 1; k <= ranked.length; k++) {
       const subset = ranked.slice(0, k);
@@ -370,7 +350,6 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   }
   if (!chosen) throw new Error("Capacity window exceeded: total passengers exceed fleet max.");
 
-  // Assign: Pass A — reach mins for each running boat greedily by largest deficit
   type Bucket = { def: Boat; used: number; orders: Party[] };
   const buckets: Bucket[] = chosen.map(b => ({ def: b, used: 0, orders: [] }));
 
@@ -379,7 +358,6 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     buckets[i].orders.push(g);
   };
 
-  // Helper to find candidate index under min that can fit g
   const findReceiverForMin = (g: Party): number => {
     let best = -1;
     let bestDeficit = -1;
@@ -401,10 +379,8 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     else remaining.push(g);
   }
 
-  // If any bucket still below min, we cannot run multiple boats unless mins are satisfiable.
   const belowMin = buckets.filter(b => b.used > 0 && b.used < b.def.min);
   if (belowMin.length > 0) {
-    // Try single-boat, but only if total satisfies that boat's min AND max
     const single = ranked[0];
     if (total >= single.min && total <= single.max) {
       const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
@@ -417,7 +393,6 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     throw new Error("Cannot meet minimum seats across selected boats. Total passengers below the smallest min.");
   }
 
-  // Pass B — balance: place remaining groups into bucket with smallest projected load (<= max)
   for (const g of remaining) {
     let target = -1;
     let bestLoad = Number.POSITIVE_INFINITY;
@@ -426,10 +401,7 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
       const free = b.def.max - b.used;
       if (free < g.size) continue;
       const projected = b.used + g.size;
-      if (projected < bestLoad) {
-        bestLoad = projected;
-        target = i;
-      }
+      if (projected < bestLoad) { bestLoad = projected; target = i; }
     }
     if (target === -1) {
       throw new Error("A group cannot fit within max capacities. Consider opening another boat.");
@@ -437,26 +409,17 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     place(target, g);
   }
 
-  // Final validation: all running boats >= min; none > max
   for (const b of buckets) {
-    if (b.used > 0 && b.used < b.def.min) {
-      throw new Error(`Boat would run below min (${b.used} < ${b.def.min}).`);
-    }
-    if (b.used > b.def.max) {
-      throw new Error(`Boat would exceed max (${b.used} > ${b.def.max}).`);
-    }
+    if (b.used > 0 && b.used < b.def.min) throw new Error(`Boat would run below min (${b.used} < ${b.def.min}).`);
+    if (b.used > b.def.max) throw new Error(`Boat would exceed max (${b.used} > ${b.def.max}).`);
   }
 
-  // Build DetailedAlloc
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
   for (const b of buckets) {
-    if (b.used <= 0) continue; // don't include empty boats
+    if (b.used <= 0) continue;
     byBoat.set(
       b.def.vehicle_id,
-      {
-        seats: b.used,
-        orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })),
-      }
+      { seats: b.used, orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })) }
     );
   }
   return { byBoat, unassigned: [], total };
@@ -480,6 +443,9 @@ export default function AdminPage() {
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
+
+  // NEW: assignments
+  const [assigns, setAssigns] = useState<AssignView[]>([]);
 
   useEffect(() => {
     let off = false;
@@ -578,6 +544,24 @@ export default function AdminPage() {
         } else {
           setLocksByJourney(new Map());
         }
+
+        // 6) NEW — current lead assignments (view)
+        if (journeyIds.length) {
+          const { data: aData } = await supabase
+            .from("v_crew_assignments_min")
+            .select(
+              "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+            )
+            .in("journey_id", journeyIds);
+
+          // filter to non-“crew” rows (i.e., lead/captain roles)
+          const lead = ((aData as AssignView[]) ?? []).filter(
+            (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+          );
+          setAssigns(lead);
+        } else {
+          setAssigns([]);
+        }
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
@@ -620,6 +604,13 @@ export default function AdminPage() {
     return m;
   }, [operators]);
 
+  // NEW: assignment by JV key
+  const assignByKey = useMemo(() => {
+    const m = new Map<string, AssignView>();
+    (assigns ?? []).forEach((a) => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
+    return m;
+  }, [assigns]);
+
   /* ---------- UI Rows ---------- */
   type UiBoat = {
     vehicle_id: UUID | "__unassigned__";
@@ -630,6 +621,8 @@ export default function AdminPage() {
     max: number | null;
     preferred?: boolean;
     groups: number[];             // group sizes (chips)
+    assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] } | null; // NEW
+    statusPill?: { label: string; tone: "green" | "amber" | "gray" | "neutral" }; // NEW
   };
 
   type UiRow = {
@@ -653,7 +646,7 @@ export default function AdminPage() {
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
     boats?: Boat[];
-    atRiskBelowMin?: boolean;     // NEW: for T-72 gating
+    atRiskBelowMin?: boolean;
   };
 
   const rows: UiRow[] = useMemo(() => {
@@ -710,7 +703,7 @@ export default function AdminPage() {
             min: Number.isFinite(min) ? min : 0,
             max: Number.isFinite(max) ? max : 0,
             operator_id: v.operator_id ?? null,
-            price_cents: null, // placeholder until we wire real price
+            price_cents: null,
           };
         })
         .filter(Boolean) as Boat[];
@@ -727,6 +720,20 @@ export default function AdminPage() {
       let dbTotal = 0;
       let unassigned = 0;
 
+      const assigneeFor = (journeyId: UUID, vehicleId: UUID): UiBoat["assignee"] => {
+        const a = assignByKey.get(`${journeyId}_${vehicleId}`);
+        if (a && a.staff_id) {
+          const name = `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed";
+          return { staff_id: a.staff_id, name, status: a.status_simple };
+        }
+        return null;
+      };
+
+      const pillFor = (assignee: UiBoat["assignee"]): UiBoat["statusPill"] => {
+        if (assignee) return { label: `Assigned — ${assignee.name}`, tone: "green" };
+        return { label: "Awaiting crew assignment", tone: "amber" };
+      };
+
       if (isLocked) {
         // Build per-boat view from saved rows
         const groupByVeh = new Map<UUID, { seats: number; groups: number[] }>();
@@ -742,6 +749,9 @@ export default function AdminPage() {
           const min = v?.minseats != null ? Number(v.minseats) : null;
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
+
+          const assignee = assigneeFor(j.id, vehId);
+
           perBoat.push({
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
@@ -751,17 +761,19 @@ export default function AdminPage() {
             max,
             preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
+            assignee,
+            statusPill: pillFor(assignee),
           });
         }
 
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
 
-        // Include boats with zero today so ops still see them (>72h only)
         if (!isT72orT24(horizon)) {
           for (const b of boats) {
             if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
             const v = vehicleById.get(b.vehicle_id);
+            const assignee = assigneeFor(j.id, b.vehicle_id);
             perBoat.push({
               vehicle_id: b.vehicle_id,
               vehicle_name: v?.name ?? "Unknown",
@@ -771,21 +783,25 @@ export default function AdminPage() {
               max: v?.maxseats != null ? Number(v.maxseats) : null,
               preferred: !!rvaArr.find(x => x.vehicle_id)?.preferred,
               groups: [],
+              assignee,
+              statusPill: pillFor(assignee),
             });
           }
         } else {
-          // At T-72/T-24: hide zero-customer boats
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
           }
         }
       } else {
-        // Use preview allocation; at T-72/T-24 the allocator already rebalanced to min constraints
+        // Use preview allocation
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
           dbTotal += seats;
+
+          const assignee = assigneeFor(j.id, b.vehicle_id);
+
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
@@ -795,11 +811,12 @@ export default function AdminPage() {
             max: v?.maxseats != null ? Number(v.maxseats) : null,
             preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
             groups: (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a),
+            assignee,
+            statusPill: pillFor(assignee),
           });
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
 
-        // At T-72/T-24: hide zero-customer boats (release)
         if (isT72orT24(horizon)) {
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
@@ -807,7 +824,7 @@ export default function AdminPage() {
         }
       }
 
-      // Sort: by operator name, then within same operator preferred first, then vehicle name
+      // Sort: by operator name, then preferred, then vehicle name
       perBoat.sort((a, b) => {
         const ao = a.operator_name || "";
         const bo = b.operator_name || "";
@@ -816,7 +833,6 @@ export default function AdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-      // NEW: T-72 "at risk" flag (any running boat below min)
       const atRiskBelowMin =
         isT72orT24(horizon) &&
         perBoat.some(b => b.db > 0 && b.min != null && b.db < (b.min as number));
@@ -845,7 +861,6 @@ export default function AdminPage() {
       });
     }
 
-    // Operator filter (keep journeys with at least one row for that operator)
     const filtered =
       operatorFilter === "all"
         ? out
@@ -883,6 +898,7 @@ export default function AdminPage() {
     destNameById,
     vehicleById,
     operatorNameById,
+    assignByKey,
   ]);
 
   /* ---------- Actions: Finalise / Unlock ---------- */
@@ -895,13 +911,11 @@ export default function AdminPage() {
         return;
       }
 
-      // Prevent finalise at T-72 if below min
       if (row.horizon === "T72" && row.atRiskBelowMin) {
         setErr("Cannot finalise at T-72: one or more boats would run below their minimum seats.");
         return;
       }
 
-      // Run strict T-24 allocator (final shuffle)
       let finalAlloc: DetailedAlloc;
       try {
         finalAlloc = allocateFinalT24(row.parties, row.boats);
@@ -910,13 +924,11 @@ export default function AdminPage() {
         return;
       }
 
-      // Validate: no unassigned; all running boats >= min
       if (finalAlloc.unassigned.length > 0) {
         setErr("Cannot finalise: some groups could not be assigned within capacities.");
         return;
       }
 
-      // Persist
       const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] = [];
       for (const [vehId, data] of finalAlloc.byBoat.entries()) {
         for (const o of data.orders) {
@@ -929,7 +941,6 @@ export default function AdminPage() {
         }
       }
 
-      // Replace existing rows for this journey
       const del = await supabase
         .from("journey_vehicle_allocations")
         .delete()
@@ -943,7 +954,6 @@ export default function AdminPage() {
         if (ins.error) throw ins.error;
       }
 
-      // Refresh locks state for this journey
       const { data: lockData, error: lockErr } = await supabase
         .from("journey_vehicle_allocations")
         .select("journey_id,vehicle_id,order_id,seats")
@@ -1081,7 +1091,6 @@ export default function AdminPage() {
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
-                  {/* Finalise / Unlock */}
                   {(row.horizon === "T24" || row.horizon === "T72") && (
                     row.isLocked ? (
                       <>
@@ -1128,6 +1137,8 @@ export default function AdminPage() {
                       <th className="text-right p-3">Min</th>
                       <th className="text-right p-3">Max</th>
                       <th className="text-left p-3">Groups</th>
+                      {/* NEW column */}
+                      <th className="text-left p-3">Status</th>
                       <th className="text-left p-3">Actions</th>
                     </tr>
                   </thead>
@@ -1165,6 +1176,36 @@ export default function AdminPage() {
                             </div>
                           )}
                         </td>
+
+                        {/* NEW: Status pill */}
+                        <td className="p-3">
+                          {b.statusPill ? (
+                            <span
+                              className="px-2 py-1 rounded text-xs"
+                              style={{
+                                background:
+                                  b.statusPill.tone === "green"
+                                    ? "#dcfce7"
+                                    : b.statusPill.tone === "amber"
+                                    ? "#fef3c7"
+                                    : b.statusPill.tone === "gray"
+                                    ? "#f3f4f6"
+                                    : "#eef2ff",
+                                color:
+                                  b.statusPill.tone === "green"
+                                    ? "#166534"
+                                    : b.statusPill.tone === "amber"
+                                    ? "#92400e"
+                                    : "#374151",
+                              }}
+                            >
+                              {b.statusPill.label}
+                            </span>
+                          ) : (
+                            <span className="text-neutral-400 text-xs">—</span>
+                          )}
+                        </td>
+
                         <td className="p-3">
                           {(row.horizon === "T24" || row.horizon === "T72") && b.vehicle_id !== "__unassigned__" ? (
                             <button
