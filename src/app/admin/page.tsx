@@ -1100,32 +1100,89 @@ export default function AdminPage() {
   }
 
   /* ---------- Crew: assign lead ---------- */
-  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
-    const key = `${journeyId}_${vehicleId}`;
-    setAssigning(key);
+  /* ---------- Crew: assign lead ---------- */
+async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+  const key = `${journeyId}_${vehicleId}`;
+  setAssigning(key);
 
-    // Helper to re-read the assignment view for this journey+vehicle
-    const refreshView = async () => {
-      const { data: aData } = await supabase!
-        .from("v_crew_assignments_min")
-        .select(
-          "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-        )
-        .eq("journey_id", journeyId)
-        .eq("vehicle_id", vehicleId);
+  // Re-read the assignment view for this journey+vehicle
+  const refreshView = async () => {
+    const { data: aData } = await supabase!
+      .from("v_crew_assignments_min")
+      .select(
+        "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+      )
+      .eq("journey_id", journeyId)
+      .eq("vehicle_id", vehicleId);
 
-      const updated = ((aData as AssignView[]) ?? []).filter(
-        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
-      );
+    const updated = ((aData as AssignView[]) ?? []).filter(
+      (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+    );
 
-      setAssigns((prev) => {
-        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
-        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-        return Array.from(m.values());
-      });
+    setAssigns((prev) => {
+      const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+      updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+      return Array.from(m.values());
+    });
 
-      return updated.length > 0;
-    };
+    return updated.length > 0;
+  };
+
+  try {
+    const res = await fetch("/api/ops/assign/lead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        journey_id: journeyId,
+        vehicle_id: vehicleId,
+        ...(staffId ? { staff_id: staffId } : {}),
+      }),
+    });
+
+    let body: any = null;
+    try { body = await res.json(); } catch {}
+
+    // Already assigned: just refresh
+    if (res.status === 409) {
+      await refreshView();
+      return;
+    }
+
+    // Eligibility/auth problem: show message
+    if (res.status === 422) {
+      alert(body?.error || "Captain unavailable");
+      return;
+    }
+
+    if (!res.ok) {
+      // Always try a refresh first — if the row is there, treat as success
+      const okAfter = await refreshView();
+      if (okAfter) return;
+
+      // Tolerate noisy Postgres return-shape errors silently
+      const msg = (body?.error || "").toLowerCase();
+      const softReturnError =
+        msg.includes("non-composite value") ||
+        msg.includes("composite type") ||
+        msg.includes("record type");
+
+      if (softReturnError) {
+        // We already tried a refresh; if nothing showed up, keep quiet
+        return;
+      }
+
+      // Real error
+      throw new Error(body?.error || `Assign failed (${res.status})`);
+    }
+
+    // Happy path
+    await refreshView();
+  } catch (e: any) {
+    alert(e?.message ?? "Assign failed");
+  } finally {
+    setAssigning(null);
+  }
+}
 
     try {
       const res = await fetch("/api/ops/assign/lead", {
