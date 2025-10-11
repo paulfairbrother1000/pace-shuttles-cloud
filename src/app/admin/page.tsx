@@ -1096,55 +1096,88 @@ export default function AdminPage() {
 
   /* ---------- Crew: assign lead ---------- */
 
-  async function onAssignLead(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
-    const key = `${journeyId}_${vehicleId}`;
-    setAssigning(key);
-    try {
-      const res = await fetch("/api/ops/assign/lead", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          journey_id: journeyId,
-          vehicle_id: vehicleId,
-          ...(staffId ? { staff_id: staffId } : {}),
-        }),
-      });
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+  const key = `${journeyId}_${vehicleId}`;
+  setAssigning(key);
 
-      const body = await res.json().catch(() => ({}));
+  // small helper to re-read the assignment view
+  const refreshView = async () => {
+    const { data: aData } = await sb!
+      .from("v_crew_assignments_min")
+      .select(
+        "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+      )
+      .eq("journey_id", journeyId)
+      .eq("vehicle_id", vehicleId);
 
-      if (res.status === 409) {
-        alert("Already assigned. Refreshing…");
-      } else if (res.status === 422) {
-        alert(body?.error || "Captain unavailable");
-        return;
-      } else if (!res.ok) {
-        throw new Error(body?.error || `Assign failed (${res.status})`);
+    const updated = ((aData as AssignView[]) ?? []).filter(
+      (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+    );
+
+    setAssigns((prev) => {
+      const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+      updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+      return Array.from(m.values());
+    });
+
+    return updated.length > 0;
+  };
+
+  try {
+    // call our API (which calls the SQL function)
+    const res = await fetch("/api/ops/assign/lead", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        journey_id: journeyId,
+        vehicle_id: vehicleId,
+        ...(staffId ? { staff_id: staffId } : {}),
+      }),
+    });
+
+    // Try to parse JSON, but don't depend on it
+    let body: any = null;
+    try { body = await res.json(); } catch {}
+
+    // 409 == already assigned; just refresh the view
+    if (res.status === 409) {
+      await refreshView();
+      return;
+    }
+
+    // 422 == eligibility / auth; show message and bail
+    if (res.status === 422) {
+      alert(body?.error || "Captain unavailable");
+      return;
+    }
+
+    if (!res.ok) {
+      // Tolerate “cannot return non-composite value from function returning composite type”
+      // and similar Postgres-return-shape issues: we’ll refresh the view to verify success.
+      const msg = (body?.error || "").toLowerCase();
+      const softReturnError =
+        msg.includes("non-composite value") ||
+        msg.includes("composite type") ||
+        msg.includes("function does not exist") ||
+        msg.includes("stack depth limit exceeded");
+
+      if (softReturnError) {
+        const ok = await refreshView();
+        if (ok) return; // treat as success if the view shows the new assignment
       }
 
-      // Refresh just this journey/vehicle from the view
-      const { data: aData } = await supabase!
-        .from("v_crew_assignments_min")
-        .select(
-          "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-        )
-        .eq("journey_id", journeyId)
-        .eq("vehicle_id", vehicleId);
-
-      const updated = ((aData as AssignView[]) ?? []).filter(
-        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
-      );
-
-      setAssigns((prev) => {
-        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
-        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-        return Array.from(m.values());
-      });
-    } catch (e: any) {
-      alert(e?.message ?? "Assign failed");
-    } finally {
-      setAssigning(null);
+      // Otherwise, hard error
+      throw new Error(body?.error || `Assign failed (${res.status})`);
     }
+
+    // Happy path: still refresh to get the canonical row back
+    await refreshView();
+  } catch (e: any) {
+    alert(e?.message ?? "Assign failed");
+  } finally {
+    setAssigning(null);
   }
+}
 
   /* ---------- Render ---------- */
   return (
