@@ -1100,6 +1100,11 @@ export default function AdminPage() {
   const key = `${journeyId}_${vehicleId}`;
   setAssigning(key);
 
+  // put this right after the onAssign definition in src/app/operator/admin/page.tsx
+const onAssignLead = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
+  onAssign(journeyId, vehicleId, staffId);
+
+
   // small helper to re-read the assignment view
   const refreshView = async () => {
     const { data: aData } = await sb!
