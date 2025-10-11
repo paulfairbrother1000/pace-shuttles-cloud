@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
-/** Minimal server-side Supabase client (uses the caller's cookies/JWT) */
+type UUID = string;
+
+/** Server-side Supabase using caller's session (RLS respected) */
 function sbServer() {
   const cookieStore = cookies();
   return createServerClient(
@@ -14,35 +16,37 @@ function sbServer() {
         get(name: string) {
           return cookieStore.get(name)?.value;
         },
+        // set/remove are optional in route handlers, but harmless:
+        set() {},
+        remove() {},
       },
     }
   );
 }
 
 /**
- * Assign (or reassign) a lead crew member to a journey+vehicle (SECURE via RPC).
- * Body: { journey_id: string, vehicle_id: string, staff_id?: string }
- * If staff_id omitted, we auto-pick the first active non-crew member
- * for the *vehicle’s operator*.
- * Returns a minimal refreshed assignment row from v_crew_assignments_min.
+ * Assign (or reassign) a lead (CAPTAIN) to a journey+vehicle.
+ * Body: { journey_id: UUID, vehicle_id: UUID, staff_id?: UUID }
+ * If staff_id is omitted, we pick the first eligible active non-crew staff
+ * for the vehicle’s operator.
  */
 export async function POST(req: Request) {
   try {
-    const { journey_id, vehicle_id, staff_id } = await req.json();
+    const { journey_id, vehicle_id, staff_id } = (await req.json()) as {
+      journey_id?: UUID;
+      vehicle_id?: UUID;
+      staff_id?: UUID;
+    };
 
     if (!journey_id || !vehicle_id) {
-      return NextResponse.json(
-        { error: "Missing required fields." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing journey_id or vehicle_id" }, { status: 400 });
     }
 
     const sb = sbServer();
 
-    // If staff_id missing, pick first eligible active “lead” (non-crew)
-    let chosen: string | undefined = staff_id as string | undefined;
+    // Resolve staff if not provided: restrict to the vehicle's operator, active, and not "crew"
+    let chosen: UUID | undefined = staff_id;
     if (!chosen) {
-      // Find the vehicle's operator so we only pick staff from that operator
       const { data: vehRow, error: vehErr } = await sb
         .from("vehicles")
         .select("operator_id")
@@ -51,55 +55,75 @@ export async function POST(req: Request) {
 
       if (vehErr || !vehRow?.operator_id) {
         return NextResponse.json(
-          { error: "Vehicle not found or missing operator." },
+          { error: "Vehicle not found or missing operator_id" },
           { status: 422 }
         );
       }
 
-      const { data: staff } = await sb
+      const { data: staffRows, error: stErr } = await sb
         .from("operator_staff")
         .select("id, active, jobrole")
         .eq("operator_id", vehRow.operator_id)
         .eq("active", true);
 
-      chosen = (staff || []).find(
+      if (stErr) {
+        return NextResponse.json({ error: stErr.message || "Staff lookup failed" }, { status: 500 });
+      }
+
+      chosen = (staffRows || []).find(
         (s: any) => (s.jobrole || "").toLowerCase() !== "crew"
-      )?.id;
+      )?.id as UUID | undefined;
 
       if (!chosen) {
         return NextResponse.json(
-          { error: "No eligible staff found for this operator." },
+          { error: "No eligible staff found for this operator" },
           { status: 422 }
         );
       }
     }
 
-    // ---- SECURE ASSIGN via RPC (bypasses RLS for the insert, still checks auth/eligibility) ----
-    const { data: rpcData, error: rpcErr } = await sb.rpc("ps_ops_assign_lead", {
-      p_journey: journey_id,
-      p_vehicle: vehicle_id,
-      p_staff: chosen,
-    });
+    // Secure write via RPC: api_upsert_crew_assignment(journey, vehicle, staff, 'CAPTAIN')
+    const { data: rpcData, error: rpcErr, status: rpcStatus } = await sb.rpc(
+      "api_upsert_crew_assignment",
+      {
+        p_journey_id: journey_id,
+        p_vehicle_id: vehicle_id,
+        p_staff_id: chosen,
+        p_role_code: "CAPTAIN",
+      }
+    );
 
     if (rpcErr) {
-      // Map our hinted errors to HTTP codes
+      // Normalise common DB errors into HTTP responses
       const msg = rpcErr.message || "RPC failed";
-      if (msg.startsWith("409:")) {
+      const code = (rpcErr as any).code as string | undefined;
+
+      // Unique violation: captain already assigned on this journey+vehicle
+      if (code === "23505" || /jca_one_captain_per_jv/i.test(msg) || /Only one lead/i.test(msg)) {
         return NextResponse.json({ error: "Lead already assigned" }, { status: 409 });
       }
-      if (msg.startsWith("422:")) {
-        return NextResponse.json({ error: "Invalid or unauthorised staff" }, { status: 422 });
-      }
-      if (msg.startsWith("403:")) {
+
+      // Auth/permission style errors surfaced from the function
+      if (/unauthorised|forbidden|permission/i.test(msg)) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
-      return NextResponse.json({ error: msg }, { status: 500 });
+
+      // Validation style errors
+      if (/invalid|not found|eligible|operator/i.test(msg)) {
+        return NextResponse.json({ error: msg }, { status: 422 });
+      }
+
+      // Fallback
+      return NextResponse.json({ error: msg }, { status: rpcStatus || 500 });
     }
 
-    const assignment_id: string | undefined = rpcData?.[0]?.assignment_id;
+    // Try to extract the assignment_id if the function returns it
+    const assignment_id: string | undefined =
+      (Array.isArray(rpcData) ? rpcData?.[0]?.assignment_id : (rpcData as any)?.assignment_id) ??
+      undefined;
 
-    // Return a minimal refreshed view row (includes role_label)
-    const { data: vrows } = await sb
+    // Return a minimal refreshed view row so UI updates cleanly
+    const { data: vrows, error: vErr } = await sb
       .from("v_crew_assignments_min")
       .select(
         "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
@@ -107,16 +131,22 @@ export async function POST(req: Request) {
       .eq("journey_id", journey_id)
       .eq("vehicle_id", vehicle_id);
 
+    if (vErr) {
+      // Non-fatal; still return ok=true with rpc result
+      return NextResponse.json({
+        ok: true,
+        assignment_id,
+        view: [],
+        note: "Assigned, but failed to refresh view",
+      });
+    }
+
     return NextResponse.json({
       ok: true,
       assignment_id,
       view: vrows || [],
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message ?? "Server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
   }
 }
-
