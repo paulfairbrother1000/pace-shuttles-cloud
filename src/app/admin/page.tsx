@@ -113,14 +113,10 @@ type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
   preferred: boolean;
-
-  // capacity & policy
-  min: number;          // vehicle min seats
-  max: number;          // vehicle max seats (cap)
-
-  // optional ranking helpers
+  min: number;
+  max: number;
   operator_id?: UUID | null;
-  price_cents?: number | null; // keep null for now; wire real prices later
+  price_cents?: number | null;
 };
 
 type DetailedAlloc = {
@@ -135,7 +131,6 @@ type DetailedAlloc = {
   total: number;
 };
 
-/** Preferred only wins within same operator; otherwise deterministic id tiebreak */
 function boatTieBreak(a: Boat, b: Boat) {
   if ((a.operator_id || null) === (b.operator_id || null)) {
     if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
@@ -150,8 +145,6 @@ function allocateDetailed(
 ): DetailedAlloc {
   const horizon = opts?.horizon ?? ">72h";
 
-  // Sort boats: cheapest first (unknown prices = same tier), then preferred within same operator,
-  // then deterministic by id.
   const boatRank = (a: Boat, b: Boat) => {
     const pa = a.price_cents ?? 0;
     const pb = b.price_cents ?? 0;
@@ -165,14 +158,13 @@ function allocateDetailed(
 
   const boatsSorted = [...boats].sort(boatRank);
 
-  // Working state
   type W = {
     def: Boat;
     used: number;
     groups: { order_id: UUID; size: number }[];
   };
   const work = new Map<UUID, W>();
-  boatsSorted.forEach(b =>
+  boatsSorted.forEach((b) =>
     work.set(b.vehicle_id, { def: b, used: 0, groups: [] })
   );
 
@@ -189,7 +181,7 @@ function allocateDetailed(
   };
 
   const remaining: Party[] = [...parties]
-    .filter(p => p.size > 0)
+    .filter((p) => p.size > 0)
     .sort((a, b) => b.size - a.size);
 
   const unassigned: { order_id: UUID; size: number }[] = [];
@@ -198,7 +190,7 @@ function allocateDetailed(
   {
     const next: Party[] = [];
     for (const g of remaining) {
-      const candidate = boatsSorted.find(b => {
+      const candidate = boatsSorted.find((b) => {
         const w = work.get(b.vehicle_id)!;
         const free = b.max - w.used;
         return w.used < b.min && free >= g.size;
@@ -217,7 +209,7 @@ function allocateDetailed(
   {
     const next: Party[] = [];
     for (const g of remaining) {
-      const candidate = boatsSorted.find(b => {
+      const candidate = boatsSorted.find((b) => {
         const w = work.get(b.vehicle_id)!;
         const free = b.max - w.used;
         return free >= g.size;
@@ -232,17 +224,13 @@ function allocateDetailed(
     remaining.push(...next);
   }
 
-  // Anything still left cannot fit
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
-  // T-72 rebalancer:
-  // Ensure all ACTIVE boats are >= min, allowing at most ONE to be min-1.
   if (horizon === "T72") {
-    const active = () => [...work.values()].filter(w => w.used > 0);
-    const underMin = () => active().filter(w => w.used < w.def.min);
-    const overMin = () => active().filter(w => w.used > w.def.min);
+    const active = () => [...work.values()].filter((w) => w.used > 0);
+    const underMin = () => active().filter((w) => w.used < w.def.min);
+    const overMin = () => active().filter((w) => w.used > w.def.min);
 
-    // Try to move smallest fitting group from donor (>min) to receiver (<min)
     const tryMove = (donor: W, receiver: W) => {
       const free = receiver.def.max - receiver.used;
       if (free <= 0) return false;
@@ -253,12 +241,12 @@ function allocateDetailed(
       for (const g of sorted) {
         if (g.size > free) continue;
         const donorWouldBe = donor.used - g.size;
-        if (donorWouldBe < donor.def.min) continue; // don't push donor below min
+        if (donorWouldBe < donor.def.min) continue;
 
-        // prefer exact hit if possible
         const recvWouldBe = receiver.used + g.size;
         if (recvWouldBe === receiver.def.min) {
-          pick = g; break;
+          pick = g;
+          break;
         }
         pick = pick ?? g;
       }
@@ -267,14 +255,18 @@ function allocateDetailed(
       donor.used -= pick.size;
       receiver.used += pick.size;
 
-      const idx = donor.groups.findIndex(x => x.order_id === pick!.order_id && x.size === pick!.size);
+      const idx = donor.groups.findIndex(
+        (x) => x.order_id === pick!.order_id && x.size === pick!.size
+      );
       if (idx >= 0) donor.groups.splice(idx, 1);
       receiver.groups.push(pick);
 
       const dMap = byBoat.get(donor.def.vehicle_id)!;
       const rMap = byBoat.get(receiver.def.vehicle_id) ?? { seats: 0, orders: [] };
       dMap.seats -= pick.size;
-      const boIdx = dMap.orders.findIndex(x => x.order_id === pick!.order_id && x.size === pick!.size);
+      const boIdx = dMap.orders.findIndex(
+        (x) => x.order_id === pick!.order_id && x.size === pick!.size
+      );
       if (boIdx >= 0) dMap.orders.splice(boIdx, 1);
       rMap.seats += pick.size;
       rMap.orders.push(pick);
@@ -283,35 +275,42 @@ function allocateDetailed(
       return true;
     };
 
-    // Raise receivers to min where possible
     let changed = true;
     while (changed) {
       changed = false;
-      const receivers = underMin().sort((a, b) => (b.def.min - b.used) - (a.def.min - a.used));
+      const receivers = underMin().sort(
+        (a, b) => b.def.min - b.used - (a.def.min - a.used)
+      );
       if (!receivers.length) break;
 
       for (const recv of receivers) {
-        const donors = overMin().sort((a, b) => (b.used - b.def.min) - (a.used - a.def.min));
+        const donors = overMin().sort(
+          (a, b) => b.used - b.def.min - (a.used - a.def.min)
+        );
         for (const don of donors) {
-          if (tryMove(don, recv)) { changed = true; break; }
+          if (tryMove(don, recv)) {
+            changed = true;
+            break;
+          }
         }
       }
     }
 
-    // Ensure at most ONE under-min boat; try to merge additional under-mins into others
-    const activeW = () => [...work.values()].filter(w => w.used > 0);
-    let under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
+    const activeW = () => [...work.values()].filter((w) => w.used > 0);
+    let under = activeW()
+      .filter((w) => w.used < w.def.min)
+      .sort((a, b) => a.used - b.used);
     while (under.length > 1) {
       const src = under[0];
       let movedAnything = false;
 
       const targets = activeW()
-        .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
+        .filter((w) => w.def.vehicle_id !== src.def.vehicle_id)
         .sort((a, b) => {
           const aPref = a.used >= a.def.min ? 0 : 1;
           const bPref = b.used >= b.def.min ? 0 : 1;
           if (aPref !== bPref) return aPref - bPref;
-          return (b.def.max - b.used) - (a.def.max - a.used);
+          return b.def.max - b.used - (a.def.max - a.used);
         });
 
       for (const g of [...src.groups].sort((a, b) => a.size - b.size)) {
@@ -322,14 +321,18 @@ function allocateDetailed(
           src.used -= g.size;
           tgt.used += g.size;
 
-          const idx = src.groups.findIndex(x => x.order_id === g.order_id && x.size === g.size);
+          const idx = src.groups.findIndex(
+            (x) => x.order_id === g.order_id && x.size === g.size
+          );
           if (idx >= 0) src.groups.splice(idx, 1);
           tgt.groups.push(g);
 
           const sMap = byBoat.get(src.def.vehicle_id)!;
           const tMap = byBoat.get(tgt.def.vehicle_id) ?? { seats: 0, orders: [] };
           sMap.seats -= g.size;
-          const boIdx = sMap.orders.findIndex(x => x.order_id === g.order_id && x.size === g.size);
+          const boIdx = sMap.orders.findIndex(
+            (x) => x.order_id === g.order_id && x.size === g.size
+          );
           if (boIdx >= 0) sMap.orders.splice(boIdx, 1);
           tMap.seats += g.size;
           tMap.orders.push(g);
@@ -341,7 +344,9 @@ function allocateDetailed(
       }
 
       if (!movedAnything) break;
-      under = activeW().filter(w => w.used < w.def.min).sort((a, b) => a.used - b.used);
+      under = activeW()
+        .filter((w) => w.used < w.def.min)
+        .sort((a, b) => a.used - b.used);
     }
   }
 
@@ -351,7 +356,7 @@ function allocateDetailed(
 
 /* ---------- Final (T-24) allocator ---------- */
 function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
-  const groups = [...parties].filter(g => g.size > 0).sort((a, b) => b.size - a.size);
+  const groups = [...parties].filter((g) => g.size > 0).sort((a, b) => b.size - a.size);
   const ranked = [...boats].sort((a, b) => {
     const pa = a.price_cents ?? 0;
     const pb = b.price_cents ?? 0;
@@ -380,13 +385,16 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     for (let k = 1; k <= ranked.length; k++) {
       const subset = ranked.slice(0, k);
       const maxSum = subset.reduce((s, b) => s + b.max, 0);
-      if (total <= maxSum) { chosen = subset; break; }
+      if (total <= maxSum) {
+        chosen = subset;
+        break;
+      }
     }
   }
   if (!chosen) throw new Error("Capacity window exceeded: total passengers exceed fleet max.");
 
   type Bucket = { def: Boat; used: number; orders: Party[] };
-  const buckets: Bucket[] = chosen.map(b => ({ def: b, used: 0, orders: [] }));
+  const buckets: Bucket[] = chosen.map((b) => ({ def: b, used: 0, orders: [] }));
 
   const place = (i: number, g: Party) => {
     buckets[i].used += g.size;
@@ -402,7 +410,10 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
       if (free < g.size) continue;
       const deficit = Math.max(0, b.def.min - b.used);
       if (deficit <= 0) continue;
-      if (deficit > bestDeficit) { bestDeficit = deficit; best = i; }
+      if (deficit > bestDeficit) {
+        bestDeficit = deficit;
+        best = i;
+      }
     }
     return best;
   };
@@ -414,18 +425,20 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
     else remaining.push(g);
   }
 
-  const belowMin = buckets.filter(b => b.used > 0 && b.used < b.def.min);
+  const belowMin = buckets.filter((b) => b.used > 0 && b.used < b.def.min);
   if (belowMin.length > 0) {
     const single = ranked[0];
     if (total >= single.min && total <= single.max) {
       const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
       byBoat.set(single.vehicle_id, {
         seats: total,
-        orders: groups.map(g => ({ order_id: g.order_id, size: g.size })),
+        orders: groups.map((g) => ({ order_id: g.order_id, size: g.size })),
       });
       return { byBoat, unassigned: [], total };
     }
-    throw new Error("Cannot meet minimum seats across selected boats. Total passengers below the smallest min.");
+    throw new Error(
+      "Cannot meet minimum seats across selected boats. Total passengers below the smallest min."
+    );
   }
 
   for (const g of remaining) {
@@ -459,13 +472,10 @@ function allocateFinalT24(parties: Party[], boats: Boat[]): DetailedAlloc {
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
   for (const b of buckets) {
     if (b.used <= 0) continue;
-    byBoat.set(
-      b.def.vehicle_id,
-      {
-        seats: b.used,
-        orders: b.orders.map(o => ({ order_id: o.order_id, size: o.size })),
-      }
-    );
+    byBoat.set(b.def.vehicle_id, {
+      seats: b.used,
+      orders: b.orders.map((o) => ({ order_id: o.order_id, size: o.size })),
+    });
   }
   return { byBoat, unassigned: [], total };
 }
@@ -520,8 +530,8 @@ export default function AdminPage() {
         if (off) return;
 
         setJourneys(js);
-        const routeIds = Array.from(new Set(js.map(j => j.route_id)));
-        const journeyIds = js.map(j => j.id);
+        const routeIds = Array.from(new Set(js.map((j) => j.route_id)));
+        const journeyIds = js.map((j) => j.id);
 
         // 2) lookups
         const [rQ, puQ, deQ] = await Promise.all([
@@ -537,7 +547,7 @@ export default function AdminPage() {
         setPickups((puQ.data || []) as Pickup[]);
         setDestinations((deQ.data || []) as Destination[]);
 
-        // 3) RVAs, vehicles (include min/max), operators
+        // 3) RVAs, vehicles, operators
         const [rvaQ, vQ, oQ] = await Promise.all([
           supabase
             .from("route_vehicle_assignments")
@@ -559,7 +569,7 @@ export default function AdminPage() {
         setOperators((oQ.data || []) as Operator[]);
 
         // 4) paid orders (filter via route+date window)
-        const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
+        const dateSet = new Set(js.map((j) => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await supabase
           .from("orders")
@@ -618,7 +628,9 @@ export default function AdminPage() {
         if (operatorIds.length) {
           const { data: sData } = await supabase
             .from("operator_staff")
-            .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
+            .select(
+              "id,user_id,operator_id,first_name,last_name,active,role_id,jobrole"
+            )
             .in("operator_id", operatorIds)
             .eq("active", true);
 
@@ -630,11 +642,14 @@ export default function AdminPage() {
             map.set(key, arr);
           });
 
-          // sort each operator's staff by name
           for (const [key, arr] of map.entries()) {
             arr.sort((a, b) => {
-              const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
-              const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
+              const an = `${a.last_name || ""} ${a.first_name || ""}`
+                .toLowerCase()
+                .trim();
+              const bn = `${b.last_name || ""} ${b.first_name || ""}`
+                .toLowerCase()
+                .trim();
               return an.localeCompare(bn);
             });
             map.set(key, arr);
@@ -658,31 +673,31 @@ export default function AdminPage() {
   /* ---------- Lookups ---------- */
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
-    routes.forEach(r => m.set(r.id, r));
+    routes.forEach((r) => m.set(r.id, r));
     return m;
   }, [routes]);
 
   const pickupNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    pickups.forEach(p => m.set(p.id, p.name));
+    pickups.forEach((p) => m.set(p.id, p.name));
     return m;
   }, [pickups]);
 
   const destNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    destinations.forEach(d => m.set(d.id, d.name));
+    destinations.forEach((d) => m.set(d.id, d.name));
     return m;
   }, [destinations]);
 
   const vehicleById = useMemo(() => {
     const m = new Map<UUID, Vehicle>();
-    vehicles.forEach(v => m.set(v.id, v));
+    vehicles.forEach((v) => m.set(v.id, v));
     return m;
   }, [vehicles]);
 
   const operatorNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    operators.forEach(o => m.set(o.id, o.name || "—"));
+    operators.forEach((o) => m.set(o.id, o.name || "—"));
     return m;
   }, [operators]);
 
@@ -698,12 +713,11 @@ export default function AdminPage() {
     vehicle_name: string;
     operator_name: string;
     operator_id?: UUID | null;
-    db: number;                   // customers on this boat
+    db: number;
     min: number | null;
     max: number | null;
     preferred?: boolean;
-    groups: number[];             // group sizes (chips)
-    // current assignee, if any
+    groups: number[];
     assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] };
   };
 
@@ -718,23 +732,21 @@ export default function AdminPage() {
     isLocked: boolean;
     perBoat: UiBoat[];
     totals: {
-      proj: number;       // total pax from orders
-      dbTotal: number;    // sum on actual boats (excl unassigned)
-      maxTotal: number;   // sum of max seats across boats
-      unassigned: number; // pax not fitting
+      proj: number;
+      dbTotal: number;
+      maxTotal: number;
+      unassigned: number;
     };
-    // For lock/unlock actions:
     previewAlloc?: DetailedAlloc;
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
     boats?: Boat[];
-    atRiskBelowMin?: boolean;     // T-72 gating
+    atRiskBelowMin?: boolean;
   };
 
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
-    // Group orders by (route_id, journey_date)
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -744,7 +756,6 @@ export default function AdminPage() {
       ordersByKey.set(k, arr);
     }
 
-    // Group RVAs by route
     const rvasByRoute = new Map<UUID, RVA[]>();
     for (const r of rvas) {
       if (!r.is_active) continue;
@@ -766,15 +777,14 @@ export default function AdminPage() {
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
       const parties: Party[] = oArr
-        .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter(g => g.size > 0);
+        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter((g) => g.size > 0);
 
-      if (!parties.length) continue; // skip journeys with no customers
+      if (!parties.length) continue;
 
-      // Candidate boats
-      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
+      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
       const boats: Boat[] = rvaArr
-        .map(x => {
+        .map((x) => {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const min = Number(v?.minseats ?? 0);
@@ -794,7 +804,6 @@ export default function AdminPage() {
 
       const maxTotal = boats.reduce((s, b) => s + b.max, 0);
 
-      // If locked, build from persisted rows
       const locked = locksByJourney.get(j.id) ?? [];
       const isLocked = locked.length > 0;
 
@@ -817,7 +826,6 @@ export default function AdminPage() {
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
 
-          // current assignee (lead)
           const a = assignByKey.get(`${j.id}_${vehId}`);
           const assignee =
             a && a.staff_id
@@ -836,7 +844,7 @@ export default function AdminPage() {
             db: data.seats,
             min,
             max,
-            preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
+            preferred: !!rvaArr.find((x) => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
             assignee,
           });
@@ -845,10 +853,9 @@ export default function AdminPage() {
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
 
-        // Include boats with zero today so ops still see them (>72h only)
         if (!isT72orT24(horizon)) {
           for (const b of boats) {
-            if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
+            if (perBoat.find((x) => x.vehicle_id === b.vehicle_id)) continue;
             const v = vehicleById.get(b.vehicle_id);
 
             const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
@@ -869,19 +876,17 @@ export default function AdminPage() {
               db: 0,
               min: v?.minseats != null ? Number(v.minseats) : null,
               max: v?.maxseats != null ? Number(v.maxseats) : null,
-              preferred: !!rvaArr.find(x => x.vehicle_id)?.preferred,
+              preferred: !!rvaArr.find((x) => x.vehicle_id)?.preferred,
               groups: [],
               assignee,
             });
           }
         } else {
-          // At T-72/T-24: hide zero-customer boats
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
           }
         }
       } else {
-        // Use preview allocation
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
@@ -906,14 +911,13 @@ export default function AdminPage() {
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
-            groups: (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a),
+            preferred: !!rvaArr.find((x) => x.vehicle_id === b.vehicle_id)?.preferred,
+            groups: (entry?.orders ?? []).map((o) => o.size).sort((a, b) => b - a),
             assignee,
           });
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
 
-        // At T-72/T-24: hide zero-customer boats (release)
         if (isT72orT24(horizon)) {
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
@@ -921,7 +925,6 @@ export default function AdminPage() {
         }
       }
 
-      // Sort: by operator name, then within same operator preferred first, then vehicle name
       perBoat.sort((a, b) => {
         const ao = a.operator_name || "";
         const bo = b.operator_name || "";
@@ -930,10 +933,9 @@ export default function AdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-      // T-72 "at risk" flag (any running boat below min)
       const atRiskBelowMin =
         isT72orT24(horizon) &&
-        perBoat.some(b => b.db > 0 && b.min != null && b.db < (b.min as number));
+        perBoat.some((b) => b.db > 0 && b.min != null && b.db < (b.min as number));
 
       out.push({
         journey: j,
@@ -959,20 +961,20 @@ export default function AdminPage() {
       });
     }
 
-    // Operator filter (keep journeys with at least one row for that operator)
     const filtered =
       operatorFilter === "all"
         ? out
         : out
-            .map(row => ({
+            .map((row) => ({
               ...row,
               perBoat: row.perBoat.filter(
-                b =>
+                (b) =>
                   b.vehicle_id === "__unassigned__" ||
-                  vehicles.find(v => v.id === b.vehicle_id)?.operator_id === operatorFilter
+                  vehicles.find((v) => v.id === b.vehicle_id)?.operator_id ===
+                    operatorFilter
               ),
             }))
-            .filter(row => row.perBoat.length > 0);
+            .filter((row) => row.perBoat.length > 0);
 
     filtered.sort(
       (a, b) =>
@@ -1010,13 +1012,13 @@ export default function AdminPage() {
         return;
       }
 
-      // Prevent finalise at T-72 if below min
       if (row.horizon === "T72" && row.atRiskBelowMin) {
-        setErr("Cannot finalise at T-72: one or more boats would run below their minimum seats.");
+        setErr(
+          "Cannot finalise at T-72: one or more boats would run below their minimum seats."
+        );
         return;
       }
 
-      // Run strict T-24 allocator (final shuffle)
       let finalAlloc: DetailedAlloc;
       try {
         finalAlloc = allocateFinalT24(row.parties, row.boats);
@@ -1025,14 +1027,19 @@ export default function AdminPage() {
         return;
       }
 
-      // Validate: no unassigned; all running boats >= min
       if (finalAlloc.unassigned.length > 0) {
-        setErr("Cannot finalise: some groups could not be assigned within capacities.");
+        setErr(
+          "Cannot finalise: some groups could not be assigned within capacities."
+        );
         return;
       }
 
-      // Persist
-      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] = [];
+      const allocToSave: {
+        journey_id: UUID;
+        vehicle_id: UUID;
+        order_id: UUID;
+        seats: number;
+      }[] = [];
       for (const [vehId, data] of finalAlloc.byBoat.entries()) {
         for (const o of data.orders) {
           allocToSave.push({
@@ -1044,7 +1051,6 @@ export default function AdminPage() {
         }
       }
 
-      // Replace existing rows for this journey
       const del = await supabase
         .from("journey_vehicle_allocations")
         .delete()
@@ -1058,14 +1064,13 @@ export default function AdminPage() {
         if (ins.error) throw ins.error;
       }
 
-      // Refresh locks state for this journey
       const { data: lockData, error: lockErr } = await supabase
         .from("journey_vehicle_allocations")
         .select("journey_id,vehicle_id,order_id,seats")
         .eq("journey_id", row.journey.id);
       if (lockErr) throw lockErr;
 
-      setLocksByJourney(prev => {
+      setLocksByJourney((prev) => {
         const copy = new Map(prev);
         copy.set(row.journey.id, (lockData || []) as any);
         return copy;
@@ -1084,7 +1089,7 @@ export default function AdminPage() {
         .eq("journey_id", journeyId);
       if (del.error) throw del.error;
 
-      setLocksByJourney(prev => {
+      setLocksByJourney((prev) => {
         const copy = new Map(prev);
         copy.delete(journeyId);
         return copy;
@@ -1095,94 +1100,82 @@ export default function AdminPage() {
   }
 
   /* ---------- Crew: assign lead ---------- */
-
   async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
-  const key = `${journeyId}_${vehicleId}`;
-  setAssigning(key);
+    const key = `${journeyId}_${vehicleId}`;
+    setAssigning(key);
 
-  // put this right after the onAssign definition in src/app/operator/admin/page.tsx
-const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
-  onAssign(journeyId, vehicleId, staffId);
+    // Helper to re-read the assignment view for this journey+vehicle
+    const refreshView = async () => {
+      const { data: aData } = await supabase!
+        .from("v_crew_assignments_min")
+        .select(
+          "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+        )
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId);
 
+      const updated = ((aData as AssignView[]) ?? []).filter(
+        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+      );
 
-  // small helper to re-read the assignment view
-  const refreshView = async () => {
-    const { data: aData } = await sb!
-      .from("v_crew_assignments_min")
-      .select(
-        "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-      )
-      .eq("journey_id", journeyId)
-      .eq("vehicle_id", vehicleId);
+      setAssigns((prev) => {
+        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+        return Array.from(m.values());
+      });
 
-    const updated = ((aData as AssignView[]) ?? []).filter(
-      (r) => (r.role_label ?? "").toLowerCase() !== "crew"
-    );
+      return updated.length > 0;
+    };
 
-    setAssigns((prev) => {
-      const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
-      updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
-      return Array.from(m.values());
-    });
+    try {
+      const res = await fetch("/api/ops/assign/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          journey_id: journeyId,
+          vehicle_id: vehicleId,
+          ...(staffId ? { staff_id: staffId } : {}),
+        }),
+      });
 
-    return updated.length > 0;
-  };
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {}
 
-  try {
-    // call our API (which calls the SQL function)
-    const res = await fetch("/api/ops/assign/lead", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        journey_id: journeyId,
-        vehicle_id: vehicleId,
-        ...(staffId ? { staff_id: staffId } : {}),
-      }),
-    });
-
-    // Try to parse JSON, but don't depend on it
-    let body: any = null;
-    try { body = await res.json(); } catch {}
-
-    // 409 == already assigned; just refresh the view
-    if (res.status === 409) {
-      await refreshView();
-      return;
-    }
-
-    // 422 == eligibility / auth; show message and bail
-    if (res.status === 422) {
-      alert(body?.error || "Captain unavailable");
-      return;
-    }
-
-    if (!res.ok) {
-      // Tolerate “cannot return non-composite value from function returning composite type”
-      // and similar Postgres-return-shape issues: we’ll refresh the view to verify success.
-      const msg = (body?.error || "").toLowerCase();
-      const softReturnError =
-        msg.includes("non-composite value") ||
-        msg.includes("composite type") ||
-        msg.includes("function does not exist") ||
-        msg.includes("stack depth limit exceeded");
-
-      if (softReturnError) {
-        const ok = await refreshView();
-        if (ok) return; // treat as success if the view shows the new assignment
+      if (res.status === 409) {
+        await refreshView();
+        return;
       }
 
-      // Otherwise, hard error
-      throw new Error(body?.error || `Assign failed (${res.status})`);
-    }
+      if (res.status === 422) {
+        alert(body?.error || "Captain unavailable");
+        return;
+      }
 
-    // Happy path: still refresh to get the canonical row back
-    await refreshView();
-  } catch (e: any) {
-    alert(e?.message ?? "Assign failed");
-  } finally {
-    setAssigning(null);
+      if (!res.ok) {
+        const msg = (body?.error || "").toLowerCase();
+        const softReturnError =
+          msg.includes("non-composite value") ||
+          msg.includes("composite type") ||
+          msg.includes("function does not exist") ||
+          msg.includes("stack depth limit exceeded");
+
+        if (softReturnError) {
+          const ok = await refreshView();
+          if (ok) return;
+        }
+
+        throw new Error(body?.error || `Assign failed (${res.status})`);
+      }
+
+      await refreshView();
+    } catch (e: any) {
+      alert(e?.message ?? "Assign failed");
+    } finally {
+      setAssigning(null);
+    }
   }
-}
 
   /* ---------- Render ---------- */
   return (
@@ -1196,10 +1189,10 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
           <select
             className="border rounded-lg px-2 py-1 text-sm"
             value={operatorFilter}
-            onChange={e => setOperatorFilter((e.target.value || "all") as any)}
+            onChange={(e) => setOperatorFilter((e.target.value || "all") as any)}
           >
             <option value="all">All operators</option>
-            {operators.map(o => (
+            {operators.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}
               </option>
@@ -1209,13 +1202,13 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
       </header>
 
       <p className="text-neutral-600 text-sm">
-        Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Finalise</strong> to run the T-24 shuffle and persist. Assign crew leads inline per boat.
+        Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use{" "}
+        <strong>Finalise</strong> to run the T-24 shuffle and persist. Assign crew leads inline per
+        boat.
       </p>
 
       {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm mt-2">
-          {err}
-        </div>
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm mt-2">{err}</div>
       )}
 
       {loading ? (
@@ -1226,7 +1219,7 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
         </div>
       ) : (
         <div className="space-y-6 mt-4">
-          {rows.map(row => (
+          {rows.map((row) => (
             <section
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
@@ -1241,13 +1234,16 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                 </div>
 
                 <div className="ml-auto flex items-center gap-2">
-                  {/* Horizon badge */}
                   {row.horizon === "T24" ? (
                     <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
                       T-24 (Final window)
                     </span>
                   ) : row.horizon === "T72" ? (
-                    <span className={`px-2 py-0.5 rounded-full text-xs ${row.atRiskBelowMin ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800"}`}>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs ${
+                        row.atRiskBelowMin ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
                       {row.atRiskBelowMin ? "T-72 (At risk: below min)" : "T-72 (Confirm window)"}
                     </span>
                   ) : row.horizon === ">72h" ? (
@@ -1260,7 +1256,6 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                     </span>
                   )}
 
-                  {/* Context awareness */}
                   {row.contextDay === "today" && (
                     <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs">
                       Runs Today
@@ -1272,7 +1267,6 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                     </span>
                   )}
 
-                  {/* Totals */}
                   <span className="text-xs text-neutral-700">
                     Proj: <strong>{row.totals.proj}</strong>
                   </span>
@@ -1286,11 +1280,12 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
-                  {/* Finalise / Unlock */}
-                  {(row.horizon === "T24" || row.horizon === "T72") && (
-                    row.isLocked ? (
+                  {(row.horizon === "T24" || row.horizon === "T72") &&
+                    (row.isLocked ? (
                       <>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Locked</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+                          Locked
+                        </span>
                         <button
                           className="text-xs px-3 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100"
                           onClick={() => unlockJourney(row.journey.id)}
@@ -1301,9 +1296,11 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                       </>
                     ) : (
                       <button
-                        className={`text-xs px-3 py-1 rounded-lg border ${row.horizon === "T72" && row.atRiskBelowMin
-                          ? "border-neutral-300 text-neutral-400 cursor-not-allowed"
-                          : "border-blue-600 text-blue-600 hover:bg-blue-50"}`}
+                        className={`text-xs px-3 py-1 rounded-lg border ${
+                          row.horizon === "T72" && row.atRiskBelowMin
+                            ? "border-neutral-300 text-neutral-400 cursor-not-allowed"
+                            : "border-blue-600 text-blue-600 hover:bg-blue-50"
+                        }`}
                         onClick={() => {
                           if (row.horizon === "T72" && row.atRiskBelowMin) return;
                           lockJourney(row);
@@ -1317,8 +1314,7 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                       >
                         Finalise
                       </button>
-                    )
-                  )}
+                    ))}
                 </div>
               </div>
 
@@ -1338,7 +1334,7 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                     </tr>
                   </thead>
                   <tbody>
-                    {row.perBoat.map(b => {
+                    {row.perBoat.map((b) => {
                       const key = `${row.journey.id}_${b.vehicle_id}`;
                       const selected = selectedStaff[key];
 
@@ -1346,7 +1342,7 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                         (b.operator_id && staffByOperator.get(b.operator_id)) || [];
 
                       const currentLead = b.assignee?.name ?? null;
-                      const canAssign = (row.horizon === "T72" || row.horizon === ">72h");
+                      const canAssign = row.horizon === "T72" || row.horizon === ">72h";
 
                       return (
                         <tr key={key} className="border-t align-top">
@@ -1386,8 +1382,13 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                           <td className="p-3">
                             {currentLead ? (
                               <div className="flex items-center gap-2">
-                                <span className="px-2 py-1 rounded text-xs" style={{ background: "#dcfce7", color: "#166534" }}>
-                                  {b.assignee?.status === "confirmed" ? "Confirmed — " : "Assigned — "}
+                                <span
+                                  className="px-2 py-1 rounded text-xs"
+                                  style={{ background: "#dcfce7", color: "#166534" }}
+                                >
+                                  {b.assignee?.status === "confirmed"
+                                    ? "Confirmed — "
+                                    : "Assigned — "}
                                   {currentLead}
                                 </span>
                               </div>
@@ -1396,7 +1397,9 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                                 {staffOptions.length <= 1 ? (
                                   <span className="text-xs">
                                     {staffOptions[0]
-                                      ? `${staffOptions[0].first_name ?? ""} ${staffOptions[0].last_name ?? ""}`.trim()
+                                      ? `${staffOptions[0].first_name ?? ""} ${
+                                          staffOptions[0].last_name ?? ""
+                                        }`.trim()
                                       : "No staff"}
                                   </span>
                                 ) : (
@@ -1450,7 +1453,7 @@ const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
 
                           <td className="p-3">
                             {(row.horizon === "T24" || row.horizon === "T72") &&
-                              b.vehicle_id !== "__unassigned__" ? (
+                            b.vehicle_id !== "__unassigned__" ? (
                               <button
                                 className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
                                 style={{ backgroundColor: "#2563eb" }}
