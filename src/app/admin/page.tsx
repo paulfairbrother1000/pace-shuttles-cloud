@@ -1101,7 +1101,7 @@ export default function AdminPage() {
   setAssigning(key);
 
   // put this right after the onAssign definition in src/app/operator/admin/page.tsx
-const onAssignLead = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
+const onAssign = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
   onAssign(journeyId, vehicleId, staffId);
 
 
