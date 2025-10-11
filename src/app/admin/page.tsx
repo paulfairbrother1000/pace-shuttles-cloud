@@ -1431,7 +1431,7 @@ const onAssignLead = (journeyId: UUID, vehicleId: UUID, staffId?: UUID) =>
                                     (!selected && staffOptions.length !== 1)
                                   }
                                   onClick={() =>
-                                    onAssignLead(
+                                    onAssign(
                                       row.journey.id,
                                       b.vehicle_id as UUID,
                                       (staffOptions.length === 1 && !selected
