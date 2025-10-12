@@ -1,15 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
-
-/* ───────────────────────── Supabase ───────────────────────── */
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { sb } from "@/lib/supabaseClient"; // ← shared client
 
 /* ───────────────────────── Types ───────────────────────── */
 type PsUser = {
@@ -306,8 +300,10 @@ export default function EditVehiclePage() {
   }
 
   const operatorName =
-    (operatorLocked && (psUser?.operator_name ||
-      operators.find((o) => o.id === psUser?.operator_id)?.name)) || "";
+    (operatorLocked &&
+      (psUser?.operator_name ||
+        operators.find((o) => o.id === psUser?.operator_id)?.name)) ||
+    "";
 
   /* ───────────────────── Captains & Priority (NEW) ───────────────────── */
 

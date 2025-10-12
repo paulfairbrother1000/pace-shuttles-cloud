@@ -2,18 +2,7 @@
 
 import { useRouter, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
-
-// ── single client instance for this module ────────────────────────────────────
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
-// (optional) expose for browser console while debugging RLS/JWT
-if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
-  (globalThis as any).sb = sb;
-}
+import { sb } from "@/lib/supabaseClient"; // ← use the shared client
 
 /* ---------- Types ---------- */
 type PsUser = {
