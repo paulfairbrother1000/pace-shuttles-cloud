@@ -1,27 +1,19 @@
 "use client";
 
+import { useRouter, useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-// -- single client instance for this module
+// ── single client instance for this module ────────────────────────────────────
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// (optional) expose for browser console while debugging RLS
+// (optional) expose for browser console while debugging RLS/JWT
 if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
   (globalThis as any).sb = sb;
 }
-
-// DEBUG ONLY: expose to console so we can inspect the JWT/session
-;(globalThis as any).sb = sb;
-
-
-/* ---------- Supabase ---------- */
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 /* ---------- Types ---------- */
 type PsUser = {
@@ -221,8 +213,8 @@ export default function EditStaffPage() {
   const lockedOperatorName =
     isOpAdmin && psUser?.operator_id
       ? psUser?.operator_name ||
-        operators.find((o) => o.id === psUser.operator_id)?.name ||
-        psUser.operator_id
+        operators.find((o) => o.id === psUser?.operator_id)?.name ||
+        psUser?.operator_id
       : "";
 
   async function uploadPhotoIfAny(id: string) {
