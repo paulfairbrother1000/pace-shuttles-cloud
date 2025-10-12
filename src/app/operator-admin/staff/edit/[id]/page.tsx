@@ -1,13 +1,18 @@
 "use client";
 
-import { useRouter, useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+// -- single client instance for this module
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+// (optional) expose for browser console while debugging RLS
+if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+  (globalThis as any).sb = sb;
+}
+
 // DEBUG ONLY: expose to console so we can inspect the JWT/session
 ;(globalThis as any).sb = sb;
 
