@@ -2,7 +2,7 @@
 
 import { useRouter, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { sb } from "@/lib/supabaseClient"; // ← use the shared client
+import { sb } from "@/lib/supabaseClient";
 
 /* ---------- Types ---------- */
 type PsUser = {
@@ -154,7 +154,6 @@ export default function EditStaffPage() {
   /* if editing, load row */
   useEffect(() => {
     if (isNew) {
-      // operator lock for op-admins
       if (isOpAdmin && psUser?.operator_id) setOperatorId(psUser.operator_id);
       return;
     }
@@ -236,16 +235,16 @@ export default function EditStaffPage() {
       setSaving(true);
 
       if (isNew) {
-        // CREATE
+        // CREATE (includes pronoun)
         const payload = {
           operator_id: effectiveOperatorId,
-          type_id: typeIds[0] || null,   // legacy single
-          type_ids: typeIds,             // NEW multi
+          type_id: typeIds[0] || null,
+          type_ids: typeIds,
           jobrole: jobRole,
-          pronoun,
+          pronoun, // ← ensure saved on create
           first_name: first.trim(),
           last_name: last.trim(),
-          email: email.trim() || null,   // NEW
+          email: email.trim() || null,
           status,
           licenses: licenses.trim() || null,
           notes: notes.trim() || null,
@@ -281,7 +280,7 @@ export default function EditStaffPage() {
         setSaving(false);
         router.push("/operator-admin/staff");
       } else {
-        // UPDATE
+        // UPDATE (includes pronoun)
         const id = staffId || (params.id as string);
         const path = await uploadPhotoIfAny(id);
         const payload: Record<string, any> = {
@@ -289,7 +288,7 @@ export default function EditStaffPage() {
           type_id: typeIds[0] || null,
           type_ids: typeIds,
           jobrole: jobRole,
-          pronoun,
+          pronoun, // ← ensure saved on update
           first_name: first.trim(),
           last_name: last.trim(),
           email: email.trim() || null,
@@ -358,7 +357,6 @@ export default function EditStaffPage() {
   }, [rels]);
 
   const addOptions = useMemo(() => {
-    // operator's vehicles not already linked
     const linked = new Set(rels.map((r) => r.vehicle_id));
     return vehicles
       .filter((v) => v.operator_id === operatorId && !linked.has(v.id))
@@ -389,21 +387,14 @@ export default function EditStaffPage() {
     if (operatorId && (staffId || (!isNew && params.id))) {
       loadEligibility(operatorId, staffId || (params.id as string));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operatorId, staffId, isNew, params.id]);
+  }, [operatorId, staffId, isNew, params.id]); // eslint-disable-line
 
   async function addVehicleRel() {
     const stId = staffId || (params.id as string);
     if (!operatorId || !stId || !addVehId) return;
     setVehMsg(null);
-    if (relByVeh.has(addVehId)) {
-      setVehMsg("Already assigned to this vehicle.");
-      return;
-    }
-    if (addPriority < 1 || addPriority > 5) {
-      setVehMsg("Priority must be 1–5.");
-      return;
-    }
+    if (relByVeh.has(addVehId)) return setVehMsg("Already assigned to this vehicle.");
+    if (addPriority < 1 || addPriority > 5) return setVehMsg("Priority must be 1–5.");
     const { error } = await sb.from("vehicle_staff_prefs").insert({
       operator_id: operatorId,
       vehicle_id: addVehId,
@@ -411,58 +402,34 @@ export default function EditStaffPage() {
       priority: addPriority,
       is_lead_eligible: true,
     });
-    if (error) {
-      setVehMsg(error.message);
-      return;
-    }
+    if (error) return setVehMsg(error.message);
     setAddVehId("");
     setAddPriority(3);
     await loadEligibility(operatorId, stId);
   }
 
   async function updateRelPriority(id: string, next: number) {
-    if (next < 1 || next > 5) {
-      setVehMsg("Priority must be 1–5.");
-      return;
-    }
-    const { error } = await sb
-      .from("vehicle_staff_prefs")
-      .update({ priority: next })
-      .eq("id", id);
-    if (error) {
-      setVehMsg(error.message);
-      return;
-    }
+    if (next < 1 || next > 5) return setVehMsg("Priority must be 1–5.");
+    const { error } = await sb.from("vehicle_staff_prefs").update({ priority: next }).eq("id", id);
+    if (error) return setVehMsg(error.message);
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, priority: next } : r)));
   }
 
   async function toggleRelEligible(id: string, cur: boolean) {
-    const { error } = await sb
-      .from("vehicle_staff_prefs")
-      .update({ is_lead_eligible: !cur })
-      .eq("id", id);
-    if (error) {
-      setVehMsg(error.message);
-      return;
-    }
+    const { error } = await sb.from("vehicle_staff_prefs").update({ is_lead_eligible: !cur }).eq("id", id);
+    if (error) return setVehMsg(error.message);
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r)));
   }
 
   async function removeRel(id: string) {
     if (!confirm("Remove this vehicle eligibility?")) return;
     const { error } = await sb.from("vehicle_staff_prefs").delete().eq("id", id);
-    if (error) {
-      setVehMsg(error.message);
-      return;
-    }
+    if (error) return setVehMsg(error.message);
     setRels((prev) => prev.filter((r) => r.id !== id));
   }
 
   const sortedRels = useMemo(
-    () =>
-      [...rels].sort((a, b) =>
-        a.priority !== b.priority ? a.priority - b.priority : 0
-      ),
+    () => [...rels].sort((a, b) => (a.priority !== b.priority ? a.priority - b.priority : 0)),
     [rels]
   );
 
@@ -524,12 +491,7 @@ export default function EditStaffPage() {
               <label className="block text-sm text-neutral-600 mb-1">
                 Vehicle Type{allowedTypes.length > 1 ? "s" : ""} *
               </label>
-              <div
-                className={cls(
-                  "flex flex-wrap gap-2",
-                  !operatorId && "opacity-50 pointer-events-none"
-                )}
-              >
+              <div className={cls("flex flex-wrap gap-2", !operatorId && "opacity-50 pointer-events-none")}>
                 {allowedTypes.map((t) => {
                   const active = typeIds.includes(t.id);
                   return (
@@ -537,9 +499,7 @@ export default function EditStaffPage() {
                       type="button"
                       key={t.id}
                       onClick={() =>
-                        setTypeIds((prev) =>
-                          active ? prev.filter((x) => x !== t.id) : [...prev, t.id]
-                        )
+                        setTypeIds((prev) => (active ? prev.filter((x) => x !== t.id) : [...prev, t.id]))
                       }
                       className={cls(
                         "px-3 py-1 rounded-full border text-sm",
@@ -551,11 +511,7 @@ export default function EditStaffPage() {
                   );
                 })}
               </div>
-              {!operatorId && (
-                <p className="text-xs text-neutral-500 mt-1">
-                  Choose an Operator to see allowed types.
-                </p>
-              )}
+              {!operatorId && <p className="text-xs text-neutral-500 mt-1">Choose an Operator to see allowed types.</p>}
             </div>
 
             <div>
@@ -580,11 +536,7 @@ export default function EditStaffPage() {
           <div className="grid md:grid-cols-5 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Status</label>
-              <select
-                className="w-full border rounded-lg px-3 py-2"
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-              >
+              <select className="w-full border rounded-lg px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value)}>
                 <option value="Active">Active</option>
                 <option value="Inactive">Inactive</option>
                 <option value="OnLeave">OnLeave</option>
@@ -596,7 +548,7 @@ export default function EditStaffPage() {
               <select
                 className="w-full border rounded-lg px-3 py-2"
                 value={pronoun}
-                onChange={(e) => setPronoun(e.target.value as any)}
+                onChange={(e) => setPronoun(e.target.value as "he" | "she" | "they")}
               >
                 <option value="he">he</option>
                 <option value="she">she</option>
@@ -606,20 +558,12 @@ export default function EditStaffPage() {
 
             <div>
               <label className="block text-sm text-neutral-600 mb-1">First Name *</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={first}
-                onChange={(e) => setFirst(e.target.value)}
-              />
+              <input className="w-full border rounded-lg px-3 py-2" value={first} onChange={(e) => setFirst(e.target.value)} />
             </div>
 
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Last Name *</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={last}
-                onChange={(e) => setLast(e.target.value)}
-              />
+              <input className="w-full border rounded-lg px-3 py-2" value={last} onChange={(e) => setLast(e.target.value)} />
             </div>
 
             <div>
@@ -639,11 +583,7 @@ export default function EditStaffPage() {
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-neutral-600 mb-1">Licenses / Certs</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={licenses}
-                onChange={(e) => setLicenses(e.target.value)}
-              />
+              <input className="w-full border rounded-lg px-3 py-2" value={licenses} onChange={(e) => setLicenses(e.target.value)} />
             </div>
 
             <div>
@@ -676,12 +616,7 @@ export default function EditStaffPage() {
           {/* Notes */}
           <div>
             <label className="block text-sm text-neutral-600 mb-1">Notes</label>
-            <textarea
-              className="w-full border rounded-lg px-3 py-2"
-              rows={5}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
+            <textarea className="w-full border rounded-lg px-3 py-2" rows={5} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
 
           {/* Actions */}
@@ -723,33 +658,25 @@ export default function EditStaffPage() {
 
           {/* Add line */}
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="border rounded-lg px-3 py-2"
-              value={addVehId}
-              onChange={(e) => setAddVehId(e.target.value)}
-              disabled={!operatorId}
-            >
+            <select className="border rounded-lg px-3 py-2" value={addVehId} onChange={(e) => setAddVehId(e.target.value)} disabled={!operatorId}>
               <option value="">Add vehicle…</option>
               {addOptions.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
               ))}
             </select>
 
             <label className="text-sm">Priority</label>
-            <select
-              className="border rounded-lg px-2 py-1"
-              value={addPriority}
-              onChange={(e) => setAddPriority(Number(e.target.value))}
-            >
-              {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+            <select className="border rounded-lg px-2 py-1" value={addPriority} onChange={(e) => setAddPriority(Number(e.target.value))}>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <option key={n} value={n}>
+                  P{n}
+                </option>
+              ))}
             </select>
 
-            <button
-              className="px-3 py-2 rounded border"
-              disabled={!addVehId || !operatorId}
-              onClick={addVehicleRel}
-              type="button"
-            >
+            <button className="px-3 py-2 rounded border" disabled={!addVehId || !operatorId} onClick={addVehicleRel} type="button">
               Add
             </button>
           </div>
@@ -767,37 +694,34 @@ export default function EditStaffPage() {
               </thead>
               <tbody>
                 {sortedRels.length === 0 ? (
-                  <tr><td className="p-3" colSpan={4}>No vehicles linked yet.</td></tr>
+                  <tr>
+                    <td className="p-3" colSpan={4}>
+                      No vehicles linked yet.
+                    </td>
+                  </tr>
                 ) : (
                   sortedRels.map((r) => {
                     const v = vehicles.find((x) => x.id === r.vehicle_id);
                     return (
                       <tr key={r.id} className="border-t">
-                        <td className="p-3">{v?.name || `#${r.vehicle_id.slice(0,8)}`}</td>
+                        <td className="p-3">{v?.name || `#${r.vehicle_id.slice(0, 8)}`}</td>
                         <td className="p-3">
-                          <select
-                            className="border rounded px-2 py-1"
-                            value={r.priority}
-                            onChange={(e) => updateRelPriority(r.id, Number(e.target.value))}
-                          >
-                            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+                          <select className="border rounded px-2 py-1" value={r.priority} onChange={(e) => updateRelPriority(r.id, Number(e.target.value))}>
+                            {[1, 2, 3, 4, 5].map((n) => (
+                              <option key={n} value={n}>
+                                P{n}
+                              </option>
+                            ))}
                           </select>
                         </td>
                         <td className="p-3">
                           <label className="inline-flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={r.is_lead_eligible}
-                              onChange={() => toggleRelEligible(r.id, r.is_lead_eligible)}
-                            />
+                            <input type="checkbox" checked={r.is_lead_eligible} onChange={() => toggleRelEligible(r.id, r.is_lead_eligible)} />
                             <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
                           </label>
                         </td>
                         <td className="p-3 text-right">
-                          <button
-                            className="px-3 py-1 rounded border"
-                            onClick={() => removeRel(r.id)}
-                          >
+                          <button className="px-3 py-1 rounded border" onClick={() => removeRel(r.id)}>
                             Remove
                           </button>
                         </td>
