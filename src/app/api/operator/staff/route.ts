@@ -21,15 +21,19 @@ async function authClient() {
   return createServerClient(URL, ANON, {
     cookies: {
       get: (name: string) => store.get(name)?.value,
-      set: (name: string, value: string, options: CookieOptions) => store.set({ name, value, ...options }),
-      remove: (name: string, options: CookieOptions) => store.set({ name, value: "", ...options }),
+      set: (name: string, value: string, options: CookieOptions) =>
+        store.set({ name, value, ...options }),
+      remove: (name: string, options: CookieOptions) =>
+        store.set({ name, value: "", ...options }),
     },
   });
 }
 async function operatorIdFromAuth(): Promise<string | null> {
   try {
     const supa = await authClient();
-    const { data: { user } } = await supa.auth.getUser();
+    const {
+      data: { user },
+    } = await supa.auth.getUser();
     if (!user?.email) return null;
     const { data: op } = await db
       .from("operators")
@@ -58,7 +62,8 @@ export async function GET(req: NextRequest) {
   const authOp = await operatorIdFromAuth();
   const operatorId = urlOp || authOp;
 
-  if (!operatorId) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  if (!operatorId)
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
   const { data: staff, error: sErr } = await db
     .from("operator_staff")
@@ -75,7 +80,7 @@ export async function GET(req: NextRequest) {
 
   const { data: types } = jtIds.length
     ? await db.from("journey_types").select("id,name").in("id", jtIds)
-    : { data: [] as any[] };
+    : ({ data: [] as any[] } as any);
 
   let roles: any[] = [];
   const rolesRes = await db.from("transport_type_role").select("type_id,name");
@@ -95,6 +100,8 @@ export async function GET(req: NextRequest) {
  * 1) Prefer body.operator_id (since the form selects it)
  * 2) Else fall back to auth-derived operator
  * 3) 401 only if neither is available
+ *
+ * Also persists pronoun/email/type_ids.
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({} as Record<string, any>));
@@ -102,9 +109,10 @@ export async function POST(req: NextRequest) {
   // Prefer explicit operator_id from the request (form)
   let operatorId: string | null = body?.operator_id ?? null;
   if (!operatorId) operatorId = await operatorIdFromAuth();
-  if (!operatorId) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  if (!operatorId)
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  // Validate required fields
+  // Validate required fields (type_id used as legacy single; UI also sends type_ids)
   for (const k of ["type_id", "first_name", "last_name"]) {
     if (!body[k]) return NextResponse.json({ error: `${k} required` }, { status: 400 });
   }
@@ -117,22 +125,38 @@ export async function POST(req: NextRequest) {
     .eq("journey_type_id", body.type_id)
     .maybeSingle();
   if (!allowed) {
-    return NextResponse.json({ error: "Transport type not allowed for this operator" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Transport type not allowed for this operator" },
+      { status: 403 }
+    );
   }
+
+  // Pronoun must satisfy CHECK (he|she|they)
+  const pronoun =
+    body.pronoun === "he" || body.pronoun === "she" || body.pronoun === "they"
+      ? body.pronoun
+      : "they";
 
   const rec = {
     operator_id: operatorId,
     type_id: body.type_id,
+    type_ids: Array.isArray(body.type_ids) ? body.type_ids : null, // NEW multi
     jobrole: body.jobrole ?? null,
+    pronoun, // ← persist pronoun
     first_name: body.first_name,
     last_name: body.last_name,
+    email: body.email ?? null, // ← persist email if provided
     status: body.status ?? "Active",
     licenses: body.licenses ?? null,
     notes: body.notes ?? null,
     photo_url: body.photo_url ?? null,
   };
 
-  const { data, error } = await db.from("operator_staff").insert(rec).select("id").single();
+  const { data, error } = await db
+    .from("operator_staff")
+    .insert(rec)
+    .select("id")
+    .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   return NextResponse.json({ ok: true, id: data?.id });

@@ -3,6 +3,36 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+
+import { NextResponse } from "next/server";
+import { sbAdmin } from "@/lib/supabaseServer";
+
+export async function POST(req: Request) {
+  try {
+    const b = await req.json();
+    const payload = {
+      operator_id: b.operator_id,
+      type_id: b.type_id ?? null,
+      type_ids: b.type_ids ?? null,
+      jobrole: b.jobrole ?? null,
+      pronoun: b.pronoun ?? "they",
+      first_name: b.first_name,
+      last_name: b.last_name,
+      email: b.email ?? null,
+      status: b.status ?? "Active",
+      licenses: b.licenses ?? null,
+      notes: b.notes ?? null,
+      photo_url: b.photo_url ?? null,
+    };
+    const { data, error } = await sbAdmin.from("operator_staff").insert(payload).select("id").single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ id: data!.id });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message ?? "Bad Request" }, { status: 400 });
+  }
+}
+
+
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY!; // service role
 
