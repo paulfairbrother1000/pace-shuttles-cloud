@@ -1,14 +1,56 @@
+// src/app/account/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+type UUID = string;
 
-type View = {
+/* ---------- Supabase (browser) ---------- */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
+
+/* ---------- Feature flag ---------- */
+const crewOpsEnabled = () =>
+  String(process.env.NEXT_PUBLIC_CREW_OPS_ENABLED).toLowerCase() === "true";
+
+/* ---------- Crew view types ---------- */
+type AssignRow = {
+  assignment_id: UUID;
+  journey_id: UUID;
+  vehicle_id: UUID;
+  staff_id: UUID;
+  staff_user_id: UUID;
+  role_id: UUID | null;
+  status_simple: "allocated" | "confirmed" | "complete";
+  assigned_at: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+
+  // identity/timing from v_crew_assignments_min
+  first_name: string | null;
+  last_name: string | null;
+  photo_url: string | null;
+  role_label: string | null;
+  departure_ts: string | null;
+
+  // nice labels from the view
+  pickup_name: string | null;
+  destination_name: string | null;
+  vehicle_name: string | null;
+};
+
+type PaxKey = string; // `${journey_id}_${vehicle_id}`
+
+/* ---------- Booking history view types ---------- */
+type ViewHeader = {
   name: string;
   email: string;
   site_admin: boolean;
@@ -16,18 +58,13 @@ type View = {
   operator_id: string | null;
 };
 
-/** 
- * v_order_history fields (option B). Some names vary across installs,
- * so we keep them optional and normalize in render.
- */
 type HistoryRow = {
   user_id: string;
   order_id: string;
-  order_item_id?: string | null; // not present in option B; ok if null
-  booked_at: string;              // order created_at
+  order_item_id?: string | null;
+  booked_at: string;
   qty: number | null;
 
-  // amount – view may expose either line_total_cents or total_cents
   line_total_cents?: number | null;
   total_cents?: number | null;
 
@@ -35,30 +72,76 @@ type HistoryRow = {
   pickup_name: string | null;
   destination_name: string | null;
 
-  // date/time
-  departure_date: string | null;  // mapped from orders.journey_date
+  departure_date: string | null;
   pickup_time?: string | null;
 
-  // misc detail (often null in option B)
   transport_type?: string | null;
   vehicle_name?: string | null;
   operator_name?: string | null;
 
-  // status – view may forward orders.status under various names
   item_status?: string | null;
   status?: string | null;
 };
 
-function toGBP(cents?: number | null) {
-  if (cents == null) return "—";
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(
-    cents / 100
-  );
+/* ---------- Small utils ---------- */
+const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+
+async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
+  if (!sb || !pathOrUrl) return null;
+  if (isHttp(pathOrUrl)) return pathOrUrl;
+  const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
+  if (pub) return pub;
+  const { data } = await sb.storage
+    .from("images")
+    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  return data?.signedUrl ?? null;
 }
 
+function toGBP(cents?: number | null) {
+  if (cents == null) return "—";
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+  }).format(cents / 100);
+}
+
+function formatDateTime(ts?: string | null) {
+  if (!ts) return { date: "—", time: "—" };
+  const d = new Date(ts);
+  return {
+    date: d.toLocaleDateString(),
+    time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  };
+}
+
+function t24Badge(ts?: string | null) {
+  if (!ts) return "—";
+  const dep = new Date(ts).getTime();
+  const now = Date.now();
+  const diffH = (dep - now) / (1000 * 60 * 60);
+  if (diffH <= 24) return "Locked";
+  const left = Math.max(0, Math.floor(diffH - 24));
+  return `Locks in ${left}h`;
+}
+
+function statusLabel(s: AssignRow["status_simple"]) {
+  if (s === "confirmed") return "Confirmed (T-24)";
+  if (s === "allocated") return "Assigned (T-72)";
+  if (s === "complete") return "Complete";
+  return s;
+}
+
+/* ============================================================
+   Account Page — switches between Crew Dashboard and Bookings
+   ============================================================ */
 export default function AccountPage() {
-  /** ---------- ORIGINAL: account header state ---------- */
-  const [view, setView] = useState<View>({
+  const [flagCrewOps, setFlagCrewOps] = useState(false);
+  const [isCrew, setIsCrew] = useState<boolean>(false);
+  const [bootLoading, setBootLoading] = useState(true);
+  const [bootErr, setBootErr] = useState<string | null>(null);
+
+  // header bits (kept for bookings view + general)
+  const [header, setHeader] = useState<ViewHeader>({
     name: "",
     email: "",
     site_admin: false,
@@ -67,39 +150,389 @@ export default function AccountPage() {
   });
 
   useEffect(() => {
-    let off = false;
-    (async () => {
-      const { data: sRes } = await sb.auth.getSession();
-      const user = sRes?.session?.user;
-      if (!user) return;
-
-      const { data: row } = await sb
-        .from("users")
-        .select("first_name, site_admin, operator_admin, operator_id")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      const firstName =
-        row?.first_name ??
-        (user.user_metadata?.first_name as string | undefined) ??
-        (user.user_metadata?.given_name as string | undefined) ??
-        (user.email ? user.email.split("@")[0] : "") ??
-        "";
-
-      const v: View = {
-        name: firstName,
-        email: user.email ?? "",
-        site_admin: !!(row?.site_admin ?? user.user_metadata?.site_admin),
-        operator_admin: !!(row?.operator_admin ?? user.user_metadata?.operator_admin),
-        operator_id: row?.operator_id ?? null,
-      };
-      if (!off) setView(v);
-    })();
-    return () => { off = true; };
+    setFlagCrewOps(crewOpsEnabled());
   }, []);
 
-  // 👉 header cache (unchanged)
+  // Decide if user is crew (active operator_staff row)
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!sb) throw new Error("Supabase not configured");
+        const { data: sRes } = await sb.auth.getSession();
+        const user = sRes?.session?.user;
+        if (!user) {
+          setIsCrew(false);
+          setHeader({
+            name: "",
+            email: "",
+            site_admin: false,
+            operator_admin: false,
+            operator_id: null,
+          });
+          return;
+        }
+
+        // header (name/admin flags)
+        const { data: row } = await sb
+          .from("users")
+          .select("first_name, site_admin, operator_admin, operator_id")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        const firstName =
+          row?.first_name ??
+          (user.user_metadata?.first_name as string | undefined) ??
+          (user.user_metadata?.given_name as string | undefined) ??
+          (user.email ? user.email.split("@")[0] : "") ??
+          "";
+
+        setHeader({
+          name: firstName,
+          email: user.email ?? "",
+          site_admin: !!(row?.site_admin ?? user.user_metadata?.site_admin),
+          operator_admin: !!(row?.operator_admin ?? user.user_metadata?.operator_admin),
+          operator_id: row?.operator_id ?? null,
+        });
+
+        // crew?
+        const { data: staffRow } = await sb
+          .from("operator_staff")
+          .select("id, active")
+          .eq("user_id", user.id)
+          .eq("active", true)
+          .limit(1)
+          .maybeSingle();
+
+        setIsCrew(!!staffRow);
+      } catch (e: any) {
+        setBootErr(e?.message ?? String(e));
+      } finally {
+        setBootLoading(false);
+      }
+    })();
+  }, []);
+
+  if (bootLoading) return <div className="p-6">Loading…</div>;
+  if (bootErr) return <div className="p-6" style={{ color: "#dc2626" }}>{bootErr}</div>;
+
+  // If crew ops are enabled AND user is crew → Crew Dashboard; else → Bookings
+  if (flagCrewOps && isCrew) {
+    return <CrewDashboard />;
+  }
+  return <BookingHistory header={header} />;
+}
+
+/* ============================================================
+   Crew Dashboard
+   ============================================================ */
+function CrewDashboard() {
+  const [rows, setRows] = useState<AssignRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [profile, setProfile] = useState<{
+    first: string;
+    last: string;
+    role: string;
+    photo: string;
+  } | null>(null);
+
+  const [paxByKey, setPaxByKey] = useState<Record<PaxKey, number>>({});
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        if (!sb) throw new Error("Supabase not configured");
+        const { data: { user } } = await sb.auth.getUser();
+        if (!user) {
+          setErr("Please sign in.");
+          setLoading(false);
+          return;
+        }
+
+        const { data, error } = await sb
+          .from("v_crew_assignments_min")
+          .select("*")
+          .eq("staff_user_id", user.id)
+          .order("created_at", { ascending: false });
+        if (error) throw error;
+
+        const assignments = (data as AssignRow[]) ?? [];
+        setRows(assignments);
+
+        // Header profile from view, fall back to operator_staff (+role lookup)
+        let f = assignments[0]?.first_name ?? null;
+        let l = assignments[0]?.last_name ?? null;
+        let role = assignments[0]?.role_label ?? null;
+        let photoUrl = assignments[0]?.photo_url ?? null;
+
+        if (!f || !l || !role || !photoUrl) {
+          const { data: srow } = await sb
+            .from("operator_staff")
+            .select("first_name,last_name,photo_url,role_id,jobrole")
+            .eq("user_id", user.id)
+            .eq("active", true)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (srow) {
+            f = f || (srow as any).first_name;
+            l = l || (srow as any).last_name;
+            photoUrl = photoUrl || (srow as any).photo_url;
+            if (!role) {
+              if ((srow as any).role_id) {
+                const { data: r } = await sb
+                  .from("transport_type_roles")
+                  .select("role")
+                  .eq("id", (srow as any).role_id)
+                  .limit(1)
+                  .maybeSingle();
+                role = r?.role || (srow as any).jobrole || null;
+              } else {
+                role = (srow as any).jobrole || null;
+              }
+            }
+          }
+        }
+
+        const photoResolved = await resolveStorageUrl(photoUrl || null);
+        setProfile({
+          first: f?.trim() || "Crew",
+          last: l?.trim() || "Member",
+          role: role ? role.charAt(0).toUpperCase() + role.slice(1) : "Crew",
+          photo: photoResolved || "https://via.placeholder.com/80?text=Crew",
+        });
+
+        // Pax totals (limit to these journeys/vehicles to avoid scanning)
+        if (assignments.length) {
+          const jIds = Array.from(new Set(assignments.map(r => r.journey_id)));
+          const vIds = Array.from(new Set(assignments.map(r => r.vehicle_id)));
+
+          const { data: paxRows, error: paxErr } = await sb
+            .from("journey_vehicle_allocations")
+            .select("journey_id, vehicle_id, seats")
+            .in("journey_id", jIds)
+            .in("vehicle_id", vIds);
+          if (paxErr) throw paxErr;
+
+          const map: Record<PaxKey, number> = {};
+          (paxRows || []).forEach(r => {
+            const k = `${r.journey_id}_${r.vehicle_id}`;
+            map[k] = (map[k] || 0) + Number(r.seats || 0);
+          });
+          setPaxByKey(map);
+        } else {
+          setPaxByKey({});
+        }
+      } catch (e: any) {
+        setErr(e.message ?? String(e));
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const upcoming = useMemo(
+    () => rows.filter(r => r.status_simple === "allocated" || r.status_simple === "confirmed"),
+    [rows]
+  );
+  const history = useMemo(
+    () => rows.filter(r => r.status_simple === "complete"),
+    [rows]
+  );
+
+  async function act(kind: "confirm" | "decline", assignmentId: UUID) {
+    const res = await fetch(`/api/crew/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assignmentId }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      alert(txt || "Action failed");
+      return;
+    }
+    location.reload();
+  }
+
+  if (loading) return <div className="p-6">Loading…</div>;
+  if (err) return <div className="p-6" style={{ color: "#dc2626" }}>{err}</div>;
+
+  const displayName = profile ? `${profile.first} ${profile.last}`.trim() : "Crew Member";
+  const role = profile?.role ?? "Crew";
+  const avatar = profile?.photo ?? "https://via.placeholder.com/80?text=Crew";
+
+  return (
+    <div className="max-w-6xl mx-auto p-6 space-y-8">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <img src={avatar} alt="Crew photo" className="w-16 h-16 rounded-full object-cover border" />
+        <div>
+          <div className="text-xl font-semibold">{displayName}</div>
+          <div className="text-sm opacity-70">{role}</div>
+        </div>
+      </div>
+
+      {/* Upcoming */}
+      <section>
+        <h2 className="text-xl font-medium mb-2">Upcoming</h2>
+        <div className="rounded border overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50">
+              <tr>
+                <th className="text-left p-3">Pick up</th>
+                <th className="text-left p-3">Destination</th>
+                <th className="text-left p-3">Date</th>
+                <th className="text-left p-3">Time</th>
+                <th className="text-left p-3">Vehicle</th>
+                <th className="text-left p-3">Passengers</th>
+                <th className="text-left p-3">Lock</th>
+                <th className="text-left p-3">Assignment</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {upcoming.length === 0 && (
+                <tr><td className="p-4" colSpan={9}>No upcoming assignments.</td></tr>
+              )}
+              {upcoming.map((r) => {
+                const { date, time } = formatDateTime(r.departure_ts);
+                const k = `${r.journey_id}_${r.vehicle_id}`;
+                const pax = Number.isFinite(paxByKey[k]) ? paxByKey[k] : "—";
+                return (
+                  <tr key={r.assignment_id} className="border-t">
+                    <td className="p-3">{r.pickup_name ?? "—"}</td>
+                    <td className="p-3">{r.destination_name ?? "—"}</td>
+                    <td className="p-3">{date}</td>
+                    <td className="p-3">{time}</td>
+                    <td className="p-3">{r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}</td>
+                    <td className="p-3">{pax}</td>
+                    <td className="p-3">{t24Badge(r.departure_ts)}</td>
+                    <td className="p-3">{statusLabel(r.status_simple)}</td>
+                    <td className="p-3 text-right">
+                      <div className="flex gap-2 justify-end">
+                        {r.status_simple !== "confirmed" ? (
+                          <>
+                            <button
+                              onClick={() => act("confirm", r.assignment_id)}
+                              className="px-3 py-1 rounded"
+                              style={{ background: "black", color: "white" }}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => act("decline", r.assignment_id)}
+                              className="px-3 py-1 rounded border"
+                            >
+                              Decline
+                            </button>
+                          </>
+                        ) : (
+                          <a
+                            href={`/crew/manifest/${r.assignment_id}`}
+                            className="px-3 py-1 rounded border"
+                            title="View manifest"
+                          >
+                            Manifest
+                          </a>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* History */}
+      <section>
+        <h2 className="text-xl font-medium mb-2">History</h2>
+        <div className="border rounded divide-y">
+          {history.length === 0 && (
+            <div className="p-4 text-sm">No completed journeys yet.</div>
+          )}
+          {history.map((r) => (
+            <div
+              key={r.assignment_id}
+              className="p-4 grid grid-cols-1 md:grid-cols-5 gap-3 items-center"
+            >
+              <div className="md:col-span-3">
+                <div className="font-medium">
+                  {r.pickup_name ?? "—"} → {r.destination_name ?? "—"}
+                </div>
+                <div className="text-xs opacity-70">
+                  {r.departure_ts ? new Date(r.departure_ts).toLocaleString() : "—"} •{" "}
+                  {r.vehicle_name ?? `vehicle #${r.vehicle_id.slice(0, 8)}`}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs px-2 py-1 rounded bg-gray-100">complete</span>
+              </div>
+              <div className="text-xs opacity-70">Tips/Ratings: —</div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================
+   Booking History (existing behaviour for non-crew users)
+   ============================================================ */
+function BookingHistory({ header }: { header: ViewHeader }) {
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyMsg, setHistoryMsg] = useState<string | null>(null);
+
+  // simple paging
+  const [page, setPage] = useState(1);
+  const pageSize = 25;
+  const paged = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return history.slice(start, start + pageSize);
+  }, [page, history]);
+
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        if (!sb) throw new Error("Supabase not configured");
+        const { data: sRes } = await sb.auth.getSession();
+        const user = sRes?.session?.user;
+        if (!user) {
+          if (!off) {
+            setHistory([]);
+            setLoadingHistory(false);
+          }
+          return;
+        }
+        const { data, error } = await sb
+          .from("v_order_history")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("booked_at", { ascending: false });
+
+        if (error) throw error;
+        if (!off) setHistory((data as HistoryRow[]) || []);
+      } catch (e: any) {
+        if (!off) setHistoryMsg(e?.message || "Failed to load history.");
+      } finally {
+        if (!off) setLoadingHistory(false);
+      }
+    })();
+    return () => {
+      off = true;
+    };
+  }, []);
+
   async function refreshHeaderCache() {
+    if (!sb) return;
     const { data: sRes } = await sb.auth.getSession();
     const user = sRes?.session?.user;
 
@@ -131,6 +564,7 @@ export default function AccountPage() {
   }
 
   async function signOut() {
+    if (!sb) return;
     try {
       await sb.auth.signOut();
     } finally {
@@ -140,50 +574,6 @@ export default function AccountPage() {
       window.location.replace("/login");
     }
   }
-
-  /** ---------- NEW: transaction history ---------- */
-  const [history, setHistory] = useState<HistoryRow[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(true);
-  const [historyMsg, setHistoryMsg] = useState<string | null>(null);
-
-  // Optional simple paging (client-side)
-  const [page, setPage] = useState(1);
-  const pageSize = 25;
-  const paged = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return history.slice(start, start + pageSize);
-  }, [page, history]);
-
-  useEffect(() => {
-    let off = false;
-    (async () => {
-      try {
-        const { data: sRes } = await sb.auth.getSession();
-        const user = sRes?.session?.user;
-        if (!user) {
-          if (!off) {
-            setHistory([]);
-            setLoadingHistory(false);
-          }
-          return;
-        }
-        // option B exposes v_order_history; RLS is enforced by base tables
-        const { data, error } = await sb
-          .from("v_order_history")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("booked_at", { ascending: false });
-
-        if (error) throw error;
-        if (!off) setHistory((data as HistoryRow[]) || []);
-      } catch (e: any) {
-        if (!off) setHistoryMsg(e?.message || "Failed to load history.");
-      } finally {
-        if (!off) setLoadingHistory(false);
-      }
-    })();
-    return () => { off = true; };
-  }, []);
 
   function renderJourney(r: HistoryRow) {
     const legs =
@@ -209,13 +599,13 @@ export default function AccountPage() {
     <div className="p-6 space-y-6">
       <h1 className="text-xl font-semibold">Your account</h1>
 
-      {/* ORIGINAL account blurb */}
+      {/* Basic header block (unchanged) */}
       <section className="rounded border p-4">
-        <p><strong>Name:</strong> {view.name || "—"}</p>
-        <p><strong>Email:</strong> {view.email || "—"}</p>
-        <p><strong>site_admin:</strong> {String(view.site_admin)}</p>
-        <p><strong>operator_admin:</strong> {String(view.operator_admin)}</p>
-        <p><strong>operator_id:</strong> {view.operator_id ?? "—"}</p>
+        <p><strong>Name:</strong> {header.name || "—"}</p>
+        <p><strong>Email:</strong> {header.email || "—"}</p>
+        <p><strong>site_admin:</strong> {String(header.site_admin)}</p>
+        <p><strong>operator_admin:</strong> {String(header.operator_admin)}</p>
+        <p><strong>operator_id:</strong> {header.operator_id ?? "—"}</p>
       </section>
 
       <div className="flex gap-3">
@@ -227,7 +617,7 @@ export default function AccountPage() {
         </button>
       </div>
 
-      {/* NEW: Transaction history */}
+      {/* Transaction history (existing) */}
       <section className="rounded border p-4">
         <h2 className="text-lg font-semibold mb-3">Transaction History</h2>
 
@@ -244,7 +634,7 @@ export default function AccountPage() {
                   <tr>
                     <th className="text-left p-3">Booking date</th>
                     <th className="text-left p-3">Journey</th>
-                     <th className="text-left p-3">Type</th>
+                    <th className="text-left p-3">Type</th>
                     <th className="text-left p-3">Date</th>
                     <th className="text-left p-3">Seats</th>
                     <th className="text-left p-3">Amount</th>
@@ -259,10 +649,12 @@ export default function AccountPage() {
                       </td>
                       <td className="p-3">{renderJourney(r)}</td>
                       <td className="p-3">
-  {r.transport_type
-    ? r.transport_type.replace(/_/g, " ").replace(/\b\w/g, s => s.toUpperCase())
-    : "—"}
-</td>
+                        {r.transport_type
+                          ? r.transport_type
+                              .replace(/_/g, " ")
+                              .replace(/\b\w/g, (s) => s.toUpperCase())
+                          : "—"}
+                      </td>
                       <td className="p-3">
                         {r.departure_date
                           ? new Date(`${r.departure_date}T12:00:00`).toLocaleDateString("en-GB")
@@ -277,7 +669,7 @@ export default function AccountPage() {
               </table>
             </div>
 
-            {/* simple pager */}
+            {/* Pager */}
             {history.length > pageSize && (
               <div className="flex items-center gap-3 mt-3">
                 <button
