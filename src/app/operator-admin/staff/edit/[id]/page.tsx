@@ -370,17 +370,30 @@ export default function EditStaffPage() {
       return;
     }
     setVehMsg(null);
-    const [{ data: vs }, { data: rs }] = await Promise.all([
-      sb.from("vehicles").select("id,name,operator_id").eq("operator_id", opId).order("name"),
-      sb
-        .from("vehicle_staff_prefs")
-        .select("id,operator_id,vehicle_id,staff_id,priority,is_lead_eligible")
-        .eq("operator_id", opId)
-        .eq("staff_id", stId)
-        .order("priority", { ascending: true }),
-    ]);
+
+    // vehicles list is safe to read client-side
+    const { data: vs } = await sb
+      .from("vehicles")
+      .select("id,name,operator_id")
+      .eq("operator_id", opId)
+      .order("name");
+
     setVehicles((vs as VehicleRow[]) || []);
-    setRels((rs as SVA[]) || []);
+
+    // relations come from a server route (bypass RLS)
+    const res = await fetch(
+      `/api/operator/staff-vehicles?operator_id=${encodeURIComponent(opId)}&staff_id=${encodeURIComponent(
+        stId
+      )}`
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setVehMsg(body?.error || `Failed to load eligibility (${res.status})`);
+      setRels([]);
+      return;
+    }
+    const payload = (await res.json()) as SVA[];
+    setRels(payload || []);
   }
 
   useEffect(() => {
@@ -395,14 +408,24 @@ export default function EditStaffPage() {
     setVehMsg(null);
     if (relByVeh.has(addVehId)) return setVehMsg("Already assigned to this vehicle.");
     if (addPriority < 1 || addPriority > 5) return setVehMsg("Priority must be 1–5.");
-    const { error } = await sb.from("vehicle_staff_prefs").insert({
-      operator_id: operatorId,
-      vehicle_id: addVehId,
-      staff_id: stId,
-      priority: addPriority,
-      is_lead_eligible: true,
+
+    const res = await fetch("/api/operator/staff-vehicles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operator_id: operatorId,
+        vehicle_id: addVehId,
+        staff_id: stId,
+        priority: addPriority,
+        is_lead_eligible: true,
+      }),
     });
-    if (error) return setVehMsg(error.message);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Add failed (${res.status})`);
+    }
+
     setAddVehId("");
     setAddPriority(3);
     await loadEligibility(operatorId, stId);
@@ -410,21 +433,45 @@ export default function EditStaffPage() {
 
   async function updateRelPriority(id: string, next: number) {
     if (next < 1 || next > 5) return setVehMsg("Priority must be 1–5.");
-    const { error } = await sb.from("vehicle_staff_prefs").update({ priority: next }).eq("id", id);
-    if (error) return setVehMsg(error.message);
+
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: next }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Update failed (${res.status})`);
+    }
+
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, priority: next } : r)));
   }
 
   async function toggleRelEligible(id: string, cur: boolean) {
-    const { error } = await sb.from("vehicle_staff_prefs").update({ is_lead_eligible: !cur }).eq("id", id);
-    if (error) return setVehMsg(error.message);
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_lead_eligible: !cur }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Update failed (${res.status})`);
+    }
+
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r)));
   }
 
   async function removeRel(id: string) {
     if (!confirm("Remove this vehicle eligibility?")) return;
-    const { error } = await sb.from("vehicle_staff_prefs").delete().eq("id", id);
-    if (error) return setVehMsg(error.message);
+
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Delete failed (${res.status})`);
+    }
+
     setRels((prev) => prev.filter((r) => r.id !== id));
   }
 
