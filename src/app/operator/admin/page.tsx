@@ -232,6 +232,9 @@ export default function OperatorAdminJourneysPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [psLoaded, setPsLoaded] = useState(false);
 
+  // NEW: site-admin operator picker (only used if site_admin && no operator_id)
+  const [pickedOperatorId, setPickedOperatorId] = useState<UUID | "">("");
+
   useEffect(() => {
     let off = false;
     (async () => {
@@ -261,7 +264,15 @@ export default function OperatorAdminJourneysPage() {
     };
   }, []);
 
-  const operatorId = psUser?.operator_admin ? psUser?.operator_id ?? null : null;
+  // Effective operator for this page:
+  // - If the user is a normal operator admin: use their operator_id
+  // - If the user is a site admin with no bound operator_id: use the picked operator (when chosen)
+  const effectiveOperatorId: UUID | null = useMemo(() => {
+    if (!psUser?.operator_admin) return null;
+    if (psUser.operator_id) return psUser.operator_id as UUID;
+    if (psUser.site_admin) return (pickedOperatorId || null) as UUID | null;
+    return null;
+  }, [psUser, pickedOperatorId]);
 
   /* Data */
   const [loading, setLoading] = useState(true);
@@ -286,6 +297,13 @@ export default function OperatorAdminJourneysPage() {
   // Load data
   useEffect(() => {
     if (!psLoaded) return;
+
+    // If this is a site admin with no operator chosen yet, wait until one is picked
+    if (psUser?.site_admin && !psUser?.operator_id && !pickedOperatorId) {
+      setLoading(false);
+      return;
+    }
+
     let off = false;
     (async () => {
       if (!sb) {
@@ -378,12 +396,12 @@ export default function OperatorAdminJourneysPage() {
           setLocksByJourney(new Map());
         }
 
-        // crew/staff for this operator (alphabetical)
-        if (operatorId) {
+        // crew/staff for the effective operator (alphabetical)
+        if (effectiveOperatorId) {
           const { data: sData } = await sb
             .from("operator_staff")
             .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
-            .eq("operator_id", operatorId)
+            .eq("operator_id", effectiveOperatorId)
             .eq("active", true);
 
           const srows = ((sData as StaffRow[]) ?? []).slice();
@@ -422,7 +440,7 @@ export default function OperatorAdminJourneysPage() {
     return () => {
       off = true;
     };
-  }, [psLoaded, operatorId]);
+  }, [psLoaded, psUser, pickedOperatorId, effectiveOperatorId]);
 
   /* ---------------- Lookups ---------------- */
   const routeById = useMemo(() => {
@@ -490,7 +508,7 @@ export default function OperatorAdminJourneysPage() {
   };
 
   const rows: UiRow[] = useMemo(() => {
-    if (!(journeys ?? []).length || !operatorId) return [];
+    if (!(journeys ?? []).length || !effectiveOperatorId) return [];
 
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders ?? []) {
@@ -551,7 +569,7 @@ export default function OperatorAdminJourneysPage() {
         }
         for (const [vehId, seats] of seatsByVeh.entries()) {
           const v = vehicleById.get(vehId);
-          if (!v || v.operator_id !== operatorId) continue;
+          if (!v || v.operator_id !== effectiveOperatorId) continue;
           const groups = (grouped.get(vehId) || []).sort((a, b) => b - a);
           groupsByBoat.set(vehId, groups);
           dbTotal += seats;
@@ -570,7 +588,7 @@ export default function OperatorAdminJourneysPage() {
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
             operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
-            db: seats,
+            db,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
             preferred: !!rvaArr.find?.((x) => x.vehicle_id === vehId)?.preferred,
@@ -587,7 +605,7 @@ export default function OperatorAdminJourneysPage() {
       } else {
         for (const b of allBoatsForJourney) {
           const v = vehicleById.get(b.vehicle_id);
-          if (!v || v.operator_id !== operatorId) continue;
+          if (!v || v.operator_id !== effectiveOperatorId) continue;
 
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
@@ -632,6 +650,7 @@ export default function OperatorAdminJourneysPage() {
         }
       }
 
+      // compute canRemove (same as before)
       const computeRemove = (vehId: UUID): { ok: boolean; reason?: string } => {
         if (horizon === "T24" || horizon === "past") return { ok: false, reason: "Locked at T-24" };
         if (horizon === ">72h") return { ok: true };
@@ -642,7 +661,7 @@ export default function OperatorAdminJourneysPage() {
         const myOtherBoats: Boat[] = (allBoatsForJourney ?? [])
           .map((b) => {
             const v = vehicleById.get(b.vehicle_id);
-            return !v || v.operator_id !== operatorId || b.vehicle_id === vehId ? null : b;
+            return !v || v.operator_id !== effectiveOperatorId || b.vehicle_id === vehId ? null : b;
           })
           .filter(Boolean) as Boat[];
         if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
@@ -675,7 +694,7 @@ export default function OperatorAdminJourneysPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-      // --- skip journeys with zero demand for this operator ---
+      // Skip journeys with zero demand for this operator
       const hasAnyInterest =
         perBoatDecorated.length > 0 &&
         perBoatDecorated.some((b) => (b.db ?? 0) > 0 || (b.groups?.length ?? 0) > 0);
@@ -715,7 +734,7 @@ export default function OperatorAdminJourneysPage() {
     routes,
     pickups,
     destinations,
-    operatorId,
+    effectiveOperatorId,
     locksByJourney,
     operators,
     assigns,
@@ -835,29 +854,56 @@ export default function OperatorAdminJourneysPage() {
   }
 
   const lockedOperatorName =
-    psUser?.operator_admin && psUser?.operator_id
-      ? psUser?.operator_name ||
-        (operators?.find?.((o) => o.id === psUser.operator_id)?.name ?? psUser.operator_id)
+    effectiveOperatorId
+      ? operators?.find?.((o) => o.id === effectiveOperatorId)?.name ?? effectiveOperatorId
       : "";
 
   /* ---------------- Render ---------------- */
+  const siteAdminNeedsPick = psLoaded && psUser?.site_admin && !psUser?.operator_id && !pickedOperatorId;
+
   return (
     <div className="px-6 py-8 mx-auto max-w-[1200px] space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-semibold">Operator Admin — Live Journeys</h1>
           <p className="text-neutral-600 text-lg">
-            You’re seeing <strong>only your boats</strong>. Manifest matches the site admin view.
+            You’re seeing <strong>only the selected operator’s boats</strong>. Manifest matches the site admin view.
           </p>
         </div>
-        <div className="text-sm text-neutral-600">
-          {lockedOperatorName || (psUser?.operator_admin ? psUser?.operator_id : "")}
-        </div>
+
+        {/* Right side: operator indicator or picker */}
+        {psUser?.site_admin && !psUser?.operator_id ? (
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-neutral-700">Operator:</label>
+            <select
+              className="border rounded-lg px-2 py-1 text-sm"
+              value={pickedOperatorId}
+              onChange={(e) => setPickedOperatorId((e.target.value || "") as UUID | "")}
+            >
+              <option value="">Select an operator…</option>
+              {operators.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name || o.id}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="text-sm text-neutral-600">{lockedOperatorName}</div>
+        )}
       </header>
 
-      {psLoaded && !operatorId && (
+      {/* Show message only for non-operator users (not site admins picking) */}
+      {psLoaded && !effectiveOperatorId && !psUser?.site_admin && (
         <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-lg">
           No operator_id found for this login.
+        </div>
+      )}
+
+      {/* Site admin hint when no operator picked */}
+      {siteAdminNeedsPick && (
+        <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 text-amber-800">
+          Select an operator to view and assign crews for their boats.
         </div>
       )}
 
@@ -867,9 +913,13 @@ export default function OperatorAdminJourneysPage() {
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
+      ) : !effectiveOperatorId ? (
+        <div className="p-4 border rounded-xl bg-white shadow">
+          Pick an operator to begin.
+        </div>
       ) : rows.length === 0 ? (
         <div className="p-4 border rounded-xl bg-white shadow">
-          No upcoming journeys for your vehicles.
+          No upcoming journeys for this operator’s vehicles.
         </div>
       ) : (
         <div className="space-y-6">
@@ -1036,13 +1086,15 @@ export default function OperatorAdminJourneysPage() {
                                       assigning === key ||
                                       (!selected && eligibleStaff.length !== 1)
                                     }
-                                    onClick={async () => {
-                                      const chosen =
+                                    onClick={() =>
+                                      onAssign(
+                                        row.journey.id,
+                                        b.vehicle_id,
                                         (eligibleStaff.length === 1 && !selected
-                                          ? (eligibleStaff[0]?.id as UUID | undefined)
-                                          : (selected as UUID | undefined)) ?? undefined;
-                                      await onAssign(row.journey.id, b.vehicle_id, chosen);
-                                    }}
+                                          ? eligibleStaff[0]?.id
+                                          : selected) as UUID | undefined
+                                      )
+                                    }
                                   >
                                     {assigning === key ? "Assigning…" : "Assign"}
                                   </button>
