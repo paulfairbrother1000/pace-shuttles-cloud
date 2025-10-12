@@ -1,6 +1,7 @@
 // src/app/api/ops/assign/crew/route.ts
 import { NextResponse } from "next/server";
 import { sbServer, resolveStaffIfNeeded, refreshCrewView, rpcAssign, UUID } from "../_util";
+import { sbServer, resolveStaffIfNeeded, refreshCrewView, rpcAssign, UUID, mapRpcError } from "../_util";
 
 export async function POST(req: Request) {
   try {
