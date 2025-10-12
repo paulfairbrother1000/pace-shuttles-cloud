@@ -4,6 +4,14 @@ import { useRouter, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+const sb = createBrowserClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+// DEBUG ONLY: expose to console so we can inspect the JWT/session
+;(globalThis as any).sb = sb;
+
+
 /* ---------- Supabase ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
