@@ -12,7 +12,8 @@ import {
   rpcAssign,
   mapRpcError,
   UUID,
-} from "../_util.ts"; // one level up from /crew/
+} from "../_util"; // ⟵ remove ".ts"
+
 
 
 export async function POST(req: Request) {
