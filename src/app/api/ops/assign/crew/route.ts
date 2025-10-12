@@ -1,13 +1,19 @@
 // src/app/api/ops/assign/crew/route.ts
 import { NextResponse } from "next/server";
+// src/app/api/ops/assign/crew/route.ts
 import {
   sbServer,
+  ok,
+  fail,
+  readJson,
+  requireMethod,
   resolveStaffIfNeeded,
   refreshCrewView,
   rpcAssign,
-  UUID,
   mapRpcError,
-} from "../_util";
+  UUID,
+} from "../_util.ts"; // one level up from /crew/
+
 
 export async function POST(req: Request) {
   try {
