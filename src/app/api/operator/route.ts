@@ -1,15 +1,19 @@
 // src/app/api/operator/route.ts
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+import { supabaseService } from "@/lib/supabaseServer";
+
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
-
-import { NextResponse } from "next/server";
-import { sbAdmin } from "@/lib/supabaseServer";
-
-export async function POST(req: Request) {
+/**
+ * POST /api/operator
+ * Creates an operator_staff row (service key bypasses RLS).
+ */
+export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
+
     const payload = {
       operator_id: b.operator_id,
       type_id: b.type_id ?? null,
@@ -24,37 +28,51 @@ export async function POST(req: Request) {
       notes: b.notes ?? null,
       photo_url: b.photo_url ?? null,
     };
-    const { data, error } = await sbAdmin.from("operator_staff").insert(payload).select("id").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+    const db = supabaseService();
+    const { data, error } = await db
+      .from("operator_staff")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return NextResponse.json({ id: data!.id });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? "Bad Request" }, { status: 400 });
+    return NextResponse.json({ error: e?.message ?? "Bad Request" }, { status: 400 });
   }
 }
 
+/**
+ * GET /api/operator
+ * Example payload that joins journeys with bookings and passengers.
+ * Adjust table/view names if yours differ.
+ */
+export async function GET(_req: NextRequest) {
+  const db = supabaseService();
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY!; // service role
-
-export async function GET() {
-  const db = createClient(url, key, { auth: { persistSession: false } });
-
-  // 1) journeys with vehicle etc — (whatever you had before)
+  // 1) Journeys (replace source name if different in your schema)
   const { data: journeys, error: jErr } = await db
-    .from("journeys_with_vehicle") // or your existing source
+    .from("journeys_with_vehicle")
     .select("*")
     .order("departure_ts", { ascending: true });
 
-  if (jErr) return NextResponse.json({ error: jErr.message }, { status: 500 });
+  if (jErr) {
+    return NextResponse.json({ error: jErr.message }, { status: 500 });
+  }
 
-  // 2) bookings + passengers from the VIEW
+  // 2) Bookings + passengers (replace view name if different)
   const { data: rows, error: bErr } = await db
     .from("operator_bookings_with_pax")
     .select("booking_id, journey_id, vehicle_name, seats, pax");
 
-  if (bErr) return NextResponse.json({ error: bErr.message }, { status: 500 });
+  if (bErr) {
+    return NextResponse.json({ error: bErr.message }, { status: 500 });
+  }
 
-  // group bookings by journey_id and attach to journeys
+  // Group bookings by journey_id and attach to journeys list
   const byJourney = new Map<string, any[]>();
   for (const r of rows || []) {
     const list = byJourney.get(r.journey_id) ?? [];
@@ -62,7 +80,7 @@ export async function GET() {
       id: r.booking_id,
       vehicle_name: r.vehicle_name,
       seats: r.seats,
-      passengers: r.pax ?? [], // <-- expose passengers to UI
+      passengers: r.pax ?? [],
     });
     byJourney.set(r.journey_id, list);
   }
@@ -75,4 +93,6 @@ export async function GET() {
   return NextResponse.json({ journeys: out });
 }
 
-export {};
+export async function OPTIONS() {
+  return NextResponse.json({ ok: true });
+}
