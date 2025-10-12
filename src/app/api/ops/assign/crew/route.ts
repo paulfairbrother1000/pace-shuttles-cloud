@@ -1,7 +1,13 @@
 // src/app/api/ops/assign/crew/route.ts
 import { NextResponse } from "next/server";
-import { sbServer, resolveStaffIfNeeded, refreshCrewView, rpcAssign, UUID } from "../_util";
-import { sbServer, resolveStaffIfNeeded, refreshCrewView, rpcAssign, UUID, mapRpcError } from "../_util";
+import {
+  sbServer,
+  resolveStaffIfNeeded,
+  refreshCrewView,
+  rpcAssign,
+  UUID,
+  mapRpcError,
+} from "../_util";
 
 export async function POST(req: Request) {
   try {
@@ -10,7 +16,7 @@ export async function POST(req: Request) {
         journey_id?: UUID;
         staff_id?: UUID | null;
         vehicle_id?: UUID | null;
-        role_id?: UUID | null; // pass a specific crew role_id if you enforce per-role uniqueness
+        role_id?: UUID | null;
       };
 
     if (!journey_id) {
@@ -26,8 +32,9 @@ export async function POST(req: Request) {
       p_vehicle_id: vehicle_id,
       p_role_id: role_id,
     });
+
     if (error) {
-      const mapped = (await import("../_util")).mapRpcError(error);
+      const mapped = mapRpcError(error);
       return NextResponse.json(mapped.body, { status: mapped.code || status || 400 });
     }
 

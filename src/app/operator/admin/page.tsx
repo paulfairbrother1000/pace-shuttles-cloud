@@ -675,20 +675,11 @@ export default function OperatorAdminJourneysPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-
-// after: const perBoatDecorated = perBoat.map(...).sort(...);
-
-// --- NEW: skip journeys with zero demand for this operator ---
-const hasAnyInterest =
-  perBoatDecorated.length > 0 &&
-  perBoatDecorated.some(b => (b.db ?? 0) > 0 || (b.groups?.length ?? 0) > 0);
-
-if (!hasAnyInterest) {
-  // nothing for this operator on this journey — skip it
-  continue;
-}
-
-
+      // --- skip journeys with zero demand for this operator ---
+      const hasAnyInterest =
+        perBoatDecorated.length > 0 &&
+        perBoatDecorated.some((b) => (b.db ?? 0) > 0 || (b.groups?.length ?? 0) > 0);
+      if (!hasAnyInterest) continue;
 
       out.push({
         journey: j,
@@ -841,7 +832,7 @@ if (!hasAnyInterest) {
 
   function assigneeName(b: UiBoat) {
     return b.assignee?.name ?? null;
-    }
+  }
 
   const lockedOperatorName =
     psUser?.operator_admin && psUser?.operator_id
@@ -1045,15 +1036,13 @@ if (!hasAnyInterest) {
                                       assigning === key ||
                                       (!selected && eligibleStaff.length !== 1)
                                     }
-                                    onClick={() =>
-                                      onAssign(
-                                        row.journey.id,
-                                        b.vehicle_id,
+                                    onClick={async () => {
+                                      const chosen =
                                         (eligibleStaff.length === 1 && !selected
-                                          ? eligibleStaff[0]?.id
-                                          : selected) as UUID | undefined
-                                      )
-                                    }
+                                          ? (eligibleStaff[0]?.id as UUID | undefined)
+                                          : (selected as UUID | undefined)) ?? undefined;
+                                      await onAssign(row.journey.id, b.vehicle_id, chosen);
+                                    }}
                                   >
                                     {assigning === key ? "Assigning…" : "Assign"}
                                   </button>
