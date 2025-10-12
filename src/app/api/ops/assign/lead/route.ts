@@ -5,7 +5,6 @@ import { createServerClient } from "@supabase/ssr";
 
 type UUID = string;
 
-/** Server-side Supabase using caller's session (RLS respected) */
 function sbServer() {
   const cookieStore = cookies();
   return createServerClient(
@@ -13,10 +12,7 @@ function sbServer() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-        // set/remove are optional in route handlers, but harmless:
+        get: (k: string) => cookieStore.get(k)?.value,
         set() {},
         remove() {},
       },
@@ -25,126 +21,110 @@ function sbServer() {
 }
 
 /**
- * Assign (or reassign) a lead (CAPTAIN) to a journey+vehicle.
- * Body: { journey_id: UUID, vehicle_id: UUID, staff_id?: UUID }
- * If staff_id is omitted, we pick the first eligible active non-crew staff
- * for the vehicle’s operator.
+ * If staff_id is missing, try to pick a suitable staff member for the vehicle's operator.
+ * Criteria: operator match, active=true, jobrole != 'crew' (case-insensitive), first match.
  */
+async function resolveStaffIfNeeded(
+  sb: ReturnType<typeof sbServer>,
+  vehicle_id?: UUID | null,
+  staff_id?: UUID | null
+): Promise<UUID> {
+  if (staff_id) return staff_id;
+  if (!vehicle_id) {
+    throw new Error("staff_id is missing and vehicle_id not provided to resolve staff");
+  }
+
+  const { data: vehicle, error: vehErr } = await sb
+    .from("vehicles")
+    .select("operator_id")
+    .eq("id", vehicle_id)
+    .maybeSingle();
+
+  if (vehErr) throw new Error(vehErr.message || "Vehicle lookup failed");
+  if (!vehicle?.operator_id) throw new Error("Vehicle has no operator_id");
+
+  const { data: staffRows, error: stErr } = await sb
+    .from("operator_staff")
+    .select("id, active, jobrole")
+    .eq("operator_id", vehicle.operator_id)
+    .eq("active", true);
+
+  if (stErr) throw new Error(stErr.message || "Staff lookup failed");
+
+  const chosen = (staffRows ?? []).find(
+    (s: any) => String(s?.jobrole ?? "").toLowerCase() !== "crew"
+  )?.id as UUID | undefined;
+
+  if (!chosen) throw new Error("No eligible staff found for this operator");
+  return chosen;
+}
+
 export async function POST(req: Request) {
   try {
-    const { journey_id, vehicle_id, staff_id } = (await req.json()) as {
+    const {
+      journey_id,
+      staff_id = null,
+      vehicle_id = null,
+      role_id = null,
+    } = (await req.json()) as {
       journey_id?: UUID;
-      vehicle_id?: UUID;
-      staff_id?: UUID;
+      staff_id?: UUID | null;
+      vehicle_id?: UUID | null;
+      role_id?: UUID | null;
     };
 
-    if (!journey_id || !vehicle_id) {
-      return NextResponse.json({ error: "Missing journey_id or vehicle_id" }, { status: 400 });
+    if (!journey_id) {
+      return NextResponse.json({ error: "journey_id is required" }, { status: 400 });
     }
 
     const sb = sbServer();
 
-    // Resolve staff if not provided: restrict to the vehicle's operator, active, and not "crew"
-    let chosen: UUID | undefined = staff_id;
-    if (!chosen) {
-      const { data: vehRow, error: vehErr } = await sb
-        .from("vehicles")
-        .select("operator_id")
-        .eq("id", vehicle_id)
-        .maybeSingle();
-
-      if (vehErr || !vehRow?.operator_id) {
-        return NextResponse.json(
-          { error: "Vehicle not found or missing operator_id" },
-          { status: 422 }
-        );
-      }
-
-      const { data: staffRows, error: stErr } = await sb
-        .from("operator_staff")
-        .select("id, active, jobrole")
-        .eq("operator_id", vehRow.operator_id)
-        .eq("active", true);
-
-      if (stErr) {
-        return NextResponse.json({ error: stErr.message || "Staff lookup failed" }, { status: 500 });
-      }
-
-      chosen = (staffRows || []).find(
-        (s: any) => (s.jobrole || "").toLowerCase() !== "crew"
-      )?.id as UUID | undefined;
-
-      if (!chosen) {
-        return NextResponse.json(
-          { error: "No eligible staff found for this operator" },
-          { status: 422 }
-        );
-      }
+    // Resolve staff if not provided
+    let chosenStaff: UUID;
+    try {
+      chosenStaff = await resolveStaffIfNeeded(sb, vehicle_id, staff_id);
+    } catch (e: any) {
+      return NextResponse.json({ error: e?.message ?? "Unable to resolve staff" }, { status: 422 });
     }
 
-    // Secure write via RPC: api_upsert_crew_assignment(journey, vehicle, staff, 'CAPTAIN')
-    const { data: rpcData, error: rpcErr, status: rpcStatus } = await sb.rpc(
-      "api_upsert_crew_assignment",
-      {
-        p_journey_id: journey_id,
-        p_vehicle_id: vehicle_id,
-        p_staff_id: chosen,
-        p_role_code: "CAPTAIN",
-      }
-    );
+    // Call DB RPC to assign (inserts a row with status_simple default 'allocated')
+    const { data: assignment, error: rpcErr, status } = await sb.rpc("ops_assign_lead", {
+      p_journey_id: journey_id,
+      p_staff_id: chosenStaff,
+      p_vehicle_id: vehicle_id,
+      p_role_id: role_id, // may be null if you don't use role_ids
+    });
 
     if (rpcErr) {
-      // Normalise common DB errors into HTTP responses
       const msg = rpcErr.message || "RPC failed";
-      const code = (rpcErr as any).code as string | undefined;
-
-      // Unique violation: captain already assigned on this journey+vehicle
-      if (code === "23505" || /jca_one_captain_per_jv/i.test(msg) || /Only one lead/i.test(msg)) {
-        return NextResponse.json({ error: "Lead already assigned" }, { status: 409 });
-      }
-
-      // Auth/permission style errors surfaced from the function
-      if (/unauthorised|forbidden|permission/i.test(msg)) {
+      if (/permission|rls|forbidden|unauthor/i.test(msg)) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
-
-      // Validation style errors
-      if (/invalid|not found|eligible|operator/i.test(msg)) {
-        return NextResponse.json({ error: msg }, { status: 422 });
+      if (/unique|duplicate|already|only one/i.test(msg)) {
+        return NextResponse.json({ error: "Lead already assigned" }, { status: 409 });
       }
-
-      // Fallback
-      return NextResponse.json({ error: msg }, { status: rpcStatus || 500 });
+      return NextResponse.json({ error: msg }, { status: status || 400 });
     }
 
-    // Try to extract the assignment_id if the function returns it
-    const assignment_id: string | undefined =
-      (Array.isArray(rpcData) ? rpcData?.[0]?.assignment_id : (rpcData as any)?.assignment_id) ??
-      undefined;
+    // Optional: try to refresh a compact view for the UI; ignore errors
+    let view: any[] = [];
+    try {
+      const { data: vrows, error: vErr } = await sb
+        .from("v_crew_assignments_min")
+        .select(
+          "assignment_id, journey_id, vehicle_id, staff_id, role_label, first_name, last_name, status_simple, is_lead"
+        )
+        .eq("journey_id", journey_id);
 
-    // Return a minimal refreshed view row so UI updates cleanly
-    const { data: vrows, error: vErr } = await sb
-      .from("v_crew_assignments_min")
-      .select(
-        "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-      )
-      .eq("journey_id", journey_id)
-      .eq("vehicle_id", vehicle_id);
-
-    if (vErr) {
-      // Non-fatal; still return ok=true with rpc result
-      return NextResponse.json({
-        ok: true,
-        assignment_id,
-        view: [],
-        note: "Assigned, but failed to refresh view",
-      });
+      if (!vErr && Array.isArray(vrows)) view = vrows;
+    } catch {
+      // view not present; ignore
     }
 
     return NextResponse.json({
       ok: true,
-      assignment_id,
-      view: vrows || [],
+      assignment, // full journey_assignments row from RPC
+      view,       // optional UI convenience
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
