@@ -1,6 +1,48 @@
 // src/app/api/ops/assign/_util.ts
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+// src/app/api/ops/assign/_util.ts
+import { NextResponse } from "next/server";
+
+/** JSON helpers */
+export const json = (data: any, init?: number | ResponseInit) =>
+  NextResponse.json(
+    data,
+    typeof init === "number" ? { status: init } : init
+  );
+
+export const ok = (data: any = { ok: true }, init?: number | ResponseInit) =>
+  json(data, init);
+
+export const fail = (message: string, status = 400) =>
+  json({ error: message }, { status });
+
+export const badRequest = (message = "Bad request") => fail(message, 400);
+export const unauthorized = (message = "Unauthorized") => fail(message, 401);
+export const forbidden = (message = "Forbidden") => fail(message, 403);
+export const notFound = (message = "Not found") => fail(message, 404);
+export const methodNotAllowed = (message = "Method Not Allowed") => fail(message, 405);
+
+/** Guard a specific method in a Route Handler */
+export function requireMethod(req: Request, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+  if (req.method !== method) return methodNotAllowed();
+  return null;
+}
+
+/** Safe body parse */
+export async function readJson<T = any>(req: Request): Promise<T> {
+  try {
+    return (await req.json()) as T;
+  } catch {
+    throw new Error("Invalid JSON body");
+  }
+}
+
+/** Simple UUID check (optional) */
+export function isUUID(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
 
 export type UUID = string;
 
