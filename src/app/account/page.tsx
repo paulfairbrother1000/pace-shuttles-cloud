@@ -18,8 +18,17 @@ const sb =
     : null;
 
 /* ---------- Feature flag ---------- */
-const crewOpsEnabled = () =>
-  String(process.env.NEXT_PUBLIC_CREW_OPS_ENABLED).toLowerCase() === "true";
+function crewOpsEnabled() {
+  return String(process.env.NEXT_PUBLIC_CREW_OPS_ENABLED).toLowerCase() === "true";
+}
+
+/* ---------- Identity (RPC) ---------- */
+type Identity = {
+  isCrew: boolean;
+  staffId: string | null;
+  operatorId: string | null;
+  roleLabel: string | null;
+};
 
 /* ---------- Crew view types ---------- */
 type AssignRow = {
@@ -41,7 +50,7 @@ type AssignRow = {
   role_label: string | null;
   departure_ts: string | null;
 
-  // nice labels from the view
+  // labels from the view
   pickup_name: string | null;
   destination_name: string | null;
   vehicle_name: string | null;
@@ -132,101 +141,60 @@ function statusLabel(s: AssignRow["status_simple"]) {
 }
 
 /* ============================================================
-   Account Page — switches between Crew Dashboard and Bookings
+   DEFAULT EXPORT — Router: Crew Dashboard vs Booking History
    ============================================================ */
 export default function AccountPage() {
-  const [flagCrewOps, setFlagCrewOps] = useState(false);
-  const [isCrew, setIsCrew] = useState<boolean>(false);
-  const [bootLoading, setBootLoading] = useState(true);
-  const [bootErr, setBootErr] = useState<string | null>(null);
+  const [ident, setIdent] = useState<Identity | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
-  // header bits (kept for bookings view + general)
-  const [header, setHeader] = useState<ViewHeader>({
-    name: "",
-    email: "",
-    site_admin: false,
-    operator_admin: false,
-    operator_id: null,
-  });
-
-  useEffect(() => {
-    setFlagCrewOps(crewOpsEnabled());
-  }, []);
-
-  // Decide if user is crew (active operator_staff row)
   useEffect(() => {
     (async () => {
       try {
         if (!sb) throw new Error("Supabase not configured");
+        setLoading(true);
+        setErr(null);
+
+        // Ensure session
         const { data: sRes } = await sb.auth.getSession();
         const user = sRes?.session?.user;
         if (!user) {
-          setIsCrew(false);
-          setHeader({
-            name: "",
-            email: "",
-            site_admin: false,
-            operator_admin: false,
-            operator_id: null,
-          });
+          setIdent({ isCrew: false, staffId: null, operatorId: null, roleLabel: null });
           return;
         }
 
-        // header (name/admin flags)
-        const { data: row } = await sb
-          .from("users")
-          .select("first_name, site_admin, operator_admin, operator_id")
-          .eq("id", user.id)
-          .maybeSingle();
+        // Call your RPC to resolve crew identity
+        const { data, error } = await sb.rpc("get_current_identity");
+        if (error) throw error;
 
-        const firstName =
-          row?.first_name ??
-          (user.user_metadata?.first_name as string | undefined) ??
-          (user.user_metadata?.given_name as string | undefined) ??
-          (user.email ? user.email.split("@")[0] : "") ??
-          "";
-
-        setHeader({
-          name: firstName,
-          email: user.email ?? "",
-          site_admin: !!(row?.site_admin ?? user.user_metadata?.site_admin),
-          operator_admin: !!(row?.operator_admin ?? user.user_metadata?.operator_admin),
-          operator_id: row?.operator_id ?? null,
+        const row = Array.isArray(data) ? data[0] : data;
+        setIdent({
+          isCrew: !!row?.is_crew,
+          staffId: row?.staff_id ?? null,
+          operatorId: row?.operator_id ?? null,
+          roleLabel: row?.role ?? null,
         });
-
-        // crew?
-        const { data: staffRow } = await sb
-          .from("operator_staff")
-          .select("id, active")
-          .eq("user_id", user.id)
-          .eq("active", true)
-          .limit(1)
-          .maybeSingle();
-
-        setIsCrew(!!staffRow);
       } catch (e: any) {
-        setBootErr(e?.message ?? String(e));
+        setErr(e?.message ?? "Failed to load identity");
+        setIdent({ isCrew: false, staffId: null, operatorId: null, roleLabel: null });
       } finally {
-        setBootLoading(false);
+        setLoading(false);
       }
     })();
   }, []);
 
-  if (bootLoading) return <div className="p-6">Loading…</div>;
-  if (bootErr) return <div className="p-6" style={{ color: "#dc2626" }}>{bootErr}</div>;
+  if (loading) return <div className="p-6">Loading…</div>;
+  if (err) return <div className="p-6 text-red-600">{err}</div>;
 
-  // If crew ops are enabled AND user is crew → Crew Dashboard; else → Bookings
-  if (flagCrewOps && isCrew) {
-    return <CrewDashboard />;
-  }
-  return <BookingHistory header={header} />;
+  const showCrew = crewOpsEnabled() && !!ident?.isCrew;
+  return showCrew ? <CrewDashboard /> : <BookingHistory />;
 }
 
 /* ============================================================
    Crew Dashboard
    ============================================================ */
 function CrewDashboard() {
-  const [rows, setRows] = useState<AssignRow[]>([]);
+  const [rows, setRows] = useState(/** @type {AssignRow[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -306,10 +274,10 @@ function CrewDashboard() {
           photo: photoResolved || "https://via.placeholder.com/80?text=Crew",
         });
 
-        // Pax totals (limit to these journeys/vehicles to avoid scanning)
+        // Pax totals (limited to these journeys/vehicles)
         if (assignments.length) {
-          const jIds = Array.from(new Set(assignments.map(r => r.journey_id)));
-          const vIds = Array.from(new Set(assignments.map(r => r.vehicle_id)));
+          const jIds = Array.from(new Set(assignments.map((r) => r.journey_id)));
+          const vIds = Array.from(new Set(assignments.map((r) => r.vehicle_id)));
 
           const { data: paxRows, error: paxErr } = await sb
             .from("journey_vehicle_allocations")
@@ -319,7 +287,7 @@ function CrewDashboard() {
           if (paxErr) throw paxErr;
 
           const map: Record<PaxKey, number> = {};
-          (paxRows || []).forEach(r => {
+          (paxRows || []).forEach((r) => {
             const k = `${r.journey_id}_${r.vehicle_id}`;
             map[k] = (map[k] || 0) + Number(r.seats || 0);
           });
@@ -336,11 +304,11 @@ function CrewDashboard() {
   }, []);
 
   const upcoming = useMemo(
-    () => rows.filter(r => r.status_simple === "allocated" || r.status_simple === "confirmed"),
+    () => rows.filter((r) => r.status_simple === "allocated" || r.status_simple === "confirmed"),
     [rows]
   );
   const history = useMemo(
-    () => rows.filter(r => r.status_simple === "complete"),
+    () => rows.filter((r) => r.status_simple === "complete"),
     [rows]
   );
 
@@ -396,7 +364,11 @@ function CrewDashboard() {
             </thead>
             <tbody>
               {upcoming.length === 0 && (
-                <tr><td className="p-4" colSpan={9}>No upcoming assignments.</td></tr>
+                <tr>
+                  <td className="p-4" colSpan={9}>
+                    No upcoming assignments.
+                  </td>
+                </tr>
               )}
               {upcoming.map((r) => {
                 const { date, time } = formatDateTime(r.departure_ts);
@@ -408,7 +380,9 @@ function CrewDashboard() {
                     <td className="p-3">{r.destination_name ?? "—"}</td>
                     <td className="p-3">{date}</td>
                     <td className="p-3">{time}</td>
-                    <td className="p-3">{r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}</td>
+                    <td className="p-3">
+                      {r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}
+                    </td>
                     <td className="p-3">{pax}</td>
                     <td className="p-3">{t24Badge(r.departure_ts)}</td>
                     <td className="p-3">{statusLabel(r.status_simple)}</td>
@@ -483,9 +457,17 @@ function CrewDashboard() {
 }
 
 /* ============================================================
-   Booking History (existing behaviour for non-crew users)
+   Booking History (for non-crew users)
    ============================================================ */
-function BookingHistory({ header }: { header: ViewHeader }) {
+function BookingHistory() {
+  const [header, setHeader] = useState<ViewHeader>({
+    name: "",
+    email: "",
+    site_admin: false,
+    operator_admin: false,
+    operator_id: null,
+  });
+
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyMsg, setHistoryMsg] = useState<string | null>(null);
@@ -498,6 +480,7 @@ function BookingHistory({ header }: { header: ViewHeader }) {
     return history.slice(start, start + pageSize);
   }, [page, history]);
 
+  // Header + history load
   useEffect(() => {
     let off = false;
     (async () => {
@@ -505,21 +488,45 @@ function BookingHistory({ header }: { header: ViewHeader }) {
         if (!sb) throw new Error("Supabase not configured");
         const { data: sRes } = await sb.auth.getSession();
         const user = sRes?.session?.user;
-        if (!user) {
+
+        if (user) {
+          // header
+          const { data: row } = await sb
+            .from("users")
+            .select("first_name, site_admin, operator_admin, operator_id")
+            .eq("id", user.id)
+            .maybeSingle();
+
+          const firstName =
+            row?.first_name ??
+            (user.user_metadata?.first_name as string | undefined) ??
+            (user.user_metadata?.given_name as string | undefined) ??
+            (user.email ? user.email.split("@")[0] : "") ??
+            "";
+
+          if (!off)
+            setHeader({
+              name: firstName,
+              email: user.email ?? "",
+              site_admin: !!(row?.site_admin ?? user.user_metadata?.site_admin),
+              operator_admin: !!(row?.operator_admin ?? user.user_metadata?.operator_admin),
+              operator_id: row?.operator_id ?? null,
+            });
+
+          // history
+          const { data, error } = await sb
+            .from("v_order_history")
+            .select("*")
+            .eq("user_id", user.id)
+            .order("booked_at", { ascending: false });
+
+          if (error) throw error;
+          if (!off) setHistory((data as HistoryRow[]) || []);
+        } else {
           if (!off) {
             setHistory([]);
-            setLoadingHistory(false);
           }
-          return;
         }
-        const { data, error } = await sb
-          .from("v_order_history")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("booked_at", { ascending: false });
-
-        if (error) throw error;
-        if (!off) setHistory((data as HistoryRow[]) || []);
       } catch (e: any) {
         if (!off) setHistoryMsg(e?.message || "Failed to load history.");
       } finally {
@@ -599,13 +606,23 @@ function BookingHistory({ header }: { header: ViewHeader }) {
     <div className="p-6 space-y-6">
       <h1 className="text-xl font-semibold">Your account</h1>
 
-      {/* Basic header block (unchanged) */}
+      {/* Header */}
       <section className="rounded border p-4">
-        <p><strong>Name:</strong> {header.name || "—"}</p>
-        <p><strong>Email:</strong> {header.email || "—"}</p>
-        <p><strong>site_admin:</strong> {String(header.site_admin)}</p>
-        <p><strong>operator_admin:</strong> {String(header.operator_admin)}</p>
-        <p><strong>operator_id:</strong> {header.operator_id ?? "—"}</p>
+        <p>
+          <strong>Name:</strong> {header.name || "—"}
+        </p>
+        <p>
+          <strong>Email:</strong> {header.email || "—"}
+        </p>
+        <p>
+          <strong>site_admin:</strong> {String(header.site_admin)}
+        </p>
+        <p>
+          <strong>operator_admin:</strong> {String(header.operator_admin)}
+        </p>
+        <p>
+          <strong>operator_id:</strong> {header.operator_id ?? "—"}
+        </p>
       </section>
 
       <div className="flex gap-3">
@@ -617,7 +634,7 @@ function BookingHistory({ header }: { header: ViewHeader }) {
         </button>
       </div>
 
-      {/* Transaction history (existing) */}
+      {/* Transaction history */}
       <section className="rounded border p-4">
         <h2 className="text-lg font-semibold mb-3">Transaction History</h2>
 

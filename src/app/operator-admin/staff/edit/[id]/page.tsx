@@ -37,11 +37,25 @@ type StaffRow = {
   jobrole: string | null;
   type_id: string | null;        // legacy single
   type_ids: string[] | null;     // NEW multi
-  pronoun: "he" | "she" | "they" | null; // NEW
-  email: string | null;          // NEW
+  pronoun: "he" | "she" | "they" | null;
+  email: string | null;
 };
 
-/* ---------- Helpers ---------- */
+type VehicleRow = {
+  id: string;
+  name: string;
+  operator_id: string | null;
+};
+
+type SVA = {
+  id: string;
+  operator_id: string;
+  vehicle_id: string;
+  staff_id: string;
+  priority: number; // 1..5
+  is_lead_eligible: boolean;
+};
+
 function cls(...a: (string | false | null | undefined)[]) {
   return a.filter(Boolean).join(" ");
 }
@@ -104,7 +118,7 @@ export default function EditStaffPage() {
   const [status, setStatus] = useState("Active");
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
-  const [email, setEmail] = useState("");              // NEW
+  const [email, setEmail] = useState("");
   const [licenses, setLicenses] = useState("");
   const [notes, setNotes] = useState("");
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -168,7 +182,7 @@ export default function EditStaffPage() {
       setStatus(s.status ?? "Active");
       setFirst(s.first_name ?? "");
       setLast(s.last_name ?? "");
-      setEmail(s.email ?? "");                         // NEW
+      setEmail(s.email ?? "");
       setLicenses(s.licenses ?? "");
       setNotes(s.notes ?? "");
       setPhotoUrl(await resolveStorageUrl(s.photo_url || null));
@@ -284,7 +298,7 @@ export default function EditStaffPage() {
           pronoun,
           first_name: first.trim(),
           last_name: last.trim(),
-          email: email.trim() || null,   // NEW
+          email: email.trim() || null,
           status,
           licenses: licenses.trim() || null,
           notes: notes.trim() || null,
@@ -335,6 +349,128 @@ export default function EditStaffPage() {
   }
 
   const roleChoices = roleOptionsForTypes(typeIds, journeyTypes);
+
+  /* ─────────────── Vehicle Eligibility (NEW) ─────────────── */
+  const [vehMsg, setVehMsg] = useState<string | null>(null);
+  const [vehicles, setVehicles] = useState<VehicleRow[]>([]);
+  const [rels, setRels] = useState<SVA[]>([]);
+  const [addVehId, setAddVehId] = useState<string>("");
+  const [addPriority, setAddPriority] = useState<number>(3);
+
+  const relByVeh = useMemo(() => {
+    const m = new Map<string, SVA>();
+    rels.forEach((r) => m.set(r.vehicle_id, r));
+    return m;
+  }, [rels]);
+
+  const addOptions = useMemo(() => {
+    // operator's vehicles not already linked
+    const linked = new Set(rels.map((r) => r.vehicle_id));
+    return vehicles
+      .filter((v) => v.operator_id === operatorId && !linked.has(v.id))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [vehicles, rels, operatorId]);
+
+  async function loadEligibility(opId: string, stId?: string | null) {
+    if (!opId || !stId) {
+      setVehicles([]);
+      setRels([]);
+      return;
+    }
+    setVehMsg(null);
+    const [{ data: vs }, { data: rs }] = await Promise.all([
+      sb.from("vehicles").select("id,name,operator_id").eq("operator_id", opId).order("name"),
+      sb
+        .from("vehicle_staff_prefs")
+        .select("id,operator_id,vehicle_id,staff_id,priority,is_lead_eligible")
+        .eq("operator_id", opId)
+        .eq("staff_id", stId)
+        .order("priority", { ascending: true }),
+    ]);
+    setVehicles((vs as VehicleRow[]) || []);
+    setRels((rs as SVA[]) || []);
+  }
+
+  useEffect(() => {
+    if (operatorId && (staffId || (!isNew && params.id))) {
+      loadEligibility(operatorId, staffId || (params.id as string));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operatorId, staffId, isNew, params.id]);
+
+  async function addVehicleRel() {
+    const stId = staffId || (params.id as string);
+    if (!operatorId || !stId || !addVehId) return;
+    setVehMsg(null);
+    if (relByVeh.has(addVehId)) {
+      setVehMsg("Already assigned to this vehicle.");
+      return;
+    }
+    if (addPriority < 1 || addPriority > 5) {
+      setVehMsg("Priority must be 1–5.");
+      return;
+    }
+    const { error } = await sb.from("vehicle_staff_prefs").insert({
+      operator_id: operatorId,
+      vehicle_id: addVehId,
+      staff_id: stId,
+      priority: addPriority,
+      is_lead_eligible: true,
+    });
+    if (error) {
+      setVehMsg(error.message);
+      return;
+    }
+    setAddVehId("");
+    setAddPriority(3);
+    await loadEligibility(operatorId, stId);
+  }
+
+  async function updateRelPriority(id: string, next: number) {
+    if (next < 1 || next > 5) {
+      setVehMsg("Priority must be 1–5.");
+      return;
+    }
+    const { error } = await sb
+      .from("vehicle_staff_prefs")
+      .update({ priority: next })
+      .eq("id", id);
+    if (error) {
+      setVehMsg(error.message);
+      return;
+    }
+    setRels((prev) => prev.map((r) => (r.id === id ? { ...r, priority: next } : r)));
+  }
+
+  async function toggleRelEligible(id: string, cur: boolean) {
+    const { error } = await sb
+      .from("vehicle_staff_prefs")
+      .update({ is_lead_eligible: !cur })
+      .eq("id", id);
+    if (error) {
+      setVehMsg(error.message);
+      return;
+    }
+    setRels((prev) => prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r)));
+  }
+
+  async function removeRel(id: string) {
+    if (!confirm("Remove this vehicle eligibility?")) return;
+    const { error } = await sb.from("vehicle_staff_prefs").delete().eq("id", id);
+    if (error) {
+      setVehMsg(error.message);
+      return;
+    }
+    setRels((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  const sortedRels = useMemo(
+    () =>
+      [...rels].sort((a, b) =>
+        a.priority !== b.priority ? a.priority - b.priority : 0
+      ),
+    [rels]
+  );
 
   return (
     <div className="p-4 space-y-5">
@@ -582,6 +718,104 @@ export default function EditStaffPage() {
           </div>
         </form>
       </section>
+
+      {/* NEW: Vehicle Eligibility */}
+      {!isNew && (
+        <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Vehicle Eligibility</h2>
+            {vehMsg && <span className="text-sm text-red-600">{vehMsg}</span>}
+          </div>
+
+          {/* Add line */}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="border rounded-lg px-3 py-2"
+              value={addVehId}
+              onChange={(e) => setAddVehId(e.target.value)}
+              disabled={!operatorId}
+            >
+              <option value="">Add vehicle…</option>
+              {addOptions.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+
+            <label className="text-sm">Priority</label>
+            <select
+              className="border rounded-lg px-2 py-1"
+              value={addPriority}
+              onChange={(e) => setAddPriority(Number(e.target.value))}
+            >
+              {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+            </select>
+
+            <button
+              className="px-3 py-2 rounded border"
+              disabled={!addVehId || !operatorId}
+              onClick={addVehicleRel}
+              type="button"
+            >
+              Add
+            </button>
+          </div>
+
+          {/* Current relations */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr>
+                  <th className="text-left p-3">Vehicle</th>
+                  <th className="text-left p-3">Priority</th>
+                  <th className="text-left p-3">Lead-eligible</th>
+                  <th className="text-right p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedRels.length === 0 ? (
+                  <tr><td className="p-3" colSpan={4}>No vehicles linked yet.</td></tr>
+                ) : (
+                  sortedRels.map((r) => {
+                    const v = vehicles.find((x) => x.id === r.vehicle_id);
+                    return (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-3">{v?.name || `#${r.vehicle_id.slice(0,8)}`}</td>
+                        <td className="p-3">
+                          <select
+                            className="border rounded px-2 py-1"
+                            value={r.priority}
+                            onChange={(e) => updateRelPriority(r.id, Number(e.target.value))}
+                          >
+                            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+                          </select>
+                        </td>
+                        <td className="p-3">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={r.is_lead_eligible}
+                              onChange={() => toggleRelEligible(r.id, r.is_lead_eligible)}
+                            />
+                            <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
+                          </label>
+                        </td>
+                        <td className="p-3 text-right">
+                          <button
+                            className="px-3 py-1 rounded border"
+                            onClick={() => removeRel(r.id)}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

@@ -33,29 +33,49 @@ type VehicleRow = {
   maxseats: number;
   minvalue: number;
   description: string;
-  picture_url: string | null; // storage path or full url
+  picture_url: string | null;
   min_val_threshold: number | null;
   type_id: string | null;     // journey_types.id
   operator_id: string | null; // operators.id
 };
 
+/* NEW: staffing relationship rows */
+type StaffRow = {
+  id: string;
+  operator_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  jobrole: string | null;
+  active?: boolean | null; // if present in your schema
+  photo_url: string | null;
+};
+
+type SVA = {
+  id: string;
+  operator_id: string;
+  vehicle_id: string;
+  staff_id: string;
+  priority: number; // 1..5
+  is_lead_eligible: boolean;
+  created_at?: string | null;
+};
+
 /* ───────────────────────── Helpers ───────────────────────── */
 const toInt = (v: string) => (v.trim() === "" ? null : Number.parseInt(v, 10));
-const toFloat = (v: string) =>
-  v.trim() === "" ? null : Number.parseFloat(v);
-
+const toFloat = (v: string) => (v.trim() === "" ? null : Number.parseFloat(v));
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+
+function isLeadRole(job?: string | null) {
+  const j = String(job || "").toLowerCase();
+  return j.includes("captain") || j.includes("pilot") || j.includes("driver");
+}
 
 /** Resolve storage path or raw URL into a browser-loadable URL. */
 async function resolveImageUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
-
-  // Public URL (works if bucket/object is public)
   const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
   if (pub) return pub;
-
-  // Fallback: long-lived signed URL
   const { data } = await sb.storage
     .from("images")
     .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
@@ -99,7 +119,7 @@ export default function EditVehiclePage() {
   const [pictureFile, setPictureFile] = useState<File | null>(null);
 
   /* Image preview */
-  const [storedImageUrl, setStoredImageUrl] = useState<string | null>(null); // existing image (resolved)
+  const [storedImageUrl, setStoredImageUrl] = useState<string | null>(null);
   const livePreviewUrl = useMemo(
     () => (pictureFile ? URL.createObjectURL(pictureFile) : null),
     [pictureFile]
@@ -288,6 +308,148 @@ export default function EditVehiclePage() {
   const operatorName =
     (operatorLocked && (psUser?.operator_name ||
       operators.find((o) => o.id === psUser?.operator_id)?.name)) || "";
+
+  /* ───────────────────── Captains & Priority (NEW) ───────────────────── */
+
+  const [staff, setStaff] = useState<StaffRow[]>([]);
+  const [assignments, setAssignments] = useState<SVA[]>([]);
+  const [relMsg, setRelMsg] = useState<string | null>(null);
+  const [addingStaffId, setAddingStaffId] = useState<string>("");
+  const [addingPriority, setAddingPriority] = useState<number>(3);
+
+  // staff options: operator's active staff with a lead role, excluding already assigned
+  const staffOptions = useMemo(() => {
+    const already = new Set(assignments.map((a) => a.staff_id));
+    return staff
+      .filter((s) => s.operator_id === operatorId && isLeadRole(s.jobrole))
+      .filter((s) => !already.has(s.id))
+      .sort((a, b) =>
+        `${a.last_name || ""} ${a.first_name || ""}`.localeCompare(
+          `${b.last_name || ""} ${b.first_name || ""}`
+        )
+      );
+  }, [staff, assignments, operatorId]);
+
+  // display join
+  const staffById = useMemo(() => {
+    const m = new Map<string, StaffRow>();
+    staff.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [staff]);
+
+  async function loadRelationships(opId: string, vId: string) {
+    if (!opId || !vId) {
+      setAssignments([]);
+      setStaff([]);
+      return;
+    }
+    setRelMsg(null);
+    const [{ data: sva }, { data: st }] = await Promise.all([
+      sb
+        .from("vehicle_staff_prefs")
+        .select("id,operator_id,vehicle_id,staff_id,priority,is_lead_eligible,created_at")
+        .eq("operator_id", opId)
+        .eq("vehicle_id", vId)
+        .order("priority", { ascending: true }),
+      sb
+        .from("operator_staff")
+        .select("id,operator_id,first_name,last_name,jobrole,photo_url,active")
+        .eq("operator_id", opId),
+    ]);
+    setAssignments((sva as SVA[]) || []);
+    setStaff((st as StaffRow[]) || []);
+  }
+
+  useEffect(() => {
+    if (operatorId && vehicleId) {
+      loadRelationships(operatorId, vehicleId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operatorId, vehicleId]);
+
+  async function addCaptain() {
+    if (!operatorId || !vehicleId || !addingStaffId) return;
+    setRelMsg(null);
+    if (assignments.some((a) => a.staff_id === addingStaffId)) {
+      setRelMsg("Already added.");
+      return;
+    }
+    if (addingPriority < 1 || addingPriority > 5) {
+      setRelMsg("Priority must be 1–5.");
+      return;
+    }
+    const { error } = await sb.from("vehicle_staff_prefs").insert({
+      operator_id: operatorId,
+      vehicle_id: vehicleId,
+      staff_id: addingStaffId,
+      priority: addingPriority,
+      is_lead_eligible: true,
+    });
+    if (error) {
+      setRelMsg(error.message);
+      return;
+    }
+    setAddingStaffId("");
+    setAddingPriority(3);
+    await loadRelationships(operatorId, vehicleId);
+  }
+
+  async function updatePriority(id: string, next: number) {
+    if (next < 1 || next > 5) {
+      setRelMsg("Priority must be 1–5.");
+      return;
+    }
+    const { error } = await sb
+      .from("vehicle_staff_prefs")
+      .update({ priority: next })
+      .eq("id", id);
+    if (error) {
+      setRelMsg(error.message);
+      return;
+    }
+    setAssignments((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, priority: next } : r))
+    );
+  }
+
+  async function toggleEligible(id: string, cur: boolean) {
+    const { error } = await sb
+      .from("vehicle_staff_prefs")
+      .update({ is_lead_eligible: !cur })
+      .eq("id", id);
+    if (error) {
+      setRelMsg(error.message);
+      return;
+    }
+    setAssignments((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r))
+    );
+  }
+
+  async function removeRel(id: string) {
+    if (!confirm("Remove this captain from this vehicle?")) return;
+    const { error } = await sb
+      .from("vehicle_staff_prefs")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      setRelMsg(error.message);
+      return;
+    }
+    setAssignments((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  const sortedAssignments = useMemo(
+    () =>
+      [...assignments].sort((a, b) =>
+        a.priority !== b.priority
+          ? a.priority - b.priority
+          : (staffById.get(a.staff_id)?.last_name || "").localeCompare(
+              staffById.get(b.staff_id)?.last_name || ""
+            )
+      ),
+    [assignments, staffById]
+  );
 
   return (
     <div className="space-y-6">
@@ -517,6 +679,110 @@ export default function EditVehiclePage() {
             {msg && <span className="text-sm text-neutral-600">{msg}</span>}
           </div>
         </form>
+      </section>
+
+      {/* NEW: Captains & Priority */}
+      <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-semibold">Captains & Priority</h2>
+          {relMsg && <span className="text-sm text-red-600">{relMsg}</span>}
+        </div>
+
+        {/* Add line */}
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="border rounded-lg px-3 py-2"
+            value={addingStaffId}
+            onChange={(e) => setAddingStaffId(e.target.value)}
+            disabled={!operatorId}
+          >
+            <option value="">Add captain…</option>
+            {staffOptions.map((s) => {
+              const name = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
+              return (
+                <option key={s.id} value={s.id}>{name}</option>
+              );
+            })}
+          </select>
+
+          <label className="text-sm">Priority</label>
+          <select
+            className="border rounded-lg px-2 py-1"
+            value={addingPriority}
+            onChange={(e) => setAddingPriority(Number(e.target.value))}
+          >
+            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+          </select>
+
+          <button
+            className="px-3 py-2 rounded border"
+            disabled={!addingStaffId || !vehicleId || !operatorId}
+            onClick={addCaptain}
+            type="button"
+          >
+            Add
+          </button>
+        </div>
+
+        {/* Current list */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-neutral-50">
+              <tr>
+                <th className="text-left p-3">Captain</th>
+                <th className="text-left p-3">Role</th>
+                <th className="text-left p-3">Priority</th>
+                <th className="text-left p-3">Lead-eligible</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedAssignments.length === 0 ? (
+                <tr><td className="p-3" colSpan={5}>No captains linked to this vehicle yet.</td></tr>
+              ) : (
+                sortedAssignments.map((r) => {
+                  const st = staffById.get(r.staff_id);
+                  const name = st
+                    ? `${st.last_name || ""} ${st.first_name || ""}`.trim() || "Unnamed"
+                    : `#${r.staff_id.slice(0,8)}`;
+                  return (
+                    <tr key={r.id} className="border-t">
+                      <td className="p-3">{name}</td>
+                      <td className="p-3">{st?.jobrole || "—"}</td>
+                      <td className="p-3">
+                        <select
+                          className="border rounded px-2 py-1"
+                          value={r.priority}
+                          onChange={(e) => updatePriority(r.id, Number(e.target.value))}
+                        >
+                          {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+                        </select>
+                      </td>
+                      <td className="p-3">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={r.is_lead_eligible}
+                            onChange={() => toggleEligible(r.id, r.is_lead_eligible)}
+                          />
+                          <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
+                        </label>
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          className="px-3 py-1 rounded border"
+                          onClick={() => removeRel(r.id)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
