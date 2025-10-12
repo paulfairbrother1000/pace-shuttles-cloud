@@ -235,7 +235,6 @@ export default function EditStaffPage() {
       setSaving(true);
 
       if (isNew) {
-        // CREATE (includes pronoun)
         const payload = {
           operator_id: effectiveOperatorId,
           type_id: typeIds[0] || null,
@@ -280,7 +279,6 @@ export default function EditStaffPage() {
         setSaving(false);
         router.push("/operator-admin/staff");
       } else {
-        // UPDATE (includes pronoun)
         const id = staffId || (params.id as string);
         const path = await uploadPhotoIfAny(id);
         const payload: Record<string, any> = {
@@ -343,7 +341,7 @@ export default function EditStaffPage() {
 
   const roleChoices = roleOptionsForTypes(typeIds, journeyTypes);
 
-  /* ─────────────── Vehicle Eligibility (RLS; no custom API) ─────────────── */
+  /* ─────────────── Vehicle Eligibility (via server API; bypasses RLS) ─────────────── */
   const [vehMsg, setVehMsg] = useState<string | null>(null);
   const [vehicles, setVehicles] = useState<VehicleRow[]>([]);
   const [rels, setRels] = useState<SVA[]>([]);
@@ -371,21 +369,29 @@ export default function EditStaffPage() {
     }
     setVehMsg(null);
 
-    const [{ data: vs, error: vErr }, { data: rs, error: rErr }] = await Promise.all([
-      sb.from("vehicles").select("id,name,operator_id").eq("operator_id", opId).order("name"),
-      sb
-        .from("vehicle_staff_prefs")
-        .select("id,operator_id,vehicle_id,staff_id,priority,is_lead_eligible")
-        .eq("operator_id", opId)
-        .eq("staff_id", stId)
-        .order("priority", { ascending: true }),
-    ]);
-
+    // vehicles: safe to read client-side
+    const { data: vs, error: vErr } = await sb
+      .from("vehicles")
+      .select("id,name,operator_id")
+      .eq("operator_id", opId)
+      .order("name");
     if (vErr) setVehMsg(vErr.message);
-    if (rErr) setVehMsg(rErr.message);
-
     setVehicles((vs as VehicleRow[]) || []);
-    setRels((rs as SVA[]) || []);
+
+    // relations: go through server (service role)
+    const res = await fetch(
+      `/api/operator/staff-vehicles?operator_id=${encodeURIComponent(opId)}&staff_id=${encodeURIComponent(
+        stId
+      )}`
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setVehMsg(body?.error || `Failed to load eligibility (${res.status})`);
+      setRels([]);
+      return;
+    }
+    const payload = (await res.json()) as SVA[];
+    setRels(payload || []);
   }
 
   useEffect(() => {
@@ -402,15 +408,21 @@ export default function EditStaffPage() {
     if (relByVeh.has(addVehId)) return setVehMsg("Already assigned to this vehicle.");
     if (addPriority < 1 || addPriority > 5) return setVehMsg("Priority must be 1–5.");
 
-    const { error } = await sb.from("vehicle_staff_prefs").insert({
-      operator_id: operatorId,
-      vehicle_id: addVehId,
-      staff_id: stId,
-      priority: addPriority,
-      is_lead_eligible: true,
+    const res = await fetch("/api/operator/staff-vehicles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operator_id: operatorId,
+        vehicle_id: addVehId,
+        staff_id: stId,
+        priority: addPriority,
+        is_lead_eligible: true,
+      }),
     });
-
-    if (error) return setVehMsg(error.message);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Add failed (${res.status})`);
+    }
 
     setAddVehId("");
     setAddPriority(3);
@@ -419,21 +431,38 @@ export default function EditStaffPage() {
 
   async function updateRelPriority(id: string, next: number) {
     if (next < 1 || next > 5) return setVehMsg("Priority must be 1–5.");
-    const { error } = await sb.from("vehicle_staff_prefs").update({ priority: next }).eq("id", id);
-    if (error) return setVehMsg(error.message);
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: next }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Update failed (${res.status})`);
+    }
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, priority: next } : r)));
   }
 
   async function toggleRelEligible(id: string, cur: boolean) {
-    const { error } = await sb.from("vehicle_staff_prefs").update({ is_lead_eligible: !cur }).eq("id", id);
-    if (error) return setVehMsg(error.message);
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_lead_eligible: !cur }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Update failed (${res.status})`);
+    }
     setRels((prev) => prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r)));
   }
 
   async function removeRel(id: string) {
     if (!confirm("Remove this vehicle eligibility?")) return;
-    const { error } = await sb.from("vehicle_staff_prefs").delete().eq("id", id);
-    if (error) return setVehMsg(error.message);
+    const res = await fetch(`/api/operator/staff-vehicles/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return setVehMsg(body?.error || `Delete failed (${res.status})`);
+    }
     setRels((prev) => prev.filter((r) => r.id !== id));
   }
 
@@ -657,7 +686,7 @@ export default function EditStaffPage() {
         </form>
       </section>
 
-      {/* Vehicle Eligibility (RLS) */}
+      {/* Vehicle Eligibility (via server API) */}
       {!isNew && (
         <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
           <div className="flex items-center gap-2">
