@@ -181,7 +181,7 @@ function staffName(s?: { first_name: string | null; last_name: string | null }) 
   return `${s?.first_name ?? ""} ${s?.last_name ?? ""}`.trim() || "Unnamed";
 }
 
-/* ---------------- Allocation (for preview only) ---------------- */
+/* ---------------- Allocation (client preview only) ---------------- */
 type Party = { order_id: UUID; size: number };
 type Boat = { vehicle_id: UUID; cap: number; preferred: boolean };
 type DetailedAlloc = {
@@ -570,13 +570,14 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(vehId, groups);
           dbTotal += seats;
 
-          // Hide empty boats at/after T-72
-          if ((horizon === "T72" || horizon === "T24") && seats === 0) continue;
-
           const a = assignByKey.get(`${j.id}_${vehId}`);
           const assignee =
             a && a.staff_id
-              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
+              ? {
+                  staff_id: a.staff_id,
+                  name: staffName(a),
+                  status: a.status_simple,
+                }
               : undefined;
 
           perBoat.push({
@@ -604,13 +605,14 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(b.vehicle_id, groups);
           dbTotal += seats;
 
-          // Hide empty boats at/after T-72
-          if ((horizon === "T72" || horizon === "T24") && seats === 0) continue;
-
           const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
           const assignee =
             a && a.staff_id
-              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
+              ? {
+                  staff_id: a.staff_id,
+                  name: staffName(a),
+                  status: a.status_simple,
+                }
               : undefined;
 
           perBoat.push({
@@ -704,9 +706,13 @@ export default function OperatorAdminJourneysPage() {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
 
-  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"]) {
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"], passengersOnBoat?: number) {
     if (isLockedWindow(horizon ?? "T24")) {
       alert("Crew changes are locked at T-24.");
+      return;
+    }
+    if (!passengersOnBoat || passengersOnBoat <= 0) {
+      alert("You can only assign a captain when there is at least 1 paying customer on this boat.");
       return;
     }
     const key = `${journeyId}_${vehicleId}`;
@@ -740,7 +746,7 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // Auto-assign driver on initial load + when site-admin filter changes. Silent unless error.
+  // Auto-assign driver on initial load + when site-admin filter changes.
   const [autoErr, setAutoErr] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -748,15 +754,11 @@ export default function OperatorAdminJourneysPage() {
       if (!psLoaded) return;
       try {
         const scope = isSiteAdmin ? (canSeeAll ? { all: true } : { operator_id: effectiveOperatorId }) : { operator_id: opIdFromUser };
-        const r = await fetch("/api/ops/auto-assign", {
+        await fetch("/api/ops/auto-assign", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(scope),
         });
-        if (!r.ok) {
-          const t = await r.text();
-          throw new Error(t || "Auto-assign failed");
-        }
         if (!cancelled) setAutoErr(null);
       } catch (e: any) {
         if (!cancelled) setAutoErr(e?.message ?? "Auto-assign failed");
@@ -820,7 +822,7 @@ export default function OperatorAdminJourneysPage() {
 
       {autoErr && (
         <div className="p-3 border rounded-lg bg-amber-50 text-amber-800 text-sm">
-          Auto-assign issue: {autoErr}
+          Auto-assign encountered an issue: {autoErr}
         </div>
       )}
 
@@ -907,6 +909,7 @@ export default function OperatorAdminJourneysPage() {
                       const selected = selectedStaff[key];
                       const perBoatStaff = eligibleStaffForVehicle(b.vehicle_id);
                       const isEditing = !!editingAssignee[key];
+                      const canEdit = (row.horizon === "T72" || row.horizon === ">72h") && b.db > 0;
 
                       return (
                         <tr key={key} className="border-t align-top">
@@ -942,111 +945,106 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + hyperlink-to-edit */}
+                          {/* Status + hyperlink name or "Needs crew" (click to edit) */}
                           <td className="p-3">
-                            <div className="flex flex-col gap-2">
+                            <div className="flex flex-col gap-1">
                               {b.assignee ? (
-                                <>
-                                  <a
-                                    href="#"
-                                    className="text-sm underline text-blue-700"
-                                    onClick={e => {
-                                      e.preventDefault();
-                                      if (row.horizon === "T24" || row.horizon === "past") return;
-                                      setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
-                                    }}
-                                    title="Click to change"
-                                  >
-                                    {b.assignee.name}
-                                  </a>
-                                  {/* Optional: show state in a subtle, non-highlighted way */}
-                                  <span className="text-[11px] text-neutral-500">
-                                    {b.assignee.status === "complete"
-                                      ? "Confirmed"
-                                      : b.assignee.status === "cancelled"
-                                      ? "Cancelled"
-                                      : "Assigned"}
-                                  </span>
-                                </>
-                              ) : (
                                 <a
-                                  href="#"
-                                  className="text-sm underline text-blue-700"
+                                  href={`/admin/staff?id=${b.assignee.staff_id}`}
+                                  className="text-sm underline text-blue-700 w-fit"
                                   onClick={e => {
                                     e.preventDefault();
-                                    if (row.horizon === "T24" || row.horizon === "past") return;
-                                    setEditingAssignee(prev => ({ ...prev, [key]: true }));
+                                    if (canEdit) {
+                                      setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
+                                    } else {
+                                      // allow profile open on locked window
+                                      window.location.href = `/admin/staff?id=${b.assignee!.staff_id}`;
+                                    }
                                   }}
+                                  title={canEdit ? "Click to change crew" : "View crew profile"}
+                                >
+                                  {b.assignee.name}
+                                </a>
+                              ) : b.db > 0 ? (
+                                <button
+                                  className="text-sm underline text-blue-700 w-fit"
+                                  onClick={() => canEdit && setEditingAssignee(prev => ({ ...prev, [key]: true }))}
+                                  disabled={!canEdit}
+                                  title={canEdit ? "Assign crew" : "Crew changes locked or no customers"}
                                 >
                                   Needs crew
-                                </a>
+                                </button>
+                              ) : (
+                                <span className="text-neutral-500 text-sm">—</span>
                               )}
-
-                              {/* Editor (dropdown) only when editing and not locked */}
-                              {isEditing && (row.horizon === "T72" || row.horizon === ">72h") && (
-                                <div className="flex items-center gap-2">
-                                  {perBoatStaff.length <= 1 ? (
-                                    <span className="text-xs">
-                                      {perBoatStaff[0] ? staffName(perBoatStaff[0]) : "No staff"}
-                                    </span>
-                                  ) : (
-                                    <select
-                                      className="border rounded px-2 py-1 text-xs"
-                                      value={selected || ""}
-                                      onChange={e =>
-                                        setSelectedStaff(prev => ({
-                                          ...prev,
-                                          [key]: e.target.value as UUID,
-                                        }))
-                                      }
-                                    >
-                                      <option value="">Select crew…</option>
-                                      {perBoatStaff.map(s => (
-                                        <option key={s.id} value={s.id}>
-                                          {staffName(s)}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-
-                                  <button
-                                    className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
-                                    style={{ backgroundColor: "#111827" }}
-                                    disabled={
-                                      isLockedWindow(row.horizon) ||
-                                      assigning === key ||
-                                      (!selected && perBoatStaff.length !== 1)
-                                    }
-                                    onClick={() =>
-                                      onAssign(
-                                        row.journey.id,
-                                        b.vehicle_id,
-                                        (perBoatStaff.length === 1 && !selected
-                                          ? perBoatStaff[0]?.id
-                                          : selected) as UUID,
-                                        row.horizon
-                                      )
-                                    }
-                                  >
-                                    {assigning === key ? "Assigning…" : "Assign"}
-                                  </button>
-                                </div>
+                              {b.assignee && (
+                                <span className="text-[11px] text-neutral-500">Assigned</span>
                               )}
                             </div>
+
+                            {/* Editor (dropdown) only when editing and not locked, and when there are customers */}
+                            {isEditing && canEdit && (
+                              <div className="mt-2 flex items-center gap-2">
+                                {perBoatStaff.length <= 1 ? (
+                                  <span className="text-xs">
+                                    {perBoatStaff[0]
+                                      ? staffName(perBoatStaff[0])
+                                      : "No staff"}
+                                  </span>
+                                ) : (
+                                  <select
+                                    className="border rounded px-2 py-1 text-xs"
+                                    value={selected || ""}
+                                    onChange={e =>
+                                      setSelectedStaff(prev => ({
+                                        ...prev,
+                                        [key]: e.target.value as UUID,
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Select crew…</option>
+                                    {perBoatStaff.map(s => (
+                                      <option key={s.id} value={s.id}>
+                                        {staffName(s)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                <button
+                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                  style={{ backgroundColor: "#111827" }}
+                                  disabled={
+                                    assigning === key ||
+                                    (!selected && perBoatStaff.length !== 1)
+                                  }
+                                  onClick={() =>
+                                    onAssign(
+                                      row.journey.id,
+                                      b.vehicle_id,
+                                      (perBoatStaff.length === 1 && !selected
+                                        ? perBoatStaff[0]?.id
+                                        : selected) as UUID,
+                                      row.horizon,
+                                      b.db
+                                    )
+                                  }
+                                >
+                                  {assigning === key ? "Assigning…" : "Assign"}
+                                </button>
+                              </div>
+                            )}
                           </td>
 
                           <td className="p-3 space-x-2">
                             {(row.horizon === "T72" || row.horizon === ">72h") && (
-                              <>
-                                <button
-                                  className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                                  style={{ backgroundColor: "#2563eb" }}
-                                  onClick={() => onManifest(row.journey.id, b.vehicle_id)}
-                                >
-                                  Manifest
-                                </button>
-                                {/* (Remove button retained behind the scenes if needed later) */}
-                              </>
+                              <button
+                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                style={{ backgroundColor: "#2563eb" }}
+                                onClick={() => onManifest(row.journey.id, b.vehicle_id)}
+                              >
+                                Manifest
+                              </button>
                             )}
                           </td>
                         </tr>
