@@ -60,6 +60,15 @@ export default function LoginPage(): JSX.Element {
     } catch {}
   }, []);
 
+  /** Link auth user -> operator_staff by email (idempotent) */
+  const autoLinkCrew = React.useCallback(async () => {
+    try {
+      await fetch("/api/crew/auto-link", { method: "POST" });
+    } catch {
+      // non-fatal; continue navigation
+    }
+  }, []);
+
   const goNext = React.useCallback((url: string) => {
     try {
       router.replace(url);
@@ -79,14 +88,16 @@ export default function LoginPage(): JSX.Element {
       const { data } = await sb.auth.getSession();
       if (!alive) return;
       if (data?.session?.user) {
-        void cachePsUser();
+        // Already signed in: hydrate user cache and ensure crew link exists
+        await cachePsUser();
+        await autoLinkCrew();
         goNext(nextUrl);
       } else {
         setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [goNext, nextUrl, cachePsUser]);
+  }, [goNext, nextUrl, cachePsUser, autoLinkCrew]);
 
   async function onLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -95,7 +106,11 @@ export default function LoginPage(): JSX.Element {
     try {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      void cachePsUser();
+
+      // Post-login tasks (best-effort)
+      await cachePsUser();
+      await autoLinkCrew();
+
       try { localStorage.removeItem("next_after_login"); } catch {}
       goNext(nextUrl);
     } catch (err: any) {
@@ -158,7 +173,10 @@ export default function LoginPage(): JSX.Element {
         await sb.from("users").update(update).eq("id", u.id);
       }
 
-      void cachePsUser();
+      // Post-signup tasks (best-effort)
+      await cachePsUser();
+      await autoLinkCrew();
+
       goNext(nextUrl);
     } catch (err: any) {
       setMsg(err?.message || "Sign up failed");
