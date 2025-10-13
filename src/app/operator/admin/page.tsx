@@ -1,3 +1,4 @@
+// src/app/operator/admin/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -77,9 +78,7 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
         site_admin: siteAdmin,
       };
     }
-  } catch {
-    // fall through to profile attempt
-  }
+  } catch {}
 
   try {
     const { data: ures } = await sb.auth.getUser();
@@ -149,7 +148,6 @@ type AssignView = {
   first_name: string | null;
   last_name: string | null;
   role_label?: string | null;
-  // NEW (if available from view; safe if missing)
   assign_source?: "manual" | "auto" | null;
 };
 
@@ -169,7 +167,7 @@ function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
   return ">72h";
 }
 
-/* ---------------- Allocation ---------------- */
+/* ---------------- Allocation (preview) ---------------- */
 type Party = { order_id: UUID; size: number };
 type Boat = { vehicle_id: UUID; cap: number; preferred: boolean };
 
@@ -404,7 +402,6 @@ export default function OperatorAdminJourneysPage() {
             .in("journey_id", journeyIds);
 
           if (aErr) {
-            // fallback (older view without assign_source / assignment_id)
             const { data: aData2 } = await sb
               .from("v_crew_assignments_min")
               .select(
@@ -805,9 +802,6 @@ export default function OperatorAdminJourneysPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-semibold">Operator Admin — Live Journeys</h1>
-          <p className="text-neutral-600 text-lg">
-            <strong>{headerSubtitle}</strong> Manifest matches the site admin view.
-          </p>
         </div>
 
         {/* Operator selector */}
@@ -828,6 +822,10 @@ export default function OperatorAdminJourneysPage() {
           </select>
         </div>
       </header>
+
+      <p className="text-neutral-600 text-lg">
+        <strong>{headerSubtitle}</strong> Manifest matches the site admin view.
+      </p>
 
       {err && (
         <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>
@@ -962,13 +960,9 @@ export default function OperatorAdminJourneysPage() {
                           {/* Status + inline assignee */}
                           <td className="p-3">
                             {/* Pill with clickable captain name -> toggles chooser */}
-                            <span
-                              className="px-2 py-1 rounded text-xs"
-                              style={pillStyles}
-                            >
+                            <span className="px-2 py-1 rounded text-xs" style={pillStyles}>
                               {b.assignee?.name ? (
                                 <>
-                                  {/* Make captain name a button to reveal chooser */}
                                   <button
                                     type="button"
                                     className="underline underline-offset-2"
@@ -1053,15 +1047,13 @@ export default function OperatorAdminJourneysPage() {
 
                           <td className="p-3 space-x-2">
                             {(row.horizon === "T72" || row.horizon === ">72h") && (
-                              <>
-                                <button
-                                  className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                                  style={{ backgroundColor: "#2563eb" }}
-                                  onClick={() => onManifest(row.journey.id, b.vehicle_id)}
-                                >
-                                  Manifest
-                                </button>
-                              </>
+                              <button
+                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                style={{ backgroundColor: "#2563eb" }}
+                                onClick={() => onManifest(row.journey.id, b.vehicle_id)}
+                              >
+                                Manifest
+                              </button>
                             )}
                           </td>
                         </tr>
