@@ -154,7 +154,6 @@ type AssignView = {
   vehicle_id: UUID;
   staff_id: UUID;
   status_simple: "allocated" | "confirmed" | "complete" | "cancelled";
-  assigned_mode: "auto" | "manual" | null;
   first_name: string | null;
   last_name: string | null;
 };
@@ -182,7 +181,7 @@ function staffName(s?: { first_name: string | null; last_name: string | null }) 
   return `${s?.first_name ?? ""} ${s?.last_name ?? ""}`.trim() || "Unnamed";
 }
 
-/* ---------------- Allocation ---------------- */
+/* ---------------- Allocation (for preview only) ---------------- */
 type Party = { order_id: UUID; size: number };
 type Boat = { vehicle_id: UUID; cap: number; preferred: boolean };
 type DetailedAlloc = {
@@ -332,8 +331,8 @@ export default function OperatorAdminJourneysPage() {
           sb.from("destinations").select("id,name"),
         ]);
         if (rQ.error) throw rQ.error;
-        if (puQ.error) throw rQ.error;
-        if (deQ.error) throw rQ.error;
+        if (puQ.error) throw puQ.error;
+        if (deQ.error) throw deQ.error;
 
         setRoutes((rQ.data || []) as Route[]);
         setPickups((puQ.data || []) as Pickup[]);
@@ -426,7 +425,7 @@ export default function OperatorAdminJourneysPage() {
         if (journeyIds.length) {
           const { data: aData } = await sb
             .from("v_journey_staff_min")
-            .select("journey_id,vehicle_id,staff_id,status_simple,assigned_mode,first_name,last_name")
+            .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
             .in("journey_id", journeyIds);
           setAssigns(((aData || []) as AssignView[]) ?? []);
         } else {
@@ -487,13 +486,7 @@ export default function OperatorAdminJourneysPage() {
     groups: number[];
     canRemove: boolean;
     cannotReason?: string;
-    statusPill: { label: string; tone: "neutral" | "amber" | "green" | "gray" };
-    assignee?: {
-      staff_id: UUID;
-      name: string;
-      status: AssignView["status_simple"];
-      assigned_mode: "auto" | "manual" | null;
-    };
+    assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] };
   };
   type UiRow = {
     journey: Journey;
@@ -550,13 +543,7 @@ export default function OperatorAdminJourneysPage() {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const cap = Number(v?.maxseats ?? 0);
-          // PRIORITISE boats with minseats > 0 so they get filled first (helps jettison min=0 craft at T-72)
-          const priority = Number(v?.minseats ?? 0) > 0;
-          return {
-            vehicle_id: x.vehicle_id,
-            cap: Number.isFinite(cap) ? cap : 0,
-            preferred: !!x.preferred || priority,
-          };
+          return { vehicle_id: x.vehicle_id, cap: Number.isFinite(cap) ? cap : 0, preferred: !!x.preferred };
         })
         .filter(Boolean) as Boat[];
 
@@ -583,15 +570,13 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(vehId, groups);
           dbTotal += seats;
 
+          // Hide empty boats at/after T-72
+          if ((horizon === "T72" || horizon === "T24") && seats === 0) continue;
+
           const a = assignByKey.get(`${j.id}_${vehId}`);
           const assignee =
             a && a.staff_id
-              ? {
-                  staff_id: a.staff_id,
-                  name: staffName(a),
-                  status: a.status_simple,
-                  assigned_mode: a.assigned_mode ?? null,
-                }
+              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
               : undefined;
 
           perBoat.push({
@@ -604,14 +589,6 @@ export default function OperatorAdminJourneysPage() {
             preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
             groups,
             canRemove: false,
-            statusPill: assignee
-              ? horizon === "T24"
-                ? { label: `Locked — ${assignee.name}`, tone: "green" }
-                : {
-                    label: `${assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${assignee.name}`,
-                    tone: "green",
-                  }
-              : { label: "Needs crew", tone: "amber" },
             assignee,
           });
         }
@@ -627,30 +604,14 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(b.vehicle_id, groups);
           dbTotal += seats;
 
+          // Hide empty boats at/after T-72
+          if ((horizon === "T72" || horizon === "T24") && seats === 0) continue;
+
           const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
           const assignee =
             a && a.staff_id
-              ? {
-                  staff_id: a.staff_id,
-                  name: staffName(a),
-                  status: a.status_simple,
-                  assigned_mode: a.assigned_mode ?? null,
-                }
+              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
               : undefined;
-
-          const statusPill =
-            horizon === ">72h"
-              ? seats > 0
-                ? { label: "Filling", tone: "neutral" as const }
-                : { label: "Needs crew", tone: "amber" as const }
-              : assignee
-              ? horizon === "T72"
-                ? {
-                    label: `${assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${assignee.name}`,
-                    tone: "green" as const,
-                  }
-                : { label: `Locked — ${assignee.name}`, tone: "green" as const }
-              : { label: "Needs crew", tone: "amber" as const };
 
           perBoat.push({
             vehicle_id: b.vehicle_id,
@@ -662,21 +623,8 @@ export default function OperatorAdminJourneysPage() {
             preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
             groups,
             canRemove: false,
-            statusPill,
             assignee,
           });
-        }
-
-        // T-72: jettison empty min=0 boats from the display
-        if (horizon === "T72") {
-          for (let i = perBoat.length - 1; i >= 0; i--) {
-            const b = perBoat[i];
-            const min = Number(b.min ?? 0);
-            const seats = Number(b.db ?? 0);
-            if (seats === 0 && min === 0) {
-              perBoat.splice(i, 1);
-            }
-          }
         }
       }
 
@@ -696,7 +644,6 @@ export default function OperatorAdminJourneysPage() {
         if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
 
         const partiesFromGroups: Party[] = groups.map((size, i) => ({
-          // local ids for probe
           order_id: (`local-${i}` as unknown) as UUID,
           size,
         }));
@@ -776,7 +723,7 @@ export default function OperatorAdminJourneysPage() {
       }
       const { data: aData } = await sb!
         .from("v_journey_staff_min")
-        .select("journey_id,vehicle_id,staff_id,status_simple,assigned_mode,first_name,last_name")
+        .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
         .eq("journey_id", journeyId)
         .eq("vehicle_id", vehicleId);
       const updated = (aData || []) as AssignView[];
@@ -793,7 +740,7 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // Auto-assign on load + when site-admin filter changes (silent).
+  // Auto-assign driver on initial load + when site-admin filter changes. Silent unless error.
   const [autoErr, setAutoErr] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -801,11 +748,15 @@ export default function OperatorAdminJourneysPage() {
       if (!psLoaded) return;
       try {
         const scope = isSiteAdmin ? (canSeeAll ? { all: true } : { operator_id: effectiveOperatorId }) : { operator_id: opIdFromUser };
-        await fetch("/api/ops/auto-assign", {
+        const r = await fetch("/api/ops/auto-assign", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(scope),
         });
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(t || "Auto-assign failed");
+        }
         if (!cancelled) setAutoErr(null);
       } catch (e: any) {
         if (!cancelled) setAutoErr(e?.message ?? "Auto-assign failed");
@@ -869,7 +820,7 @@ export default function OperatorAdminJourneysPage() {
 
       {autoErr && (
         <div className="p-3 border rounded-lg bg-amber-50 text-amber-800 text-sm">
-          Auto-assign encountered an issue: {autoErr}
+          Auto-assign issue: {autoErr}
         </div>
       )}
 
@@ -991,40 +942,43 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + inline assignee (click-to-edit on label or name) */}
+                          {/* Status + hyperlink-to-edit */}
                           <td className="p-3">
                             <div className="flex flex-col gap-2">
-                              {/* State pill */}
                               {b.assignee ? (
-                                <span className="px-2 py-1 rounded text-xs" style={{ background: "#dcfce7", color: "#166534" }}>
-                                  {b.assignee.status === "complete"
-                                    ? `Confirmed — ${b.assignee.name}`
-                                    : b.assignee.status === "cancelled"
-                                    ? `Cancelled — ${b.assignee.name}`
-                                    : `${b.assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${b.assignee.name}`}
-                                </span>
+                                <>
+                                  <a
+                                    href="#"
+                                    className="text-sm underline text-blue-700"
+                                    onClick={e => {
+                                      e.preventDefault();
+                                      if (row.horizon === "T24" || row.horizon === "past") return;
+                                      setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
+                                    }}
+                                    title="Click to change"
+                                  >
+                                    {b.assignee.name}
+                                  </a>
+                                  {/* Optional: show state in a subtle, non-highlighted way */}
+                                  <span className="text-[11px] text-neutral-500">
+                                    {b.assignee.status === "complete"
+                                      ? "Confirmed"
+                                      : b.assignee.status === "cancelled"
+                                      ? "Cancelled"
+                                      : "Assigned"}
+                                  </span>
+                                </>
                               ) : (
-                                <button
-                                  className="px-2 py-1 rounded text-xs text-left"
-                                  style={{ background: "#fef3c7", color: "#92400e" }}
-                                  onClick={() => setEditingAssignee(prev => ({ ...prev, [key]: true }))}
-                                >
-                                  Needs crew
-                                </button>
-                              )}
-
-                              {/* Name shown as a hyperlink; click to edit (no navigation) */}
-                              {b.assignee && (row.horizon === "T72" || row.horizon === ">72h") && (
                                 <a
                                   href="#"
-                                  className="text-xs underline text-blue-700 self-start"
-                                  onClick={(e) => {
+                                  className="text-sm underline text-blue-700"
+                                  onClick={e => {
                                     e.preventDefault();
-                                    setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
+                                    if (row.horizon === "T24" || row.horizon === "past") return;
+                                    setEditingAssignee(prev => ({ ...prev, [key]: true }));
                                   }}
-                                  title="Change crew member"
                                 >
-                                  {b.assignee.name}
+                                  Needs crew
                                 </a>
                               )}
 
@@ -1083,13 +1037,16 @@ export default function OperatorAdminJourneysPage() {
 
                           <td className="p-3 space-x-2">
                             {(row.horizon === "T72" || row.horizon === ">72h") && (
-                              <button
-                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                                style={{ backgroundColor: "#2563eb" }}
-                                onClick={() => onManifest(row.journey.id, b.vehicle_id)}
-                              >
-                                Manifest
-                              </button>
+                              <>
+                                <button
+                                  className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                  style={{ backgroundColor: "#2563eb" }}
+                                  onClick={() => onManifest(row.journey.id, b.vehicle_id)}
+                                >
+                                  Manifest
+                                </button>
+                                {/* (Remove button retained behind the scenes if needed later) */}
+                              </>
                             )}
                           </td>
                         </tr>
