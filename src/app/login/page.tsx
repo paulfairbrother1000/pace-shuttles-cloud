@@ -20,9 +20,7 @@ async function syncUserRowAndCache() {
     const metaFirst = (u.user_metadata?.first_name || "").trim();
     const metaLast = (u.user_metadata?.last_name || "").trim();
 
-    // IMPORTANT: upsert on the real unique key that exists ("id").
-    // The previous "onConflict: 'id,auth_user_id'" crashes because there is
-    // no composite unique index on (id, auth_user_id).
+    // Upsert on real unique key: id
     await sb.from("users").upsert(
       {
         id: u.id,
@@ -34,20 +32,11 @@ async function syncUserRowAndCache() {
       { onConflict: "id" }
     );
 
-    // Read compact header payload; try id, then auth_user_id fallback.
-    let me = await sb
+    const me = await sb
       .from("users")
       .select("first_name, site_admin, operator_admin, operator_id")
       .eq("id", u.id)
       .maybeSingle();
-
-    if (me.error || !me.data) {
-      me = await sb
-        .from("users")
-        .select("first_name, site_admin, operator_admin, operator_id")
-        .eq("auth_user_id", u.id)
-        .maybeSingle();
-    }
 
     if (me.data) {
       localStorage.setItem("ps_user", JSON.stringify(me.data));
@@ -55,15 +44,9 @@ async function syncUserRowAndCache() {
       localStorage.removeItem("ps_user");
     }
 
-    // Non-blocking: auto-link any operator_staff with same email.
-    try {
-      await fetch("/api/crew/auto-link", { method: "POST" });
-    } catch (e) {
-      console.warn("auto-link failed (non-blocking):", e);
-    }
-  } catch (e) {
-    console.warn("syncUserRowAndCache() failed:", e);
-  }
+    // Non-blocking: auto-link any operator_staff with same email
+    try { await fetch("/api/crew/auto-link", { method: "POST" }); } catch {}
+  } catch {}
 }
 
 export default function LoginPage(): JSX.Element {
@@ -94,7 +77,6 @@ export default function LoginPage(): JSX.Element {
   const [confirmPassword, setConfirmPassword] = React.useState("");
 
   const [msg, setMsg] = React.useState<string | null>(null);
-  const [info, setInfo] = React.useState<string | null>(null); // non-error banner
   const [loading, setLoading] = React.useState(true);
   const [working, setWorking] = React.useState(false);
 
@@ -129,22 +111,15 @@ export default function LoginPage(): JSX.Element {
   async function onLogin(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
-    setInfo(null);
     setWorking(true);
     try {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
       await syncUserRowAndCache();
       try { localStorage.removeItem("next_after_login"); } catch {}
       goNext(nextUrl);
     } catch (err: any) {
-      const m = String(err?.message || "");
-      setMsg(
-        /email/i.test(m) && /confirm/i.test(m)
-          ? "Please verify your email address to continue."
-          : m || "Invalid login credentials"
-      );
+      setMsg(err?.message || "Invalid login credentials");
     } finally {
       setWorking(false);
     }
@@ -153,60 +128,53 @@ export default function LoginPage(): JSX.Element {
   async function onSignup(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
-    setInfo(null);
 
-    // Validation
+    // Validation like before
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) { setMsg("Please enter a valid email address."); return; }
-    if (!firstName.trim() || !lastName.trim()) { setMsg("Please provide first and last name."); return; }
-    if (password.length < 6) { setMsg("Password must be at least 6 characters."); return; }
-    if (password !== confirmPassword) { setMsg("Passwords do not match."); return; }
+    if (!emailRegex.test(email)) return setMsg("Please enter a valid email address.");
+    if (!firstName.trim() || !lastName.trim()) return setMsg("Please provide first and last name.");
+    if (password.length < 6) return setMsg("Password must be at least 6 characters.");
+    if (password !== confirmPassword) return setMsg("Passwords do not match.");
 
     setWorking(true);
     try {
+      // Create auth user
       const { data, error } = await sb.auth.signUp({
         email,
         password,
-        options: {
-          data: { first_name: firstName.trim(), last_name: lastName.trim() },
-        },
+        options: { data: { first_name: firstName.trim(), last_name: lastName.trim() } },
       });
       if (error) throw error;
 
-      // If email confirmations are ON, Supabase won't create a session here.
-      // Show a clear instruction and DO NOT redirect.
-      const sessionNow = (await sb.auth.getSession()).data.session;
-      if (!sessionNow) {
-        setInfo(
-          "Account created. Please check your email and confirm your address to finish setup."
-        );
-        return; // stop here; user will come back via login
+      // Ensure the user is SIGNED IN *now* (no email verification gate).
+      let session = (await sb.auth.getSession()).data.session;
+      if (!session) {
+        const { error: signinErr } = await sb.auth.signInWithPassword({ email, password });
+        if (signinErr) throw signinErr;
+        session = (await sb.auth.getSession()).data.session;
       }
 
-      // If a session exists (confirmations OFF), finish the usual flow:
-      // optional extra fields → users, then cache + redirect.
-      const u = sessionNow.user;
-      try {
-        const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
-        const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
-        const update: Record<string, any> = {
-          id: u.id,
-          auth_user_id: u.id,
-          first_name: firstName.trim(),
-          last_name : lastName.trim(),
-          email,
-        };
-        if (mobileNum && Number.isFinite(mobileNum)) update.mobile = mobileNum;
-        if (ccNum && Number.isFinite(ccNum)) update.country_code = ccNum;
-        await sb.from("users").upsert(update, { onConflict: "id" });
-      } catch (e) {
-        console.warn("post-signup users upsert failed:", e);
+      // Persist optional fields to public.users and cache
+      if (session?.user) {
+        try {
+          const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
+          const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
+          const update: Record<string, any> = {
+            id: session.user.id,
+            auth_user_id: session.user.id,
+            first_name: firstName.trim(),
+            last_name : lastName.trim(),
+            email,
+          };
+          if (mobileNum && Number.isFinite(mobileNum)) update.mobile = mobileNum;
+          if (ccNum && Number.isFinite(ccNum)) update.country_code = ccNum;
+          await sb.from("users").upsert(update, { onConflict: "id" });
+        } catch {}
       }
 
       await syncUserRowAndCache();
       goNext(nextUrl);
     } catch (err: any) {
-      console.error("signup error:", err);
       setMsg(err?.message || "Sign up failed");
     } finally {
       setWorking(false);
@@ -223,14 +191,14 @@ export default function LoginPage(): JSX.Element {
         {mode === "login" ? (
           <>
             Don’t have an account?{" "}
-            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("signup"); setMsg(null); setInfo(null); }}>
+            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("signup"); setMsg(null); }}>
               Create one
             </button>
           </>
         ) : (
           <>
             Already have an account?{" "}
-            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("login"); setMsg(null); setInfo(null); }}>
+            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("login"); setMsg(null); }}>
               Log in
             </button>
           </>
@@ -264,7 +232,6 @@ export default function LoginPage(): JSX.Element {
             />
           </label>
           {msg && <p className="text-sm text-red-600">{msg}</p>}
-          {info && <p className="text-sm text-green-700">{info}</p>}
           <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
             {working ? "Signing in…" : "Log in"}
           </button>
@@ -350,7 +317,6 @@ export default function LoginPage(): JSX.Element {
           </label>
 
           {msg && <p className="text-sm text-red-600">{msg}</p>}
-          {info && <p className="text-sm text-green-700">{info}</p>}
 
           <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
             {working ? "Creating…" : "Create account"}
