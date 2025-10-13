@@ -154,6 +154,7 @@ type AssignView = {
   vehicle_id: UUID;
   staff_id: UUID;
   status_simple: "allocated" | "confirmed" | "complete" | "cancelled";
+  assigned_mode: "auto" | "manual" | null; // <-- NEW
   first_name: string | null;
   last_name: string | null;
 };
@@ -331,8 +332,8 @@ export default function OperatorAdminJourneysPage() {
           sb.from("destinations").select("id,name"),
         ]);
         if (rQ.error) throw rQ.error;
-        if (puQ.error) throw puQ.error;
-        if (deQ.error) throw deQ.error;
+        if (puQ.error) throw rQ.error;
+        if (deQ.error) throw rQ.error;
 
         setRoutes((rQ.data || []) as Route[]);
         setPickups((puQ.data || []) as Pickup[]);
@@ -425,7 +426,7 @@ export default function OperatorAdminJourneysPage() {
         if (journeyIds.length) {
           const { data: aData } = await sb
             .from("v_journey_staff_min")
-            .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
+            .select("journey_id,vehicle_id,staff_id,status_simple,assigned_mode,first_name,last_name")
             .in("journey_id", journeyIds);
           setAssigns(((aData || []) as AssignView[]) ?? []);
         } else {
@@ -487,7 +488,12 @@ export default function OperatorAdminJourneysPage() {
     canRemove: boolean;
     cannotReason?: string;
     statusPill: { label: string; tone: "neutral" | "amber" | "green" | "gray" };
-    assignee?: { staff_id: UUID; name: string; status: AssignView["status_simple"] };
+    assignee?: {
+      staff_id: UUID;
+      name: string;
+      status: AssignView["status_simple"];
+      assigned_mode: "auto" | "manual" | null;
+    };
   };
   type UiRow = {
     journey: Journey;
@@ -578,6 +584,7 @@ export default function OperatorAdminJourneysPage() {
                   staff_id: a.staff_id,
                   name: staffName(a),
                   status: a.status_simple,
+                  assigned_mode: a.assigned_mode ?? null,
                 }
               : undefined;
 
@@ -594,8 +601,11 @@ export default function OperatorAdminJourneysPage() {
             statusPill: assignee
               ? horizon === "T24"
                 ? { label: `Locked — ${assignee.name}`, tone: "green" }
-                : { label: `Assigned — ${assignee.name}`, tone: "green" }
-              : { label: "Awaiting crew assignment", tone: "amber" },
+                : {
+                    label: `${assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${assignee.name}`,
+                    tone: "green",
+                  }
+              : { label: "Needs crew", tone: "amber" },
             assignee,
           });
         }
@@ -618,6 +628,7 @@ export default function OperatorAdminJourneysPage() {
                   staff_id: a.staff_id,
                   name: staffName(a),
                   status: a.status_simple,
+                  assigned_mode: a.assigned_mode ?? null,
                 }
               : undefined;
 
@@ -628,7 +639,10 @@ export default function OperatorAdminJourneysPage() {
                 : { label: "Needs crew", tone: "amber" as const }
               : assignee
               ? horizon === "T72"
-                ? { label: `Assigned — ${assignee.name}`, tone: "green" as const }
+                ? {
+                    label: `${assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${assignee.name}`,
+                    tone: "green" as const,
+                  }
                 : { label: `Locked — ${assignee.name}`, tone: "green" as const }
               : { label: "Needs crew", tone: "amber" as const };
 
@@ -724,38 +738,6 @@ export default function OperatorAdminJourneysPage() {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
 
-  async function onRemove(row: UiRow, boat: UiBoat) {
-    if (!boat.canRemove) return;
-    if (!confirm(`Remove "${boat.vehicle_name}" from this journey and reassign its groups?`)) return;
-
-    try {
-      const res = await fetch("/api/operator/remove-boat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ journey_id: row.journey.id, vehicle_id: boat.vehicle_id }),
-      });
-
-      const body = await res.json();
-      if (!res.ok) throw new Error(body?.error || `Failed (${res.status})`);
-
-      const lockRows = body.lock as Array<{
-        journey_id: string;
-        vehicle_id: string;
-        order_id: string;
-        seats: number;
-      }>;
-      setLocksByJourney(prev => {
-        const m = new Map(prev);
-        m.set(row.journey.id, lockRows as any);
-        return m;
-      });
-
-      if (body?.route) alert(body.route);
-    } catch (e: any) {
-      alert(e?.message ?? "Remove failed");
-    }
-  }
-
   async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"]) {
     if (isLockedWindow(horizon ?? "T24")) {
       alert("Crew changes are locked at T-24.");
@@ -775,7 +757,7 @@ export default function OperatorAdminJourneysPage() {
       }
       const { data: aData } = await sb!
         .from("v_journey_staff_min")
-        .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
+        .select("journey_id,vehicle_id,staff_id,status_simple,assigned_mode,first_name,last_name")
         .eq("journey_id", journeyId)
         .eq("vehicle_id", vehicleId);
       const updated = (aData || []) as AssignView[];
@@ -792,8 +774,7 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // Auto-assign driver on initial load + when site-admin filter changes.
-  // Runs silently; if an error occurs, we show a small banner.
+  // Auto-assign on load + when site-admin filter changes (silent).
   const [autoErr, setAutoErr] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -991,7 +972,7 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + inline assignee (hyperlink, click-to-edit) */}
+                          {/* Status + inline assignee (click-to-edit on label or name) */}
                           <td className="p-3">
                             <div className="flex flex-col gap-2">
                               {/* State pill */}
@@ -1001,45 +982,27 @@ export default function OperatorAdminJourneysPage() {
                                     ? `Confirmed — ${b.assignee.name}`
                                     : b.assignee.status === "cancelled"
                                     ? `Cancelled — ${b.assignee.name}`
-                                    : `Assigned — ${b.assignee.name}`}
+                                    : `${b.assignee.assigned_mode === "auto" ? "(auto) " : ""}Assigned — ${b.assignee.name}`}
                                 </span>
                               ) : (
-                                <span className="px-2 py-1 rounded text-xs" style={{ background: "#fef3c7", color: "#92400e" }}>
+                                <button
+                                  className="px-2 py-1 rounded text-xs text-left"
+                                  style={{ background: "#fef3c7", color: "#92400e" }}
+                                  onClick={() => setEditingAssignee(prev => ({ ...prev, [key]: true }))}
+                                >
                                   Needs crew
-                                </span>
+                                </button>
                               )}
 
-                              {/* Name as link + Change/Set crew */}
-                              {b.assignee ? (
-                                <>
-                                  <a
-                                    href={`/admin/staff?id=${b.assignee.staff_id}`}
-                                    className="text-xs underline text-blue-700"
-                                  >
-                                    {b.assignee.name}
-                                  </a>
-                                  {(row.horizon === "T72" || row.horizon === ">72h") && (
-                                    <button
-                                      className="text-[11px] underline self-start text-neutral-600"
-                                      onClick={() =>
-                                        setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }))
-                                      }
-                                    >
-                                      {isEditing ? "Cancel" : "Change"}
-                                    </button>
-                                  )}
-                                </>
-                              ) : (
-                                (row.horizon === "T72" || row.horizon === ">72h") && (
-                                  <button
-                                    className="text-xs underline text-blue-700 self-start"
-                                    onClick={() =>
-                                      setEditingAssignee(prev => ({ ...prev, [key]: true }))
-                                    }
-                                  >
-                                    Set crew
-                                  </button>
-                                )
+                              {/* Name as the edit trigger (no hyperlink) */}
+                              {b.assignee && (row.horizon === "T72" || row.horizon === ">72h") && (
+                                <button
+                                  className="text-xs underline text-blue-700 self-start"
+                                  onClick={() => setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }))}
+                                  title="Change crew member"
+                                >
+                                  {b.assignee.name}
+                                </button>
                               )}
 
                               {/* Editor (dropdown) only when editing and not locked */}
@@ -1047,9 +1010,7 @@ export default function OperatorAdminJourneysPage() {
                                 <div className="flex items-center gap-2">
                                   {perBoatStaff.length <= 1 ? (
                                     <span className="text-xs">
-                                      {perBoatStaff[0]
-                                        ? staffName(perBoatStaff[0])
-                                        : "No staff"}
+                                      {perBoatStaff[0] ? staffName(perBoatStaff[0]) : "No staff"}
                                     </span>
                                   ) : (
                                     <select
@@ -1099,16 +1060,13 @@ export default function OperatorAdminJourneysPage() {
 
                           <td className="p-3 space-x-2">
                             {(row.horizon === "T72" || row.horizon === ">72h") && (
-                              <>
-                                <button
-                                  className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                                  style={{ backgroundColor: "#2563eb" }}
-                                  onClick={() => onManifest(row.journey.id, b.vehicle_id)}
-                                >
-                                  Manifest
-                                </button>
-                                {/* Remove boat button kept as before */}
-                              </>
+                              <button
+                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                style={{ backgroundColor: "#2563eb" }}
+                                onClick={() => onManifest(row.journey.id, b.vehicle_id)}
+                              >
+                                Manifest
+                              </button>
                             )}
                           </td>
                         </tr>
