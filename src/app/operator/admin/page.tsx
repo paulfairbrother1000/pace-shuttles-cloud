@@ -116,7 +116,7 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
 
 /* ---------------- DB row types ---------------- */
 type Journey = { id: UUID; route_id: UUID; departure_ts: string; is_active: boolean };
-type Route = { id: UUID; pickup_id: UUID; destination_id: UUID }; // no transport_type_id
+type Route = { id: UUID; pickup_id: UUID; destination_id: UUID };
 type Pickup = { id: UUID; name: string };
 type Destination = { id: UUID; name: string };
 type RVA = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean };
@@ -262,9 +262,18 @@ export default function OperatorAdminJourneysPage() {
   }, []);
 
   const isSiteAdmin = !!psUser?.site_admin;
-  // Operator admins must have an operator_id; site admins may operate without one (see-all).
-  const operatorId = psUser?.operator_admin && !isSiteAdmin ? psUser?.operator_id ?? null : psUser?.operator_id ?? null;
-  const canSeeAll = isSiteAdmin && !operatorId;
+  const opIdFromUser = psUser?.operator_admin ? psUser?.operator_id ?? null : null;
+
+  // Site admin can choose "ALL" or a specific operator; operator admins are fixed to their op.
+  const [operatorFilter, setOperatorFilter] = useState<string>("ALL");
+  useEffect(() => {
+    if (!isSiteAdmin && opIdFromUser) setOperatorFilter(opIdFromUser);
+    if (isSiteAdmin && !opIdFromUser) setOperatorFilter("ALL");
+    if (isSiteAdmin && opIdFromUser) setOperatorFilter(opIdFromUser);
+  }, [isSiteAdmin, opIdFromUser]);
+
+  const canSeeAll = isSiteAdmin && operatorFilter === "ALL";
+  const effectiveOperatorId: string | null = canSeeAll ? null : operatorFilter;
 
   /* Data */
   const [loading, setLoading] = useState(true);
@@ -285,6 +294,7 @@ export default function OperatorAdminJourneysPage() {
   const [assigns, setAssigns] = useState<AssignView[]>([]);
   const [assigning, setAssigning] = useState<string | null>(null); // key journeyId_vehicleId
   const [selectedStaff, setSelectedStaff] = useState<Record<string, UUID>>({}); // key -> staff_id
+  const [editingAssignee, setEditingAssignee] = useState<Record<string, boolean>>({}); // toggles dropdown
 
   // Load data
   useEffect(() => {
@@ -381,12 +391,11 @@ export default function OperatorAdminJourneysPage() {
           setLocksByJourney(new Map());
         }
 
-        // crew/staff
-        if (operatorId) {
+        // crew/staff scope
+        if (canSeeAll) {
           const { data: sData } = await sb
             .from("operator_staff")
             .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
-            .eq("operator_id", operatorId)
             .eq("active", true);
           const srows = (sData || []) as StaffRow[];
           srows.sort((a, b) => {
@@ -395,11 +404,11 @@ export default function OperatorAdminJourneysPage() {
             return an.localeCompare(bn);
           });
           setStaff(srows);
-        } else if (isSiteAdmin) {
-          // site admin: allow assigning across operators
+        } else if (effectiveOperatorId) {
           const { data: sData } = await sb
             .from("operator_staff")
             .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
+            .eq("operator_id", effectiveOperatorId)
             .eq("active", true);
           const srows = (sData || []) as StaffRow[];
           srows.sort((a, b) => {
@@ -431,7 +440,7 @@ export default function OperatorAdminJourneysPage() {
     return () => {
       off = true;
     };
-  }, [psLoaded, operatorId, isSiteAdmin]);
+  }, [psLoaded, canSeeAll, effectiveOperatorId]);
 
   /* ---------------- Lookups ---------------- */
   const routeById = useMemo(() => {
@@ -561,7 +570,7 @@ export default function OperatorAdminJourneysPage() {
         for (const [vehId, seats] of seatsByVeh.entries()) {
           const v = vehicleById.get(vehId);
           if (!v) continue;
-          if (!canSeeAll && v.operator_id !== operatorId) continue;
+          if (!canSeeAll && effectiveOperatorId && v.operator_id !== effectiveOperatorId) continue;
 
           const groups = (grouped.get(vehId) || []).sort((a, b) => b - a);
           groupsByBoat.set(vehId, groups);
@@ -599,7 +608,7 @@ export default function OperatorAdminJourneysPage() {
         for (const b of allBoatsForJourney) {
           const v = vehicleById.get(b.vehicle_id);
           if (!v) continue;
-          if (!canSeeAll && v.operator_id !== operatorId) continue;
+          if (!canSeeAll && effectiveOperatorId && v.operator_id !== effectiveOperatorId) continue;
 
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
@@ -654,7 +663,7 @@ export default function OperatorAdminJourneysPage() {
         const myOtherBoats: Boat[] = allBoatsForJourney
           .map(b => {
             const v = vehicleById.get(b.vehicle_id);
-            return !v || (!canSeeAll && v.operator_id !== operatorId) || b.vehicle_id === vehId ? null : b;
+            return !v || (!canSeeAll && effectiveOperatorId && v.operator_id !== effectiveOperatorId) || b.vehicle_id === vehId ? null : b;
           })
           .filter(Boolean) as Boat[];
         if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
@@ -713,7 +722,7 @@ export default function OperatorAdminJourneysPage() {
     );
 
     return out;
-  }, [journeys, orders, rvas, vehicles, routes, pickups, destinations, operatorId, canSeeAll, locksByJourney, operators, assigns]);
+  }, [journeys, orders, rvas, vehicles, routes, pickups, destinations, canSeeAll, effectiveOperatorId, locksByJourney, operators, assigns]);
 
   /* ---------------- Actions ---------------- */
   function onManifest(journeyId: UUID, vehicleId: UUID) {
@@ -760,7 +769,8 @@ export default function OperatorAdminJourneysPage() {
     const key = `${journeyId}_${vehicleId}`;
     setAssigning(key);
     try {
-      const res = await fetch("/api/operator/assign", {
+      // UPDATED ENDPOINT
+      const res = await fetch("/api/ops/assign/lead", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, staff_id: staffId }),
@@ -780,6 +790,8 @@ export default function OperatorAdminJourneysPage() {
         updated.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
         return Array.from(m.values());
       });
+      // close editor after successful assign
+      setEditingAssignee(prev => ({ ...prev, [key]: false }));
     } catch (e: any) {
       alert(e?.message ?? "Assign failed");
     } finally {
@@ -794,7 +806,7 @@ export default function OperatorAdminJourneysPage() {
       return;
     }
     try {
-      const res = await fetch("/api/operator/auto-assign-crew", {
+      const res = await fetch("/api/ops/assign/lead/auto", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ journey_id: journeyId }),
@@ -819,7 +831,7 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // Staff list per boat’s operator (site admin may see everyone; we narrow by boat’s operator)
+  // Staff list per boat’s operator; site admin “ALL” still narrows by boat’s operator
   function eligibleStaffForVehicle(vehId: UUID) {
     const opId = vehicleById.get(vehId)?.operator_id || null;
     const list = staff.filter(s => !opId || s.operator_id === opId);
@@ -841,13 +853,38 @@ export default function OperatorAdminJourneysPage() {
             You’re seeing <strong>{canSeeAll ? "all boats" : "only your boats"}</strong>. Manifest matches the site admin view.
           </p>
         </div>
-        <div className="text-sm text-neutral-600">
-          {psUser?.operator_name ?? (psUser?.operator_admin ? psUser?.operator_id : "")}
-        </div>
+
+        {/* Site admin operator filter */}
+        {isSiteAdmin && (
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-neutral-600">Operator</label>
+            <select
+              className="border rounded px-2 py-1 text-sm"
+              value={operatorFilter}
+              onChange={e => setOperatorFilter(e.target.value)}
+            >
+              <option value="ALL">All operators</option>
+              {operators
+                .slice()
+                .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                .map(o => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+        )}
+
+        {!isSiteAdmin && (
+          <div className="text-sm text-neutral-600">
+            {psUser?.operator_name ?? (psUser?.operator_admin ? psUser?.operator_id : "")}
+          </div>
+        )}
       </header>
 
       {/* Only show this error for operator admins without an operator_id */}
-      {psLoaded && !isSiteAdmin && !operatorId && (
+      {psLoaded && !isSiteAdmin && !opIdFromUser && (
         <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-lg">
           No operator_id found for this login.
         </div>
@@ -944,6 +981,7 @@ export default function OperatorAdminJourneysPage() {
                       const key = `${row.journey.id}_${b.vehicle_id}`;
                       const selected = selectedStaff[key];
                       const perBoatStaff = eligibleStaffForVehicle(b.vehicle_id);
+                      const isEditing = !!editingAssignee[key];
 
                       return (
                         <tr key={key} className="border-t align-top">
@@ -979,7 +1017,7 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + inline assignee (hyperlink) */}
+                          {/* Status + inline assignee (hyperlink, click-to-edit) */}
                           <td className="p-3">
                             <div className="flex flex-col gap-2">
                               <span
@@ -1004,68 +1042,93 @@ export default function OperatorAdminJourneysPage() {
                                 {b.statusPill.label}
                               </span>
 
-                              {/* When assigned, show plain text with hyperlink */}
-                              {b.assignee && (
-                                <a
-                                  href={`/admin/staff?id=${b.assignee.staff_id}`}
-                                  className="text-xs underline text-blue-700"
-                                >
-                                  {b.assignee.name}
-                                </a>
-                              )}
-
-                              {/* Manual assign (hidden if locked) */}
-                              {!b.assignee &&
-                                (row.horizon === "T72" || row.horizon === ">72h") && (
-                                  <div className="flex items-center gap-2">
-                                    {perBoatStaff.length <= 1 ? (
-                                      <span className="text-xs">
-                                        {perBoatStaff[0]
-                                          ? staffName(perBoatStaff[0])
-                                          : "No staff"}
-                                      </span>
-                                    ) : (
-                                      <select
-                                        className="border rounded px-2 py-1 text-xs"
-                                        value={selected || ""}
-                                        onChange={e =>
-                                          setSelectedStaff(prev => ({
-                                            ...prev,
-                                            [key]: e.target.value as UUID,
-                                          }))
-                                        }
-                                      >
-                                        <option value="">Select crew…</option>
-                                        {perBoatStaff.map(s => (
-                                          <option key={s.id} value={s.id}>
-                                            {staffName(s)}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    )}
-
+                              {/* Show just name; click to edit (dropdown) */}
+                              {b.assignee ? (
+                                <>
+                                  <a
+                                    href={`/admin/staff?id=${b.assignee.staff_id}`}
+                                    className="text-xs underline text-blue-700"
+                                    onClick={(e) => {
+                                      // allow normal link tap without edit
+                                    }}
+                                  >
+                                    {b.assignee.name}
+                                  </a>
+                                  {(row.horizon === "T72" || row.horizon === ">72h") && (
                                     <button
-                                      className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
-                                      style={{ backgroundColor: "#111827" }}
-                                      disabled={
-                                        assigning === key ||
-                                        (!selected && perBoatStaff.length !== 1)
-                                      }
+                                      className="text-[11px] underline self-start text-neutral-600"
                                       onClick={() =>
-                                        onAssign(
-                                          row.journey.id,
-                                          b.vehicle_id,
-                                          (perBoatStaff.length === 1 && !selected
-                                            ? perBoatStaff[0]?.id
-                                            : selected) as UUID,
-                                          row.horizon
-                                        )
+                                        setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }))
                                       }
                                     >
-                                      {assigning === key ? "Assigning…" : "Assign"}
+                                      {isEditing ? "Cancel" : "Change"}
                                     </button>
-                                  </div>
-                                )}
+                                  )}
+                                </>
+                              ) : (
+                                (row.horizon === "T72" || row.horizon === ">72h") && (
+                                  <button
+                                    className="text-xs underline text-blue-700 self-start"
+                                    onClick={() =>
+                                      setEditingAssignee(prev => ({ ...prev, [key]: true }))
+                                    }
+                                  >
+                                    Set crew
+                                  </button>
+                                )
+                              )}
+
+                              {/* Editor (dropdown) only when editing and not locked */}
+                              {isEditing && (row.horizon === "T72" || row.horizon === ">72h") && (
+                                <div className="flex items-center gap-2">
+                                  {perBoatStaff.length <= 1 ? (
+                                    <span className="text-xs">
+                                      {perBoatStaff[0]
+                                        ? staffName(perBoatStaff[0])
+                                        : "No staff"}
+                                    </span>
+                                  ) : (
+                                    <select
+                                      className="border rounded px-2 py-1 text-xs"
+                                      value={selected || ""}
+                                      onChange={e =>
+                                        setSelectedStaff(prev => ({
+                                          ...prev,
+                                          [key]: e.target.value as UUID,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Select crew…</option>
+                                      {perBoatStaff.map(s => (
+                                        <option key={s.id} value={s.id}>
+                                          {staffName(s)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+
+                                  <button
+                                    className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                    style={{ backgroundColor: "#111827" }}
+                                    disabled={
+                                      assigning === key ||
+                                      (!selected && perBoatStaff.length !== 1)
+                                    }
+                                    onClick={() =>
+                                      onAssign(
+                                        row.journey.id,
+                                        b.vehicle_id,
+                                        (perBoatStaff.length === 1 && !selected
+                                          ? perBoatStaff[0]?.id
+                                          : selected) as UUID,
+                                        row.horizon
+                                      )
+                                    }
+                                  >
+                                    {assigning === key ? "Assigning…" : "Assign"}
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </td>
 
