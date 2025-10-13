@@ -190,7 +190,6 @@ type DetailedAlloc = {
   total: number;
 };
 function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
-  // Keep your heuristic: best-fit with preference; never exceed cap.
   const sorted = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
   const state = boats.map(b => ({
     vehicle_id: b.vehicle_id,
@@ -207,7 +206,7 @@ function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
       .filter(c => c.free >= g.size)
       .sort((a, b) => {
         if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-        if (a.free !== b.free) return a.free - b.free; // best fit
+        if (a.free !== b.free) return a.free - b.free;
         return a.id.localeCompare(b.id);
       });
 
@@ -262,7 +261,10 @@ export default function OperatorAdminJourneysPage() {
     };
   }, []);
 
-  const operatorId = psUser?.operator_admin ? psUser?.operator_id ?? null : null;
+  const isSiteAdmin = !!psUser?.site_admin;
+  // Operator admins must have an operator_id; site admins may operate without one (see-all).
+  const operatorId = psUser?.operator_admin && !isSiteAdmin ? psUser?.operator_id ?? null : psUser?.operator_id ?? null;
+  const canSeeAll = isSiteAdmin && !operatorId;
 
   /* Data */
   const [loading, setLoading] = useState(true);
@@ -313,7 +315,6 @@ export default function OperatorAdminJourneysPage() {
         const routeIds = Array.from(new Set(js.map(j => j.route_id)));
         const journeyIds = js.map(j => j.id);
 
-        // FIX: removed transport_type_id from select
         const [rQ, puQ, deQ] = await Promise.all([
           sb.from("routes").select("id,pickup_id,destination_id").in("id", routeIds),
           sb.from("pickup_points").select("id,name"),
@@ -380,12 +381,25 @@ export default function OperatorAdminJourneysPage() {
           setLocksByJourney(new Map());
         }
 
-        // crew/staff for this operator (alphabetical)
+        // crew/staff
         if (operatorId) {
           const { data: sData } = await sb
             .from("operator_staff")
             .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
             .eq("operator_id", operatorId)
+            .eq("active", true);
+          const srows = (sData || []) as StaffRow[];
+          srows.sort((a, b) => {
+            const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
+            const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
+            return an.localeCompare(bn);
+          });
+          setStaff(srows);
+        } else if (isSiteAdmin) {
+          // site admin: allow assigning across operators
+          const { data: sData } = await sb
+            .from("operator_staff")
+            .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
             .eq("active", true);
           const srows = (sData || []) as StaffRow[];
           srows.sort((a, b) => {
@@ -417,7 +431,7 @@ export default function OperatorAdminJourneysPage() {
     return () => {
       off = true;
     };
-  }, [psLoaded, operatorId]);
+  }, [psLoaded, operatorId, isSiteAdmin]);
 
   /* ---------------- Lookups ---------------- */
   const routeById = useMemo(() => {
@@ -485,7 +499,7 @@ export default function OperatorAdminJourneysPage() {
   };
 
   const rows: UiRow[] = useMemo(() => {
-    if (!journeys.length || !operatorId) return [];
+    if (!journeys.length) return [];
 
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
@@ -546,7 +560,9 @@ export default function OperatorAdminJourneysPage() {
         }
         for (const [vehId, seats] of seatsByVeh.entries()) {
           const v = vehicleById.get(vehId);
-          if (!v || v.operator_id !== operatorId) continue;
+          if (!v) continue;
+          if (!canSeeAll && v.operator_id !== operatorId) continue;
+
           const groups = (grouped.get(vehId) || []).sort((a, b) => b - a);
           groupsByBoat.set(vehId, groups);
           dbTotal += seats;
@@ -582,7 +598,8 @@ export default function OperatorAdminJourneysPage() {
       } else {
         for (const b of allBoatsForJourney) {
           const v = vehicleById.get(b.vehicle_id);
-          if (!v || v.operator_id !== operatorId) continue;
+          if (!v) continue;
+          if (!canSeeAll && v.operator_id !== operatorId) continue;
 
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
@@ -637,7 +654,7 @@ export default function OperatorAdminJourneysPage() {
         const myOtherBoats: Boat[] = allBoatsForJourney
           .map(b => {
             const v = vehicleById.get(b.vehicle_id);
-            return !v || v.operator_id !== operatorId || b.vehicle_id === vehId ? null : b;
+            return !v || (!canSeeAll && v.operator_id !== operatorId) || b.vehicle_id === vehId ? null : b;
           })
           .filter(Boolean) as Boat[];
         if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
@@ -648,8 +665,8 @@ export default function OperatorAdminJourneysPage() {
         }));
 
         const boatsWithRemaining: Boat[] = myOtherBoats.map(b => {
-            const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
-            return { ...b, cap: Math.max(0, b.cap - already) };
+          const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
+          return { ...b, cap: Math.max(0, b.cap - already) };
         });
 
         const probe = allocateDetailed(partiesFromGroups, boatsWithRemaining);
@@ -696,7 +713,7 @@ export default function OperatorAdminJourneysPage() {
     );
 
     return out;
-  }, [journeys, orders, rvas, vehicles, routes, pickups, destinations, operatorId, locksByJourney, operators, assigns]);
+  }, [journeys, orders, rvas, vehicles, routes, pickups, destinations, operatorId, canSeeAll, locksByJourney, operators, assigns]);
 
   /* ---------------- Actions ---------------- */
   function onManifest(journeyId: UUID, vehicleId: UUID) {
@@ -770,7 +787,7 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  // NEW: auto-assign crew per journey (server-side; respects T-24)
+  // Auto-assign crew per journey (server-side; respects T-24)
   async function onAutoAssignCrew(journeyId: UUID, horizon: UiRow["horizon"]) {
     if (isLockedWindow(horizon)) {
       alert("Crew changes are locked at T-24.");
@@ -785,7 +802,6 @@ export default function OperatorAdminJourneysPage() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error || `Failed (${res.status})`);
 
-      // refresh this journey's assignments
       const { data: aData } = await sb!
         .from("v_journey_staff_min")
         .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
@@ -803,18 +819,16 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  const eligibleStaff = useMemo(() => {
-    const list = staff.slice();
+  // Staff list per boat’s operator (site admin may see everyone; we narrow by boat’s operator)
+  function eligibleStaffForVehicle(vehId: UUID) {
+    const opId = vehicleById.get(vehId)?.operator_id || null;
+    const list = staff.filter(s => !opId || s.operator_id === opId);
     list.sort((a, b) => {
       const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
       const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
       return an.localeCompare(bn);
     });
     return list;
-  }, [staff]);
-
-  function assigneeName(b: UiBoat) {
-    return b.assignee?.name ?? null;
   }
 
   /* ---------------- Render ---------------- */
@@ -824,7 +838,7 @@ export default function OperatorAdminJourneysPage() {
         <div>
           <h1 className="text-3xl font-semibold">Operator Admin — Live Journeys</h1>
           <p className="text-neutral-600 text-lg">
-            You’re seeing <strong>only your boats</strong>. Manifest matches the site admin view.
+            You’re seeing <strong>{canSeeAll ? "all boats" : "only your boats"}</strong>. Manifest matches the site admin view.
           </p>
         </div>
         <div className="text-sm text-neutral-600">
@@ -832,7 +846,8 @@ export default function OperatorAdminJourneysPage() {
         </div>
       </header>
 
-      {psLoaded && !operatorId && (
+      {/* Only show this error for operator admins without an operator_id */}
+      {psLoaded && !isSiteAdmin && !operatorId && (
         <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-lg">
           No operator_id found for this login.
         </div>
@@ -846,7 +861,7 @@ export default function OperatorAdminJourneysPage() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : rows.length === 0 ? (
         <div className="p-4 border rounded-xl bg-white shadow">
-          No upcoming journeys for your vehicles.
+          No upcoming journeys {canSeeAll ? "" : "for your vehicles"}.
         </div>
       ) : (
         <div className="space-y-6">
@@ -904,7 +919,7 @@ export default function OperatorAdminJourneysPage() {
                     Auto-assign crew
                   </button>
                   <span className="text-xs text-neutral-600">
-                    Assigns one crew per boat from your active staff. Locked at T-24.
+                    Assigns one crew per boat from active staff. Locked at T-24.
                   </span>
                 </div>
               )}
@@ -928,6 +943,7 @@ export default function OperatorAdminJourneysPage() {
                     {row.perBoat.map(b => {
                       const key = `${row.journey.id}_${b.vehicle_id}`;
                       const selected = selectedStaff[key];
+                      const perBoatStaff = eligibleStaffForVehicle(b.vehicle_id);
 
                       return (
                         <tr key={key} className="border-t align-top">
@@ -1002,10 +1018,10 @@ export default function OperatorAdminJourneysPage() {
                               {!b.assignee &&
                                 (row.horizon === "T72" || row.horizon === ">72h") && (
                                   <div className="flex items-center gap-2">
-                                    {eligibleStaff.length <= 1 ? (
+                                    {perBoatStaff.length <= 1 ? (
                                       <span className="text-xs">
-                                        {eligibleStaff[0]
-                                          ? staffName(eligibleStaff[0])
+                                        {perBoatStaff[0]
+                                          ? staffName(perBoatStaff[0])
                                           : "No staff"}
                                       </span>
                                     ) : (
@@ -1020,7 +1036,7 @@ export default function OperatorAdminJourneysPage() {
                                         }
                                       >
                                         <option value="">Select crew…</option>
-                                        {eligibleStaff.map(s => (
+                                        {perBoatStaff.map(s => (
                                           <option key={s.id} value={s.id}>
                                             {staffName(s)}
                                           </option>
@@ -1033,14 +1049,14 @@ export default function OperatorAdminJourneysPage() {
                                       style={{ backgroundColor: "#111827" }}
                                       disabled={
                                         assigning === key ||
-                                        (!selected && eligibleStaff.length !== 1)
+                                        (!selected && perBoatStaff.length !== 1)
                                       }
                                       onClick={() =>
                                         onAssign(
                                           row.journey.id,
                                           b.vehicle_id,
-                                          (eligibleStaff.length === 1 && !selected
-                                            ? eligibleStaff[0]?.id
+                                          (perBoatStaff.length === 1 && !selected
+                                            ? perBoatStaff[0]?.id
                                             : selected) as UUID,
                                           row.horizon
                                         )
