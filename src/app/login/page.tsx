@@ -112,79 +112,68 @@ export default function LoginPage(): JSX.Element {
     }
   }
 
-  async function onSignup(e: React.FormEvent) {
-    e.preventDefault();
-    setMsg(null);
+ async function onSignup(e: React.FormEvent) {
+  e.preventDefault();
+  setMsg(null);
 
-    // Client-side validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setMsg("Please enter a valid email address.");
-      return;
+  // basic client validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) return setMsg("Please enter a valid email address.");
+  if (!firstName.trim() || !lastName.trim()) return setMsg("Please provide first and last name.");
+  if (password.length < 6) return setMsg("Password must be at least 6 characters.");
+  if (password !== confirmPassword) return setMsg("Passwords do not match.");
+
+  setWorking(true);
+  try {
+    // Create account (no email confirmation if it's disabled in Supabase)
+    const { data, error } = await sb.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { first_name: firstName.trim(), last_name: lastName.trim() },
+      },
+    });
+
+    if (error) {
+      // Surface the real provider message (e.g., "Email signups are disabled")
+      throw new Error(error.message || "Sign up failed");
     }
-    if (!firstName.trim() || !lastName.trim()) {
-      setMsg("Please provide first and last name.");
-      return;
-    }
-    if (password.length < 6) {
-      setMsg("Password must be at least 6 characters.");
-      return;
-    }
-    if (password !== confirmPassword) {
-      setMsg("Passwords do not match.");
-      return;
+
+    const user = data.user;
+    if (!user) {
+      // Shouldn’t happen when “Confirm email” is OFF, but handle gracefully
+      throw new Error("Account created, but no session returned. Check Supabase email confirmation settings.");
     }
 
-    setWorking(true);
-    try {
-      // Create auth user (should return a session if email confirmations are disabled)
-      const { data, error } = await sb.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
-          },
-        },
-      });
-      if (error) throw error;
+    // Make sure we have a row in public.users (UPDATE fails if it doesn’t exist)
+    const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
+    const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
 
-      // If project accidentally requires email confirmation, surface that clearly.
-      if (!data?.session) {
-        setMsg(
-          "Signup succeeded but email confirmation is required. Disable 'Confirm email' in Supabase to allow instant login."
-        );
-        return;
-      }
+    const upsertRow: Record<string, any> = {
+      id: user.id, // <- crucial
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      email, // helpful for your header/menu fetches
+    };
+    if (Number.isFinite(mobileNum)) upsertRow.mobile = mobileNum;
+    if (Number.isFinite(ccNum)) upsertRow.country_code = ccNum;
 
-      // Ensure a public.users row exists (in case the DB trigger is missing)
-      const { user } = data.session;
-      if (user?.id) {
-        const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
-        const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
+    const { error: upErr } = await sb.from("users").upsert(upsertRow, { onConflict: "id" });
+    if (upErr) throw upErr;
 
-        const upsertPayload: any = {
-          id: user.id,
-          first_name: firstName.trim(),
-          last_name: lastName.trim(),
-          email, // optional but helps your header/menu badge elsewhere
-        };
-        if (mobileNum && Number.isFinite(mobileNum)) upsertPayload.mobile = mobileNum;
-        if (ccNum && Number.isFinite(ccNum)) upsertPayload.country_code = ccNum;
+    // optional: auto-link crew record by email
+    try { await fetch("/api/crew/auto-link", { method: "POST" }); } catch {}
 
-        // upsert requires an RLS policy that allows auth.uid() to insert/update its own row
-        await sb.from("users").upsert(upsertPayload, { onConflict: "id" });
-      }
-
-      await postAuthHousekeeping();
-      goNext(nextUrl);
-    } catch (err: any) {
-      setMsg(err?.message || "Sign up failed");
-    } finally {
-      setWorking(false);
-    }
+    // cache + redirect
+    await cachePsUser();
+    try { localStorage.removeItem("next_after_login"); } catch {}
+    goNext(nextUrl);
+  } catch (err: any) {
+    setMsg(String(err?.message || err) || "Sign up failed");
+  } finally {
+    setWorking(false);
   }
+}
 
   return (
     <div className="mx-auto max-w-md px-4 py-10">
