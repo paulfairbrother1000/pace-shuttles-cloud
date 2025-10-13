@@ -154,7 +154,7 @@ type AssignView = {
   vehicle_id: UUID;
   staff_id: UUID;
   status_simple: "allocated" | "confirmed" | "complete" | "cancelled";
-  assigned_mode: "auto" | "manual" | null; // <-- NEW
+  assigned_mode: "auto" | "manual" | null;
   first_name: string | null;
   last_name: string | null;
 };
@@ -550,7 +550,13 @@ export default function OperatorAdminJourneysPage() {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const cap = Number(v?.maxseats ?? 0);
-          return { vehicle_id: x.vehicle_id, cap: Number.isFinite(cap) ? cap : 0, preferred: !!x.preferred };
+          // PRIORITISE boats with minseats > 0 so they get filled first (helps jettison min=0 craft at T-72)
+          const priority = Number(v?.minseats ?? 0) > 0;
+          return {
+            vehicle_id: x.vehicle_id,
+            cap: Number.isFinite(cap) ? cap : 0,
+            preferred: !!x.preferred || priority,
+          };
         })
         .filter(Boolean) as Boat[];
 
@@ -660,6 +666,18 @@ export default function OperatorAdminJourneysPage() {
             assignee,
           });
         }
+
+        // T-72: jettison empty min=0 boats from the display
+        if (horizon === "T72") {
+          for (let i = perBoat.length - 1; i >= 0; i--) {
+            const b = perBoat[i];
+            const min = Number(b.min ?? 0);
+            const seats = Number(b.db ?? 0);
+            if (seats === 0 && min === 0) {
+              perBoat.splice(i, 1);
+            }
+          }
+        }
       }
 
       const computeRemove = (vehId: UUID): { ok: boolean; reason?: string } => {
@@ -678,6 +696,7 @@ export default function OperatorAdminJourneysPage() {
         if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
 
         const partiesFromGroups: Party[] = groups.map((size, i) => ({
+          // local ids for probe
           order_id: (`local-${i}` as unknown) as UUID,
           size,
         }));
@@ -994,15 +1013,19 @@ export default function OperatorAdminJourneysPage() {
                                 </button>
                               )}
 
-                              {/* Name as the edit trigger (no hyperlink) */}
+                              {/* Name shown as a hyperlink; click to edit (no navigation) */}
                               {b.assignee && (row.horizon === "T72" || row.horizon === ">72h") && (
-                                <button
+                                <a
+                                  href="#"
                                   className="text-xs underline text-blue-700 self-start"
-                                  onClick={() => setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }))}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
+                                  }}
                                   title="Change crew member"
                                 >
                                   {b.assignee.name}
-                                </button>
+                                </a>
                               )}
 
                               {/* Editor (dropdown) only when editing and not locked */}
