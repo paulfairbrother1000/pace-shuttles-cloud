@@ -1,4 +1,3 @@
-// src/app/account/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -163,17 +162,71 @@ export default function AccountPage() {
           return;
         }
 
-        // Call your RPC to resolve crew identity
-        const { data, error } = await sb.rpc("get_current_identity");
-        if (error) throw error;
+        // NEW: opportunistically auto-link operator_staff.user_id by email.
+        // This is idempotent; if already linked, it does nothing.
+        try {
+          await fetch("/api/crew/auto-link", { method: "POST", credentials: "include" });
+        } catch {
+          // ignore network errors here; we still try to resolve identity below
+        }
 
-        const row = Array.isArray(data) ? data[0] : data;
-        setIdent({
-          isCrew: !!row?.is_crew,
-          staffId: row?.staff_id ?? null,
-          operatorId: row?.operator_id ?? null,
-          roleLabel: row?.role ?? null,
-        });
+        // Try RPC first
+        let resolved: Identity | null = null;
+        try {
+          const { data, error } = await sb.rpc("get_current_identity");
+          if (error) throw error;
+          const row = Array.isArray(data) ? data[0] : data;
+          resolved = {
+            isCrew: !!row?.is_crew,
+            staffId: row?.staff_id ?? null,
+            operatorId: row?.operator_id ?? null,
+            roleLabel: row?.role ?? null,
+          };
+        } catch {
+          // RPC not present or errored — fall back to lightweight detection.
+          // a) by user_id
+          const { data: staffByUser } = await sb
+            .from("operator_staff")
+            .select("id, role_id, jobrole, operator_id")
+            .eq("user_id", user.id)
+            .eq("active", true)
+            .limit(1)
+            .maybeSingle();
+
+          // b) by email (case-insensitive) if not linked yet
+          let staff = staffByUser;
+          if (!staff && user.email) {
+            const { data: byEmail } = await sb
+              .from("operator_staff")
+              .select("id, role_id, jobrole, operator_id")
+              .ilike("email", user.email)
+              .eq("active", true)
+              .limit(1)
+              .maybeSingle();
+            staff = byEmail ?? null;
+          }
+
+          let roleLabel: string | null = null;
+          if (staff?.role_id) {
+            const { data: r } = await sb
+              .from("transport_type_roles")
+              .select("role")
+              .eq("id", staff.role_id as UUID)
+              .maybeSingle();
+            roleLabel = r?.role ?? staff?.jobrole ?? null;
+          } else if (staff?.jobrole) {
+            roleLabel = staff.jobrole;
+          }
+
+          resolved = {
+            isCrew: !!staff,
+            staffId: staff?.id ?? null,
+            operatorId: (staff as any)?.operator_id ?? null,
+            roleLabel: roleLabel,
+          };
+        }
+
+        setIdent(resolved!);
       } catch (e: any) {
         setErr(e?.message ?? "Failed to load identity");
         setIdent({ isCrew: false, staffId: null, operatorId: null, roleLabel: null });
