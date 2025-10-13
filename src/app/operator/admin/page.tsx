@@ -1,3 +1,4 @@
+// src/app/operator/admin/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -77,9 +78,7 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
         site_admin: siteAdmin,
       };
     }
-  } catch {
-    // fall through to profile attempt
-  }
+  } catch {}
 
   try {
     const { data: ures } = await sb.auth.getUser();
@@ -125,7 +124,7 @@ type Order = {
   id: UUID;
   status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired";
   route_id: UUID | null;
-  journey_date: string | null; // YYYY-MM-DD
+  journey_date: string | null;
   qty: number | null;
 };
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
@@ -208,57 +207,56 @@ function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
 }
 
 /* ============================================================
-   NEW: Captain candidate/assign helper functions + StatusCell
+   StatusCell — now queries Supabase directly (no custom API)
    ============================================================ */
-type CaptainCandidatesResponse = {
-  ok: boolean;
-  current: { id: string; staff_id: string; status_simple: "allocated" | "confirmed" | "complete" } | null;
-  candidates: Array<{
-    staff_id: string;
-    full_name: string;
-    priority: number;
-    is_lead_eligible: boolean;
-    currently_assigned: boolean;
-    currently_confirmed: boolean;
-  }>;
+type Candidate = {
+  staff_id: string;
+  full_name: string | null;
+  priority: number;
+  is_lead_eligible: boolean;
+  currently_assigned: boolean;
+  currently_confirmed: boolean;
 };
 
-async function fetchCaptainStatus(journeyId: string, vehicleId: string): Promise<CaptainCandidatesResponse> {
-  const res = await fetch(`/api/operator/captains/${journeyId}/${vehicleId}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(await res.text());
-  return (await res.json()) as CaptainCandidatesResponse;
-}
-
-async function assignCaptain(journeyId: string, vehicleId: string, staffId: string) {
-  const res = await fetch(`/api/operator/captains/assign`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, staff_id: staffId }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
-}
-
-/**
- * Inline Status cell that:
- * - Shows "<Captain> Confirmed" | "<Captain> Assigned" | "Unassigned"
- * - Label is a hyperlink; clicking opens a dropdown of candidates
- * - Selecting assigns immediately via API, then refreshes itself
- *
- * Non-intrusive: does not alter other page flows.
- */
 function StatusCell({ journeyId, vehicleId }: { journeyId: string; vehicleId: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [data, setData] = useState<CaptainCandidatesResponse | null>(null);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [currentId, setCurrentId] = useState<string | null>(null);
+  const [currentStatus, setCurrentStatus] =
+    useState<"allocated" | "confirmed" | "complete" | null>(null);
 
-  async function refresh() {
+  async function load() {
+    if (!sb) return;
     setLoading(true);
     setErr(null);
     try {
-      const d = await fetchCaptainStatus(journeyId, vehicleId);
-      setData(d);
+      // current captain (lead) from the min view
+      const { data: cur } = await sb
+        .from("v_crew_assignments_min")
+        .select("staff_id, status_simple, role_label")
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId);
+
+      const lead = (cur || []).find(
+        (r: any) => String(r.role_label || "").toLowerCase() !== "crew"
+      );
+      setCurrentId(lead?.staff_id ?? null);
+      setCurrentStatus((lead?.status_simple as any) ?? null);
+
+      // candidate list from v_captain_candidates
+      const { data: cand, error } = await sb
+        .from("v_captain_candidates")
+        .select(
+          "staff_id, full_name, priority, is_lead_eligible, currently_assigned, currently_confirmed"
+        )
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId)
+        .order("priority", { ascending: true });
+
+      if (error) throw error;
+      setCandidates((cand as any[]) || []);
     } catch (e: any) {
       setErr(e?.message ?? "Failed to load");
     } finally {
@@ -267,48 +265,40 @@ function StatusCell({ journeyId, vehicleId }: { journeyId: string; vehicleId: st
   }
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const d = await fetchCaptainStatus(journeyId, vehicleId);
-        if (alive) setData(d);
-      } catch (e: any) {
-        if (alive) setErr(e?.message ?? "Failed to load");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    void load();
   }, [journeyId, vehicleId]);
 
   const label = useMemo(() => {
-    if (!data) return "—";
-    const currentId = data.current?.staff_id ?? null;
-    const current = data.candidates.find((c) => c.staff_id === currentId);
-    if (!current) return "Unassigned";
-    return current.currently_confirmed ? `${current.full_name} Confirmed` : `${current.full_name} Assigned`;
-  }, [data]);
+    if (!currentId) return "Unassigned";
+    const cur = candidates.find((c) => c.staff_id === currentId);
+    if (!cur) return "Assigned";
+    return cur.currently_confirmed ? `${cur.full_name ?? "Captain"} Confirmed` : `${cur.full_name ?? "Captain"} Assigned`;
+  }, [currentId, candidates]);
 
-  async function onChoose(staffId: string) {
+  async function assign(staffId: string) {
+    setLoading(true);
+    setErr(null);
     try {
-      setLoading(true);
-      setErr(null);
-      await assignCaptain(journeyId, vehicleId, staffId);
-      await refresh();
+      const res = await fetch("/api/ops/assign/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, staff_id: staffId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `Assign failed (${res.status})`);
+      await load();
       setOpen(false);
     } catch (e: any) {
-      setErr(e?.message ?? "Failed to assign");
+      setErr(e?.message ?? "Assign failed");
     } finally {
       setLoading(false);
     }
   }
 
-  if (loading && !data) {
+  if (loading && !candidates.length) {
     return <span className="text-xs text-neutral-500">Loading…</span>;
   }
-  if (err && !data) {
+  if (err && !candidates.length) {
     return <span className="text-xs text-red-600">{err}</span>;
   }
 
@@ -317,20 +307,22 @@ function StatusCell({ journeyId, vehicleId }: { journeyId: string; vehicleId: st
       <button className="underline text-left" onClick={() => setOpen((v) => !v)}>
         {label}
       </button>
-      {open && data && (
-        <div className="absolute z-20 mt-2 bg-white border rounded shadow p-2 min-w-[220px]">
+      {open && (
+        <div className="absolute z-20 mt-2 bg-white border rounded shadow p-2 min-w-[240px]">
           <div className="text-xs mb-1 text-neutral-600">Assign captain</div>
           <select
             className="w-full border rounded px-2 py-1 text-sm"
-            defaultValue={data.current?.staff_id ?? ""}
-            onChange={(e) => onChoose(e.target.value)}
+            defaultValue={currentId ?? ""}
+            onChange={(e) => e.target.value && assign(e.target.value)}
           >
             <option value="" disabled>
               Select…
             </option>
-            {data.candidates.map((c) => (
+            {candidates.map((c) => (
               <option key={c.staff_id} value={c.staff_id}>
-                {`P${c.priority} • ${c.full_name}${c.is_lead_eligible ? "" : " (not lead)"}`}
+                {`P${c.priority} • ${c.full_name ?? "Unnamed"}${
+                  c.is_lead_eligible ? "" : " (not lead)"
+                }`}
               </option>
             ))}
           </select>
@@ -341,13 +333,36 @@ function StatusCell({ journeyId, vehicleId }: { journeyId: string; vehicleId: st
   );
 }
 
-/* ---------------- Page ---------------- */
+/* ---------------- Page (unchanged outside of StatusCell usage) ---------------- */
+type UiBoat = {
+  vehicle_id: UUID;
+  vehicle_name: string;
+  operator_name: string;
+  operator_id?: UUID | null;
+  db: number;
+  min: number | null;
+  max: number | null;
+  preferred?: boolean;
+  groups: number[];
+};
+type UiRow = {
+  journey: Journey;
+  pickup: string;
+  destination: string;
+  depDate: string;
+  depTime: string;
+  horizon: "T24" | "T72" | ">72h" | "past";
+  perBoat: UiBoat[];
+  totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
+  allBoatsForJourney: Boat[];
+  groupsByBoat: Map<UUID, number[]>;
+};
+
 export default function OperatorAdminJourneysPage() {
   /* ps_user */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [psLoaded, setPsLoaded] = useState(false);
 
-  // Operator selector
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
   useEffect(() => {
@@ -387,10 +402,6 @@ export default function OperatorAdminJourneysPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
 
-  // NOTE: we keep these to avoid disturbing other parts of the page
-  const [assigns, setAssigns] = useState<AssignView[]>([]);
-
-  // Load data
   useEffect(() => {
     if (!psLoaded) return;
     let off = false;
@@ -484,22 +495,6 @@ export default function OperatorAdminJourneysPage() {
         } else {
           setLocksByJourney(new Map());
         }
-
-        // keep current assignments list in case other parts rely on it
-        if (journeyIds.length) {
-          const { data: aData } = await sb
-            .from("v_crew_assignments_min")
-            .select(
-              "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
-            )
-            .in("journey_id", journeyIds);
-          const lead = ((aData as AssignView[]) ?? []).filter(
-            (r) => (r.role_label ?? "").toLowerCase() !== "crew"
-          );
-          setAssigns(lead);
-        } else {
-          setAssigns([]);
-        }
       } catch (e: any) {
         setErr(e?.message ?? String(e));
       } finally {
@@ -512,6 +507,13 @@ export default function OperatorAdminJourneysPage() {
   }, [psLoaded, operatorFilter]);
 
   /* ---------------- Lookups ---------------- */
+  const [routes, setRoutes] = useState<Route[]>([]);
+  const [pickups, setPickups] = useState<Pickup[]>([]);
+  const [destinations, setDestinations] = useState<Destination[]>([]);
+  const [rvas, setRVAs] = useState<RVA[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [operators, setOperators] = useState<Operator[]>([]);
+
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
     (routes ?? []).forEach((r) => m.set(r.id, r));
@@ -619,7 +621,7 @@ export default function OperatorAdminJourneysPage() {
       const perBoat: UiBoat[] = [];
       let dbTotal = 0;
 
-      const locked = locksByJourney.get(j.id) ?? [];
+      const locked = (locksByJourney.get(j.id) ?? []);
       if (locked.length) {
         const grouped = new Map<UUID, number[]>();
         const seatsByVeh = new Map<UUID, number>();
@@ -671,7 +673,6 @@ export default function OperatorAdminJourneysPage() {
         }
       }
 
-      // Filter by selected operator if not "all"
       const perBoatFiltered =
         operatorFilter === "all"
           ? perBoat
@@ -753,7 +754,6 @@ export default function OperatorAdminJourneysPage() {
           </p>
         </div>
 
-        {/* Operator selector */}
         <div className="flex items-center gap-3">
           <label className="text-sm text-neutral-700">Operator:</label>
           <select
@@ -791,7 +791,6 @@ export default function OperatorAdminJourneysPage() {
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
             >
-              {/* Header */}
               <div className="p-4 flex flex-wrap items-center gap-3 border-b bg-neutral-50">
                 <div className="text-lg font-medium">
                   {row.pickup} → {row.destination}
@@ -825,6 +824,7 @@ export default function OperatorAdminJourneysPage() {
                   </span>
                   <span className="text-xs text-neutral-700">
                     Max: <strong>{row.totals.maxTotal}</strong>
+
                   </span>
                 </div>
               </div>
