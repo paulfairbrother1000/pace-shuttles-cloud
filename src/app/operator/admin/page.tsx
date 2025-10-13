@@ -1,4 +1,3 @@
-// src/app/operator/admin/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -178,10 +177,10 @@ function isLockedWindow(h: "T24" | "T72" | ">72h" | "past") {
   return h === "T24" || h === "past";
 }
 function staffName(s?: { first_name: string | null; last_name: string | null }) {
-  return `${s?.first_name ?? ""} ${s?.last_name ?? ""}`.trim() || "Unnamed";
+  return `${s?.first_name ?? ""} ${s?.last_name ?? ""}`.trim() || "Crew Member";
 }
 
-/* ---------------- Allocation (client preview only) ---------------- */
+/* ---------------- Allocation ---------------- */
 type Party = { order_id: UUID; size: number };
 type Boat = { vehicle_id: UUID; cap: number; preferred: boolean };
 type DetailedAlloc = {
@@ -496,7 +495,7 @@ export default function OperatorAdminJourneysPage() {
     depTime: string;
     horizon: "T24" | "T72" | ">72h" | "past";
     perBoat: UiBoat[];
-    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
+    totals: { proj: number; dbTotal: number; maxTotal: number };
     allBoatsForJourney: Boat[];
     groupsByBoat: Map<UUID, number[]>;
   };
@@ -550,7 +549,7 @@ export default function OperatorAdminJourneysPage() {
       const previewAlloc = allocateDetailed(parties, allBoatsForJourney);
       const groupsByBoat = new Map<UUID, number[]>();
 
-      const perBoat: UiBoat[] = [];
+      let perBoat: UiBoat[] = [];
       let dbTotal = 0;
 
       const locked = locksByJourney.get(j.id) ?? [];
@@ -564,6 +563,7 @@ export default function OperatorAdminJourneysPage() {
         for (const [vehId, seats] of seatsByVeh.entries()) {
           const v = vehicleById.get(vehId);
           if (!v) continue;
+          // operator filter
           if (!canSeeAll && effectiveOperatorId && v.operator_id !== effectiveOperatorId) continue;
 
           const groups = (grouped.get(vehId) || []).sort((a, b) => b - a);
@@ -573,11 +573,7 @@ export default function OperatorAdminJourneysPage() {
           const a = assignByKey.get(`${j.id}_${vehId}`);
           const assignee =
             a && a.staff_id
-              ? {
-                  staff_id: a.staff_id,
-                  name: staffName(a),
-                  status: a.status_simple,
-                }
+              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
               : undefined;
 
           perBoat.push({
@@ -608,11 +604,7 @@ export default function OperatorAdminJourneysPage() {
           const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
           const assignee =
             a && a.staff_id
-              ? {
-                  staff_id: a.staff_id,
-                  name: staffName(a),
-                  status: a.status_simple,
-                }
+              ? { staff_id: a.staff_id, name: staffName(a), status: a.status_simple }
               : undefined;
 
           perBoat.push({
@@ -630,43 +622,13 @@ export default function OperatorAdminJourneysPage() {
         }
       }
 
-      const computeRemove = (vehId: UUID): { ok: boolean; reason?: string } => {
-        if (horizon === "T24" || horizon === "past") return { ok: false, reason: "Locked at T-24" };
-        if (horizon === ">72h") return { ok: true };
+      // T-window enforcement in UI:
+      // - At T72 and T24, drop boats with 0 allocated customers.
+      if (horizon === "T72" || horizon === "T24") {
+        perBoat = perBoat.filter(b => b.db > 0);
+      }
 
-        const groups = groupsByBoat.get(vehId) || [];
-        if (groups.length === 0) return { ok: true };
-
-        const myOtherBoats: Boat[] = allBoatsForJourney
-          .map(b => {
-            const v = vehicleById.get(b.vehicle_id);
-            return !v || (!canSeeAll && effectiveOperatorId && v.operator_id !== effectiveOperatorId) || b.vehicle_id === vehId ? null : b;
-          })
-          .filter(Boolean) as Boat[];
-        if (!myOtherBoats.length) return { ok: false, reason: "No other boats" };
-
-        const partiesFromGroups: Party[] = groups.map((size, i) => ({
-          order_id: (`local-${i}` as unknown) as UUID,
-          size,
-        }));
-
-        const boatsWithRemaining: Boat[] = myOtherBoats.map(b => {
-          const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
-          return { ...b, cap: Math.max(0, b.cap - already) };
-        });
-
-        const probe = allocateDetailed(partiesFromGroups, boatsWithRemaining);
-        return probe.unassigned.length === 0
-          ? { ok: true }
-          : { ok: false, reason: "No capacity on other boats" };
-      };
-
-      const perBoatDecorated = perBoat.map(b => {
-        const { ok, reason } = computeRemove(b.vehicle_id);
-        return { ...b, canRemove: ok, cannotReason: reason };
-      });
-
-      perBoatDecorated.sort((a, b) => {
+      perBoat.sort((a, b) => {
         const ap = a.preferred ? 0 : 1;
         const bp = b.preferred ? 0 : 1;
         if (ap !== bp) return ap - bp;
@@ -680,12 +642,11 @@ export default function OperatorAdminJourneysPage() {
         depDate: dep.toLocaleDateString(),
         depTime: dep.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         horizon,
-        perBoat: perBoatDecorated,
+        perBoat,
         totals: {
           proj: parties.reduce((s, p) => s + p.size, 0),
           dbTotal,
           maxTotal: allBoatsForJourney.reduce((s, b) => s + b.cap, 0),
-          unassigned: 0,
         },
         allBoatsForJourney,
         groupsByBoat,
@@ -706,13 +667,13 @@ export default function OperatorAdminJourneysPage() {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
 
-  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"], passengersOnBoat?: number) {
-    if (isLockedWindow(horizon ?? "T24")) {
-      alert("Crew changes are locked at T-24.");
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"], dbForBoat?: number) {
+    if (dbForBoat && dbForBoat <= 0) {
+      alert("You can only assign a captain when the boat has paying customers.");
       return;
     }
-    if (!passengersOnBoat || passengersOnBoat <= 0) {
-      alert("You can only assign a captain when there is at least 1 paying customer on this boat.");
+    if (isLockedWindow(horizon ?? "T24")) {
+      alert("Crew changes are locked at T-24.");
       return;
     }
     const key = `${journeyId}_${vehicleId}`;
@@ -747,6 +708,7 @@ export default function OperatorAdminJourneysPage() {
   }
 
   // Auto-assign driver on initial load + when site-admin filter changes.
+  // Runs silently; UI still enforces "no empty boats / no captain on zero customers".
   const [autoErr, setAutoErr] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -909,7 +871,8 @@ export default function OperatorAdminJourneysPage() {
                       const selected = selectedStaff[key];
                       const perBoatStaff = eligibleStaffForVehicle(b.vehicle_id);
                       const isEditing = !!editingAssignee[key];
-                      const canEdit = (row.horizon === "T72" || row.horizon === ">72h") && b.db > 0;
+
+                      const canEditCrew = (row.horizon === "T72" || row.horizon === ">72h") && b.db > 0;
 
                       return (
                         <tr key={key} className="border-t align-top">
@@ -945,95 +908,104 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + hyperlink name or "Needs crew" (click to edit) */}
+                          {/* Status + inline assignee (link style; click to edit) */}
                           <td className="p-3">
                             <div className="flex flex-col gap-1">
-                              {b.assignee ? (
-                                <a
-                                  href={`/admin/staff?id=${b.assignee.staff_id}`}
-                                  className="text-sm underline text-blue-700 w-fit"
-                                  onClick={e => {
-                                    e.preventDefault();
-                                    if (canEdit) {
-                                      setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }));
-                                    } else {
-                                      // allow profile open on locked window
-                                      window.location.href = `/admin/staff?id=${b.assignee!.staff_id}`;
+                              {b.db <= 0 ? (
+                                <span className="text-neutral-500">—</span>
+                              ) : b.assignee ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="text-blue-700 underline text-sm text-left"
+                                    onClick={() =>
+                                      setEditingAssignee(prev => ({ ...prev, [key]: !prev[key] }))
                                     }
-                                  }}
-                                  title={canEdit ? "Click to change crew" : "View crew profile"}
-                                >
-                                  {b.assignee.name}
-                                </a>
-                              ) : b.db > 0 ? (
+                                  >
+                                    {b.assignee.name}
+                                  </button>
+                                  <span className="text-[11px] text-neutral-500">
+                                    {b.assignee.status === "complete"
+                                      ? "Confirmed"
+                                      : b.assignee.status === "cancelled"
+                                      ? "Cancelled"
+                                      : "Assigned"}
+                                  </span>
+                                </>
+                              ) : (
                                 <button
-                                  className="text-sm underline text-blue-700 w-fit"
-                                  onClick={() => canEdit && setEditingAssignee(prev => ({ ...prev, [key]: true }))}
-                                  disabled={!canEdit}
-                                  title={canEdit ? "Assign crew" : "Crew changes locked or no customers"}
+                                  type="button"
+                                  className="text-blue-700 underline text-sm text-left"
+                                  disabled={!canEditCrew}
+                                  onClick={() =>
+                                    canEditCrew &&
+                                    setEditingAssignee(prev => ({ ...prev, [key]: true }))
+                                  }
                                 >
                                   Needs crew
                                 </button>
-                              ) : (
-                                <span className="text-neutral-500 text-sm">—</span>
                               )}
-                              {b.assignee && (
-                                <span className="text-[11px] text-neutral-500">Assigned</span>
-                              )}
-                            </div>
 
-                            {/* Editor (dropdown) only when editing and not locked, and when there are customers */}
-                            {isEditing && canEdit && (
-                              <div className="mt-2 flex items-center gap-2">
-                                {perBoatStaff.length <= 1 ? (
-                                  <span className="text-xs">
-                                    {perBoatStaff[0]
-                                      ? staffName(perBoatStaff[0])
-                                      : "No staff"}
-                                  </span>
-                                ) : (
-                                  <select
-                                    className="border rounded px-2 py-1 text-xs"
-                                    value={selected || ""}
-                                    onChange={e =>
-                                      setSelectedStaff(prev => ({
-                                        ...prev,
-                                        [key]: e.target.value as UUID,
-                                      }))
+                              {/* Editor (dropdown) only when editing and allowed */}
+                              {isEditing && canEditCrew && (
+                                <div className="mt-1 flex items-center gap-2">
+                                  {perBoatStaff.length <= 1 ? (
+                                    <span className="text-xs">
+                                      {perBoatStaff[0] ? staffName(perBoatStaff[0]) : "No staff"}
+                                    </span>
+                                  ) : (
+                                    <select
+                                      className="border rounded px-2 py-1 text-xs"
+                                      value={selected || ""}
+                                      onChange={e =>
+                                        setSelectedStaff(prev => ({
+                                          ...prev,
+                                          [key]: e.target.value as UUID,
+                                        }))
+                                      }
+                                    >
+                                      <option value="">Select crew…</option>
+                                      {perBoatStaff.map(s => (
+                                        <option key={s.id} value={s.id}>
+                                          {staffName(s)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+
+                                  <button
+                                    className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                    style={{ backgroundColor: "#111827" }}
+                                    disabled={
+                                      assigning === key ||
+                                      (!selected && perBoatStaff.length !== 1)
+                                    }
+                                    onClick={() =>
+                                      onAssign(
+                                        row.journey.id,
+                                        b.vehicle_id,
+                                        (perBoatStaff.length === 1 && !selected
+                                          ? perBoatStaff[0]?.id
+                                          : selected) as UUID,
+                                        row.horizon,
+                                        b.db
+                                      )
                                     }
                                   >
-                                    <option value="">Select crew…</option>
-                                    {perBoatStaff.map(s => (
-                                      <option key={s.id} value={s.id}>
-                                        {staffName(s)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )}
+                                    {assigning === key ? "Assigning…" : "Assign"}
+                                  </button>
 
-                                <button
-                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
-                                  style={{ backgroundColor: "#111827" }}
-                                  disabled={
-                                    assigning === key ||
-                                    (!selected && perBoatStaff.length !== 1)
-                                  }
-                                  onClick={() =>
-                                    onAssign(
-                                      row.journey.id,
-                                      b.vehicle_id,
-                                      (perBoatStaff.length === 1 && !selected
-                                        ? perBoatStaff[0]?.id
-                                        : selected) as UUID,
-                                      row.horizon,
-                                      b.db
-                                    )
-                                  }
-                                >
-                                  {assigning === key ? "Assigning…" : "Assign"}
-                                </button>
-                              </div>
-                            )}
+                                  <button
+                                    className="text-[11px] underline text-neutral-600"
+                                    onClick={() =>
+                                      setEditingAssignee(prev => ({ ...prev, [key]: false }))
+                                    }
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </td>
 
                           <td className="p-3 space-x-2">
