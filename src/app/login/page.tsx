@@ -9,6 +9,70 @@ const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+/**
+ * Ensure we have a row in public.users for the current auth user,
+ * then cache a compact ps_user in localStorage,
+ * and auto-link any matching operator_staff by email.
+ */
+async function syncUserRowAndCache() {
+  try {
+    const { data: ures } = await sb.auth.getUser();
+    const u = ures?.user;
+    if (!u) return;
+
+    const email = (u.email || "").trim() || null;
+    const metaFirst = (u.user_metadata?.first_name || "").trim();
+    const metaLast = (u.user_metadata?.last_name || "").trim();
+
+    // 1) Upsert into public.users (create if missing, update if present)
+    //    We set BOTH id and auth_user_id to auth.user.id for consistency.
+    //    If a legacy row already exists with auth_user_id, this will update it.
+    const upsertPayload: Record<string, any> = {
+      id: u.id,
+      auth_user_id: u.id,
+    };
+    if (email) upsertPayload.email = email;
+    if (metaFirst) upsertPayload.first_name = metaFirst;
+    if (metaLast) upsertPayload.last_name = metaLast;
+
+    await sb.from("users").upsert(upsertPayload, {
+      onConflict: "id,auth_user_id", // both columns exist in schema
+    });
+
+    // 2) Read back a compact view used by the app header etc.
+    //    Try id first; fall back to auth_user_id.
+    let me = await sb
+      .from("users")
+      .select("first_name, site_admin, operator_admin, operator_id")
+      .eq("id", u.id)
+      .maybeSingle();
+
+    if (me.error || !me.data) {
+      me = await sb
+        .from("users")
+        .select("first_name, site_admin, operator_admin, operator_id")
+        .eq("auth_user_id", u.id)
+        .maybeSingle();
+    }
+
+    if (me.data) {
+      localStorage.setItem("ps_user", JSON.stringify(me.data));
+    } else {
+      localStorage.removeItem("ps_user");
+    }
+
+    // 3) Auto-link operator_staff.user_id where emails match (case-insensitive)
+    //    This endpoint uses service role; it’s idempotent.
+    try {
+      await fetch("/api/crew/auto-link", { method: "POST" });
+    } catch {
+      // non-blocking
+    }
+  } catch {
+    // swallow — login flow should continue
+  }
+}
+
 export default function LoginPage(): JSX.Element {
   const router = useRouter();
   const sp = useSearchParams();
@@ -40,102 +104,6 @@ export default function LoginPage(): JSX.Element {
   const [loading, setLoading] = React.useState(true);
   const [working, setWorking] = React.useState(false);
 
-  /** Ensure a row exists in public.users for this auth user, keyed by auth_user_id. */
-  const ensureUsersRow = React.useCallback(
-    async (opts?: { first?: string; last?: string; email?: string; mobile?: number | null; country_code?: number | null }) => {
-      const { data: ures } = await sb.auth.getUser();
-      const u = ures?.user;
-      if (!u) return null;
-
-      // Try find by auth_user_id
-      const { data: existing } = await sb
-        .from("users")
-        .select("*")
-        .eq("auth_user_id", u.id)
-        .maybeSingle();
-
-      const payload: Record<string, any> = {
-        auth_user_id: u.id,
-      };
-
-      if (opts?.first) payload.first_name = opts.first;
-      if (opts?.last) payload.last_name = opts.last;
-      if (opts?.email ?? u.email) payload.email = (opts?.email ?? u.email) || null;
-      if (typeof opts?.mobile !== "undefined") payload.mobile = opts.mobile;
-      if (typeof opts?.country_code !== "undefined") payload.country_code = opts.country_code;
-
-      if (existing) {
-        // Update minimally
-        await sb.from("users").update(payload).eq("auth_user_id", u.id);
-      } else {
-        // Insert new (let DB generate users.id)
-        await sb.from("users").insert(payload);
-      }
-
-      // Return fresh row
-      const { data: row } = await sb
-        .from("users")
-        .select("id, first_name, last_name, email, site_admin, operator_admin, operator_id")
-        .eq("auth_user_id", u.id)
-        .maybeSingle();
-
-      return row ?? null;
-    },
-    []
-  );
-
-  /** Cache ps_user for menu/header */
-  const cachePsUser = React.useCallback(async () => {
-    try {
-      const { data: ures } = await sb.auth.getUser();
-      const u = ures?.user;
-      if (!u) return;
-
-      // Make sure users row exists, then cache
-      const usersRow = await ensureUsersRow({
-        first: (u.user_metadata as any)?.first_name,
-        last: (u.user_metadata as any)?.last_name,
-        email: u.email || undefined,
-      });
-
-      if (usersRow) {
-        localStorage.setItem(
-          "ps_user",
-          JSON.stringify({
-            id: usersRow.id,
-            first_name: usersRow.first_name,
-            site_admin: usersRow.site_admin,
-            operator_admin: usersRow.operator_admin,
-            operator_id: usersRow.operator_id,
-          })
-        );
-      } else {
-        localStorage.removeItem("ps_user");
-      }
-    } catch {
-      // ignore
-    }
-  }, [ensureUsersRow]);
-
-  async function afterAuthHousekeeping(extra?: { first?: string; last?: string }) {
-    // 1) ensure public.users row and cache ps_user
-    await ensureUsersRow({
-      first: extra?.first,
-      last: extra?.last,
-      email,
-      mobile: mobile.trim() ? Number(mobile.trim()) : null,
-      country_code: countryCode.trim() ? Number(countryCode.trim()) : null,
-    });
-    await cachePsUser();
-
-    // 2) auto-link crew record(s) by email → sets operator_staff.user_id
-    try {
-      await fetch("/api/crew/auto-link", { method: "POST" });
-    } catch {
-      /* non-fatal */
-    }
-  }
-
   const goNext = React.useCallback((url: string) => {
     try {
       router.replace(url);
@@ -155,14 +123,14 @@ export default function LoginPage(): JSX.Element {
       const { data } = await sb.auth.getSession();
       if (!alive) return;
       if (data?.session?.user) {
-        await afterAuthHousekeeping();
+        await syncUserRowAndCache();
         goNext(nextUrl);
       } else {
         setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [goNext, nextUrl]); // afterAuthHousekeeping runs only on a logged-in session
+  }, [goNext, nextUrl]);
 
   async function onLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -172,11 +140,20 @@ export default function LoginPage(): JSX.Element {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      await afterAuthHousekeeping();
+      // Ensure users row exists + cache ps_user + auto-link staff
+      await syncUserRowAndCache();
+
       try { localStorage.removeItem("next_after_login"); } catch {}
       goNext(nextUrl);
     } catch (err: any) {
-      setMsg(err?.message || "Invalid login credentials");
+      // Common Supabase error when email isn’t confirmed:
+      // relay a clearer message but don’t guess status codes
+      const m = String(err?.message || "");
+      setMsg(
+        /email/i.test(m) && /confirm/i.test(m)
+          ? "Please verify your email address to continue."
+          : m || "Invalid login credentials"
+      );
     } finally {
       setWorking(false);
     }
@@ -186,23 +163,63 @@ export default function LoginPage(): JSX.Element {
     e.preventDefault();
     setMsg(null);
 
+    // ✅ Validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) { setMsg("Please enter a valid email address."); return; }
-    if (!firstName.trim() || !lastName.trim()) { setMsg("Please provide first and last name."); return; }
-    if (password.length < 6) { setMsg("Password must be at least 6 characters."); return; }
-    if (password !== confirmPassword) { setMsg("Passwords do not match."); return; }
+    if (!emailRegex.test(email)) {
+      setMsg("Please enter a valid email address.");
+      return;
+    }
+    if (!firstName.trim() || !lastName.trim()) {
+      setMsg("Please provide first and last name.");
+      return;
+    }
+    if (password.length < 6) {
+      setMsg("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMsg("Passwords do not match.");
+      return;
+    }
 
     setWorking(true);
     try {
       const { error } = await sb.auth.signUp({
         email,
         password,
-        options: { data: { first_name: firstName.trim(), last_name: lastName.trim() } },
+        options: {
+          data: {
+            first_name: firstName.trim(),
+            last_name : lastName.trim(),
+          },
+        },
       });
       if (error) throw error;
 
-      // Create users row, link crew, cache ps_user
-      await afterAuthHousekeeping({ first: firstName.trim(), last: lastName.trim() });
+      // Try to ensure a row exists in public.users and cache it immediately.
+      // (If email confirmation is required, the session may not be active yet,
+      // but this is safe to call; it will no-op if no session.)
+      await syncUserRowAndCache();
+
+      // Also persist optional mobile / country_code when session is present.
+      const { data: ures } = await sb.auth.getUser();
+      const u = ures?.user;
+      if (u) {
+        const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
+        const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
+
+        const update: Record<string, any> = {
+          id: u.id,
+          auth_user_id: u.id,
+          first_name: firstName.trim(),
+          last_name : lastName.trim(),
+          email,
+        };
+        if (mobileNum && Number.isFinite(mobileNum)) update.mobile = mobileNum;
+        if (ccNum && Number.isFinite(ccNum)) update.country_code = ccNum;
+
+        await sb.from("users").upsert(update, { onConflict: "id,auth_user_id" });
+      }
 
       goNext(nextUrl);
     } catch (err: any) {
