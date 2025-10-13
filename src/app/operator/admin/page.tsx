@@ -174,6 +174,12 @@ function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
   if (h <= 72) return "T72";
   return ">72h";
 }
+function isLockedWindow(h: "T24" | "T72" | ">72h" | "past") {
+  return h === "T24" || h === "past";
+}
+function staffName(s?: { first_name: string | null; last_name: string | null }) {
+  return `${s?.first_name ?? ""} ${s?.last_name ?? ""}`.trim() || "Unnamed";
+}
 
 /* ---------------- Allocation ---------------- */
 type Party = { order_id: UUID; size: number };
@@ -184,6 +190,7 @@ type DetailedAlloc = {
   total: number;
 };
 function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
+  // Keep your heuristic: best-fit with preference; never exceed cap.
   const sorted = [...parties].filter(p => p.size > 0).sort((a, b) => b.size - a.size);
   const state = boats.map(b => ({
     vehicle_id: b.vehicle_id,
@@ -200,7 +207,7 @@ function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
       .filter(c => c.free >= g.size)
       .sort((a, b) => {
         if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-        if (a.free !== b.free) return a.free - b.free;
+        if (a.free !== b.free) return a.free - b.free; // best fit
         return a.id.localeCompare(b.id);
       });
 
@@ -549,7 +556,7 @@ export default function OperatorAdminJourneysPage() {
             a && a.staff_id
               ? {
                   staff_id: a.staff_id,
-                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  name: staffName(a),
                   status: a.status_simple,
                 }
               : undefined;
@@ -588,7 +595,7 @@ export default function OperatorAdminJourneysPage() {
             a && a.staff_id
               ? {
                   staff_id: a.staff_id,
-                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  name: staffName(a),
                   status: a.status_simple,
                 }
               : undefined;
@@ -641,8 +648,8 @@ export default function OperatorAdminJourneysPage() {
         }));
 
         const boatsWithRemaining: Boat[] = myOtherBoats.map(b => {
-          const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
-          return { ...b, cap: Math.max(0, b.cap - already) };
+            const already = (groupsByBoat.get(b.vehicle_id) || []).reduce((s, x) => s + x, 0);
+            return { ...b, cap: Math.max(0, b.cap - already) };
         });
 
         const probe = allocateDetailed(partiesFromGroups, boatsWithRemaining);
@@ -728,7 +735,11 @@ export default function OperatorAdminJourneysPage() {
     }
   }
 
-  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID) {
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId: UUID, horizon?: UiRow["horizon"]) {
+    if (isLockedWindow(horizon ?? "T24")) {
+      alert("Crew changes are locked at T-24.");
+      return;
+    }
     const key = `${journeyId}_${vehicleId}`;
     setAssigning(key);
     try {
@@ -756,6 +767,39 @@ export default function OperatorAdminJourneysPage() {
       alert(e?.message ?? "Assign failed");
     } finally {
       setAssigning(null);
+    }
+  }
+
+  // NEW: auto-assign crew per journey (server-side; respects T-24)
+  async function onAutoAssignCrew(journeyId: UUID, horizon: UiRow["horizon"]) {
+    if (isLockedWindow(horizon)) {
+      alert("Crew changes are locked at T-24.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/operator/auto-assign-crew", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ journey_id: journeyId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `Failed (${res.status})`);
+
+      // refresh this journey's assignments
+      const { data: aData } = await sb!
+        .from("v_journey_staff_min")
+        .select("journey_id,vehicle_id,staff_id,status_simple,first_name,last_name")
+        .eq("journey_id", journeyId);
+      const updated = (aData || []) as AssignView[];
+      setAssigns(prev => {
+        const m = new Map(prev.map(p => [`${p.journey_id}_${p.vehicle_id}`, p]));
+        updated.forEach(u => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+        return Array.from(m.values());
+      });
+
+      alert("Crew auto-assigned.");
+    } catch (e: any) {
+      alert(e?.message ?? "Auto-assign crew failed");
     }
   }
 
@@ -849,6 +893,22 @@ export default function OperatorAdminJourneysPage() {
                 </div>
               </div>
 
+              {/* Journey-level crew actions (auto) */}
+              {(row.horizon === "T72" || row.horizon === ">72h") && (
+                <div className="px-4 py-3 border-b flex items-center gap-3">
+                  <button
+                    className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                    style={{ backgroundColor: "#111827" }}
+                    onClick={() => onAutoAssignCrew(row.journey.id, row.horizon)}
+                  >
+                    Auto-assign crew
+                  </button>
+                  <span className="text-xs text-neutral-600">
+                    Assigns one crew per boat from your active staff. Locked at T-24.
+                  </span>
+                </div>
+              )}
+
               {/* Table */}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -903,78 +963,94 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* Status + inline assignee */}
+                          {/* Status + inline assignee (hyperlink) */}
                           <td className="p-3">
-                            <span
-                              className="px-2 py-1 rounded text-xs"
-                              style={{
-                                background:
-                                  b.statusPill.tone === "green"
-                                    ? "#dcfce7"
-                                    : b.statusPill.tone === "amber"
-                                    ? "#fef3c7"
-                                    : b.statusPill.tone === "gray"
-                                    ? "#f3f4f6"
-                                    : "#eef2ff",
-                                color:
-                                  b.statusPill.tone === "green"
-                                    ? "#166534"
-                                    : b.statusPill.tone === "amber"
-                                    ? "#92400e"
-                                    : "#374151",
-                              }}
-                            >
-                              {b.statusPill.label}
-                            </span>
-                            {!assigneeName(b) && (row.horizon === "T72" || row.horizon === ">72h") && (
-                              <div className="mt-2 flex items-center gap-2">
-                                {eligibleStaff.length <= 1 ? (
-                                  <span className="text-xs">
-                                    {eligibleStaff[0]
-                                      ? `${eligibleStaff[0].first_name ?? ""} ${eligibleStaff[0].last_name ?? ""}`.trim()
-                                      : "No staff"}
-                                  </span>
-                                ) : (
-                                  <select
-                                    className="border rounded px-2 py-1 text-xs"
-                                    value={selected || ""}
-                                    onChange={e =>
-                                      setSelectedStaff(prev => ({ ...prev, [key]: e.target.value as UUID }))
-                                    }
-                                  >
-                                    <option value="">Select crew…</option>
-                                    {eligibleStaff.map(s => {
-                                      const name = `${s.last_name ?? ""} ${s.first_name ?? ""}`.trim() || "Unnamed";
-                                      return (
-                                        <option key={s.id} value={s.id}>
-                                          {name}
-                                        </option>
-                                      );
-                                    })}
-                                  </select>
-                                )}
+                            <div className="flex flex-col gap-2">
+                              <span
+                                className="px-2 py-1 rounded text-xs"
+                                style={{
+                                  background:
+                                    b.statusPill.tone === "green"
+                                      ? "#dcfce7"
+                                      : b.statusPill.tone === "amber"
+                                      ? "#fef3c7"
+                                      : b.statusPill.tone === "gray"
+                                      ? "#f3f4f6"
+                                      : "#eef2ff",
+                                  color:
+                                    b.statusPill.tone === "green"
+                                      ? "#166534"
+                                      : b.statusPill.tone === "amber"
+                                      ? "#92400e"
+                                      : "#374151",
+                                }}
+                              >
+                                {b.statusPill.label}
+                              </span>
 
-                                <button
-                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
-                                  style={{ backgroundColor: "#111827" }}
-                                  disabled={
-                                    assigning === key ||
-                                    (!selected && eligibleStaff.length !== 1)
-                                  }
-                                  onClick={() =>
-                                    onAssign(
-                                      row.journey.id,
-                                      b.vehicle_id,
-                                      (eligibleStaff.length === 1 && !selected
-                                        ? eligibleStaff[0]?.id
-                                        : selected) as UUID
-                                    )
-                                  }
+                              {/* When assigned, show plain text with hyperlink */}
+                              {b.assignee && (
+                                <a
+                                  href={`/admin/staff?id=${b.assignee.staff_id}`}
+                                  className="text-xs underline text-blue-700"
                                 >
-                                  {assigning === key ? "Assigning…" : "Assign"}
-                                </button>
-                              </div>
-                            )}
+                                  {b.assignee.name}
+                                </a>
+                              )}
+
+                              {/* Manual assign (hidden if locked) */}
+                              {!b.assignee &&
+                                (row.horizon === "T72" || row.horizon === ">72h") && (
+                                  <div className="flex items-center gap-2">
+                                    {eligibleStaff.length <= 1 ? (
+                                      <span className="text-xs">
+                                        {eligibleStaff[0]
+                                          ? staffName(eligibleStaff[0])
+                                          : "No staff"}
+                                      </span>
+                                    ) : (
+                                      <select
+                                        className="border rounded px-2 py-1 text-xs"
+                                        value={selected || ""}
+                                        onChange={e =>
+                                          setSelectedStaff(prev => ({
+                                            ...prev,
+                                            [key]: e.target.value as UUID,
+                                          }))
+                                        }
+                                      >
+                                        <option value="">Select crew…</option>
+                                        {eligibleStaff.map(s => (
+                                          <option key={s.id} value={s.id}>
+                                            {staffName(s)}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+
+                                    <button
+                                      className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                      style={{ backgroundColor: "#111827" }}
+                                      disabled={
+                                        assigning === key ||
+                                        (!selected && eligibleStaff.length !== 1)
+                                      }
+                                      onClick={() =>
+                                        onAssign(
+                                          row.journey.id,
+                                          b.vehicle_id,
+                                          (eligibleStaff.length === 1 && !selected
+                                            ? eligibleStaff[0]?.id
+                                            : selected) as UUID,
+                                          row.horizon
+                                        )
+                                      }
+                                    >
+                                      {assigning === key ? "Assigning…" : "Assign"}
+                                    </button>
+                                  </div>
+                                )}
+                            </div>
                           </td>
 
                           <td className="p-3 space-x-2">
