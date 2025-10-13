@@ -1,4 +1,3 @@
-// src/app/operator/admin/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -78,7 +77,9 @@ async function resolveOperatorFromAuthOrProfile(): Promise<PsUser | null> {
         site_admin: siteAdmin,
       };
     }
-  } catch {}
+  } catch {
+    // fall through to profile attempt
+  }
 
   try {
     const { data: ures } = await sb.auth.getUser();
@@ -124,10 +125,21 @@ type Order = {
   id: UUID;
   status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired";
   route_id: UUID | null;
-  journey_date: string | null;
+  journey_date: string | null; // YYYY-MM-DD
   qty: number | null;
 };
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
+
+type StaffRow = {
+  id: UUID; // operator_staff.id
+  user_id: UUID | null;
+  operator_id: UUID;
+  first_name: string | null;
+  last_name: string | null;
+  active: boolean | null;
+  role_id: UUID | null;
+  jobrole: string | null;
+};
 
 type AssignView = {
   journey_id: UUID;
@@ -137,6 +149,8 @@ type AssignView = {
   first_name: string | null;
   last_name: string | null;
   role_label?: string | null;
+  // NEW (if available from view; safe if missing)
+  assign_source?: "manual" | "auto" | null;
 };
 
 /* ---------------- Helpers ---------------- */
@@ -206,163 +220,13 @@ function allocateDetailed(parties: Party[], boats: Boat[]): DetailedAlloc {
   return { byBoat, unassigned, total };
 }
 
-/* ============================================================
-   StatusCell — now queries Supabase directly (no custom API)
-   ============================================================ */
-type Candidate = {
-  staff_id: string;
-  full_name: string | null;
-  priority: number;
-  is_lead_eligible: boolean;
-  currently_assigned: boolean;
-  currently_confirmed: boolean;
-};
-
-function StatusCell({ journeyId, vehicleId }: { journeyId: string; vehicleId: string }) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [currentId, setCurrentId] = useState<string | null>(null);
-  const [currentStatus, setCurrentStatus] =
-    useState<"allocated" | "confirmed" | "complete" | null>(null);
-
-  async function load() {
-    if (!sb) return;
-    setLoading(true);
-    setErr(null);
-    try {
-      // current captain (lead) from the min view
-      const { data: cur } = await sb
-        .from("v_crew_assignments_min")
-        .select("staff_id, status_simple, role_label")
-        .eq("journey_id", journeyId)
-        .eq("vehicle_id", vehicleId);
-
-      const lead = (cur || []).find(
-        (r: any) => String(r.role_label || "").toLowerCase() !== "crew"
-      );
-      setCurrentId(lead?.staff_id ?? null);
-      setCurrentStatus((lead?.status_simple as any) ?? null);
-
-      // candidate list from v_captain_candidates
-      const { data: cand, error } = await sb
-        .from("v_captain_candidates")
-        .select(
-          "staff_id, full_name, priority, is_lead_eligible, currently_assigned, currently_confirmed"
-        )
-        .eq("journey_id", journeyId)
-        .eq("vehicle_id", vehicleId)
-        .order("priority", { ascending: true });
-
-      if (error) throw error;
-      setCandidates((cand as any[]) || []);
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [journeyId, vehicleId]);
-
-  const label = useMemo(() => {
-    if (!currentId) return "Unassigned";
-    const cur = candidates.find((c) => c.staff_id === currentId);
-    if (!cur) return "Assigned";
-    return cur.currently_confirmed ? `${cur.full_name ?? "Captain"} Confirmed` : `${cur.full_name ?? "Captain"} Assigned`;
-  }, [currentId, candidates]);
-
-  async function assign(staffId: string) {
-    setLoading(true);
-    setErr(null);
-    try {
-      const res = await fetch("/api/ops/assign/lead", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ journey_id: journeyId, vehicle_id: vehicleId, staff_id: staffId }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error || `Assign failed (${res.status})`);
-      await load();
-      setOpen(false);
-    } catch (e: any) {
-      setErr(e?.message ?? "Assign failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading && !candidates.length) {
-    return <span className="text-xs text-neutral-500">Loading…</span>;
-  }
-  if (err && !candidates.length) {
-    return <span className="text-xs text-red-600">{err}</span>;
-  }
-
-  return (
-    <div className="relative inline-block">
-      <button className="underline text-left" onClick={() => setOpen((v) => !v)}>
-        {label}
-      </button>
-      {open && (
-        <div className="absolute z-20 mt-2 bg-white border rounded shadow p-2 min-w-[240px]">
-          <div className="text-xs mb-1 text-neutral-600">Assign captain</div>
-          <select
-            className="w-full border rounded px-2 py-1 text-sm"
-            defaultValue={currentId ?? ""}
-            onChange={(e) => e.target.value && assign(e.target.value)}
-          >
-            <option value="" disabled>
-              Select…
-            </option>
-            {candidates.map((c) => (
-              <option key={c.staff_id} value={c.staff_id}>
-                {`P${c.priority} • ${c.full_name ?? "Unnamed"}${
-                  c.is_lead_eligible ? "" : " (not lead)"
-                }`}
-              </option>
-            ))}
-          </select>
-          {err && <div className="text-xs text-red-600 mt-1">{err}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- Page (unchanged outside of StatusCell usage) ---------------- */
-type UiBoat = {
-  vehicle_id: UUID;
-  vehicle_name: string;
-  operator_name: string;
-  operator_id?: UUID | null;
-  db: number;
-  min: number | null;
-  max: number | null;
-  preferred?: boolean;
-  groups: number[];
-};
-type UiRow = {
-  journey: Journey;
-  pickup: string;
-  destination: string;
-  depDate: string;
-  depTime: string;
-  horizon: "T24" | "T72" | ">72h" | "past";
-  perBoat: UiBoat[];
-  totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
-  allBoatsForJourney: Boat[];
-  groupsByBoat: Map<UUID, number[]>;
-};
-
+/* ---------------- Page ---------------- */
 export default function OperatorAdminJourneysPage() {
   /* ps_user */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [psLoaded, setPsLoaded] = useState(false);
 
+  // operator selector
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
   useEffect(() => {
@@ -402,6 +266,16 @@ export default function OperatorAdminJourneysPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
 
+  // crew/assignments
+  const [staff, setStaff] = useState<StaffRow[]>([]);
+  const [assigns, setAssigns] = useState<AssignView[]>([]);
+
+  // inline assign controls
+  const [assigning, setAssigning] = useState<string | null>(null); // key journeyId_vehicleId
+  const [selectedStaff, setSelectedStaff] = useState<Record<string, UUID>>({}); // key -> staff_id
+  const [openChooser, setOpenChooser] = useState<Record<string, boolean>>({}); // key -> visible?
+
+  // Load data
   useEffect(() => {
     if (!psLoaded) return;
     let off = false;
@@ -495,6 +369,61 @@ export default function OperatorAdminJourneysPage() {
         } else {
           setLocksByJourney(new Map());
         }
+
+        // crew/staff for operators in scope
+        const opIdsToLoad: UUID[] =
+          operatorFilter === "all"
+            ? Array.from(new Set((vQ.data || []).map((v: any) => v.operator_id).filter(Boolean)))
+            : [operatorFilter];
+
+        if (opIdsToLoad.length) {
+          const { data: sData } = await sb
+            .from("operator_staff")
+            .select("id,user_id,operator_id,first_name,last_name,active,role_id,jobrole")
+            .in("operator_id", opIdsToLoad)
+            .eq("active", true);
+
+          const srows = ((sData as StaffRow[]) ?? []).slice();
+          srows.sort((a, b) => {
+            const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
+            const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
+            return an.localeCompare(bn);
+          });
+          setStaff(srows);
+        } else {
+          setStaff([]);
+        }
+
+        // current assignments — try to include assign_source if the view exposes it
+        if (journeyIds.length) {
+          const { data: aData, error: aErr } = await sb
+            .from("v_crew_assignments_min")
+            .select(
+              "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label, assign_source"
+            )
+            .in("journey_id", journeyIds);
+
+          if (aErr) {
+            // fallback (older view without assign_source / assignment_id)
+            const { data: aData2 } = await sb
+              .from("v_crew_assignments_min")
+              .select(
+                "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
+              )
+              .in("journey_id", journeyIds);
+            const lead2 = ((aData2 as AssignView[]) ?? []).filter(
+              (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+            );
+            setAssigns(lead2);
+          } else {
+            const lead = ((aData as AssignView[]) ?? []).filter(
+              (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+            );
+            setAssigns(lead);
+          }
+        } else {
+          setAssigns([]);
+        }
       } catch (e: any) {
         setErr(e?.message ?? String(e));
       } finally {
@@ -507,13 +436,6 @@ export default function OperatorAdminJourneysPage() {
   }, [psLoaded, operatorFilter]);
 
   /* ---------------- Lookups ---------------- */
-  const [routes, setRoutes] = useState<Route[]>([]);
-  const [pickups, setPickups] = useState<Pickup[]>([]);
-  const [destinations, setDestinations] = useState<Destination[]>([]);
-  const [rvas, setRVAs] = useState<RVA[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [operators, setOperators] = useState<Operator[]>([]);
-
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
     (routes ?? []).forEach((r) => m.set(r.id, r));
@@ -544,6 +466,12 @@ export default function OperatorAdminJourneysPage() {
     return m;
   }, [operators]);
 
+  const assignByKey = useMemo(() => {
+    const m = new Map<string, AssignView>();
+    (assigns ?? []).forEach((a) => m.set(`${a.journey_id}_${a.vehicle_id}`, a));
+    return m;
+  }, [assigns]);
+
   /* ---------------- Build rows ---------------- */
   type UiBoat = {
     vehicle_id: UUID;
@@ -555,6 +483,14 @@ export default function OperatorAdminJourneysPage() {
     max: number | null;
     preferred?: boolean;
     groups: number[];
+    canRemove: boolean;
+    statusPill: { label: string; tone: "neutral" | "amber" | "green" | "gray" };
+    assignee?: {
+      staff_id: UUID;
+      name: string;
+      status: AssignView["status_simple"];
+      assign_source?: "manual" | "auto" | null;
+    };
   };
   type UiRow = {
     journey: Journey;
@@ -621,7 +557,7 @@ export default function OperatorAdminJourneysPage() {
       const perBoat: UiBoat[] = [];
       let dbTotal = 0;
 
-      const locked = (locksByJourney.get(j.id) ?? []);
+      const locked = locksByJourney.get(j.id) ?? [];
       if (locked.length) {
         const grouped = new Map<UUID, number[]>();
         const seatsByVeh = new Map<UUID, number>();
@@ -636,6 +572,23 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(vehId, groups);
           dbTotal += seats;
 
+          const a = assignByKey.get(`${j.id}_${vehId}`);
+          const assignee =
+            a && a.staff_id
+              ? {
+                  staff_id: a.staff_id,
+                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  status: a.status_simple,
+                  assign_source: a.assign_source ?? null,
+                }
+              : undefined;
+
+          const statusText = assignee
+            ? assignee.status === "confirmed"
+              ? `${assignee.name} Confirmed`
+              : `${assignee.name}${assignee.assign_source === "auto" ? " (Auto)" : ""} Assigned`
+            : "Awaiting crew assignment";
+
           perBoat.push({
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
@@ -646,6 +599,13 @@ export default function OperatorAdminJourneysPage() {
             max: v?.maxseats != null ? Number(v.maxseats) : null,
             preferred: !!rvaArr.find?.((x) => x.vehicle_id === vehId)?.preferred,
             groups,
+            canRemove: false,
+            statusPill: assignee
+              ? horizon === "T24"
+                ? { label: `Locked — ${statusText}`, tone: "green" }
+                : { label: statusText, tone: "green" }
+              : { label: "Awaiting crew assignment", tone: "amber" },
+            assignee,
           });
         }
       } else {
@@ -659,6 +619,34 @@ export default function OperatorAdminJourneysPage() {
           groupsByBoat.set(b.vehicle_id, groups);
           dbTotal += seats;
 
+          const a = assignByKey.get(`${j.id}_${b.vehicle_id}`);
+          const assignee =
+            a && a.staff_id
+              ? {
+                  staff_id: a.staff_id,
+                  name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed",
+                  status: a.status_simple,
+                  assign_source: a.assign_source ?? null,
+                }
+              : undefined;
+
+          const statusText = assignee
+            ? assignee.status === "confirmed"
+              ? `${assignee.name} Confirmed`
+              : `${assignee.name}${assignee.assign_source === "auto" ? " (Auto)" : ""} Assigned`
+            : "Awaiting crew assignment";
+
+          const statusPill =
+            horizon === ">72h"
+              ? seats > 0
+                ? { label: "Filling", tone: "neutral" as const }
+                : { label: "Empty", tone: "gray" as const }
+              : assignee
+              ? horizon === "T72"
+                ? { label: statusText, tone: "green" as const }
+                : { label: `Locked — ${statusText}`, tone: "green" as const }
+              : { label: "Awaiting crew assignment", tone: "amber" as const };
+
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
@@ -669,6 +657,9 @@ export default function OperatorAdminJourneysPage() {
             max: v?.maxseats != null ? Number(v.maxseats) : null,
             preferred: !!rvaArr.find?.((x) => x.vehicle_id === b.vehicle_id)?.preferred,
             groups,
+            canRemove: false,
+            statusPill,
+            assignee,
           });
         }
       }
@@ -676,13 +667,14 @@ export default function OperatorAdminJourneysPage() {
       const perBoatFiltered =
         operatorFilter === "all"
           ? perBoat
-          : perBoat.filter((b) => (b as any).operator_id === operatorFilter);
+          : perBoat.filter((b) => b.operator_id === operatorFilter);
 
       if (perBoatFiltered.length === 0) continue;
 
       perBoatFiltered.sort((a, b) => {
-        const ap = (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
-        if (ap !== 0) return ap;
+        const ap = b.preferred ? 1 : 0;
+        const bp = a.preferred ? 1 : 0;
+        if (ap !== bp) return bp - ap;
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
@@ -722,18 +714,82 @@ export default function OperatorAdminJourneysPage() {
     destinations,
     locksByJourney,
     operators,
+    assigns,
     operatorFilter,
     routeById,
     pickupNameById,
     destNameById,
     vehicleById,
     operatorNameById,
+    assignByKey,
   ]);
 
   /* ---------------- Actions ---------------- */
   function onManifest(journeyId: UUID, vehicleId: UUID) {
     window.location.href = `/admin/manifest?journey=${journeyId}&vehicle=${vehicleId}`;
   }
+
+  async function onAssign(journeyId: UUID, vehicleId: UUID, staffId?: UUID) {
+    const key = `${journeyId}_${vehicleId}`;
+    setAssigning(key);
+    try {
+      const res = await fetch("/api/ops/assign/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          journey_id: journeyId,
+          vehicle_id: vehicleId,
+          ...(staffId ? { staff_id: staffId } : {}),
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 409) {
+        alert("Already assigned. Refreshing…");
+      } else if (res.status === 422) {
+        alert(body?.error || "Captain unavailable");
+        return;
+      } else if (!res.ok) {
+        throw new Error(body?.error || `Assign failed (${res.status})`);
+      }
+
+      // Refresh just this journey/vehicle assignment from the view
+      const { data: aData } = await sb!
+        .from("v_crew_assignments_min")
+        .select(
+          "journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label, assign_source"
+        )
+        .eq("journey_id", journeyId)
+        .eq("vehicle_id", vehicleId);
+
+      const updated = ((aData as AssignView[]) ?? []).filter(
+        (r) => (r.role_label ?? "").toLowerCase() !== "crew"
+      );
+
+      setAssigns((prev) => {
+        const m = new Map(prev.map((p) => [`${p.journey_id}_${p.vehicle_id}`, p]));
+        updated.forEach((u) => m.set(`${u.journey_id}_${u.vehicle_id}`, u));
+        return Array.from(m.values());
+      });
+      setOpenChooser((prev) => ({ ...prev, [key]: false }));
+      setSelectedStaff((prev) => ({ ...prev, [key]: "" as any }));
+    } catch (e: any) {
+      alert(e?.message ?? "Assign failed");
+    } finally {
+      setAssigning(null);
+    }
+  }
+
+  const eligibleStaff = useMemo(() => {
+    const list = (staff ?? []).slice();
+    list.sort((a, b) => {
+      const an = `${a.last_name || ""} ${a.first_name || ""}`.toLowerCase().trim();
+      const bn = `${b.last_name || ""} ${b.first_name || ""}`.toLowerCase().trim();
+      return an.localeCompare(bn);
+    });
+    return list;
+  }, [staff]);
 
   const isOperatorLocked =
     !!psUser?.operator_admin && !!psUser?.operator_id && !psUser?.site_admin;
@@ -754,6 +810,7 @@ export default function OperatorAdminJourneysPage() {
           </p>
         </div>
 
+        {/* Operator selector */}
         <div className="flex items-center gap-3">
           <label className="text-sm text-neutral-700">Operator:</label>
           <select
@@ -791,6 +848,7 @@ export default function OperatorAdminJourneysPage() {
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
             >
+              {/* Header */}
               <div className="p-4 flex flex-wrap items-center gap-3 border-b bg-neutral-50">
                 <div className="text-lg font-medium">
                   {row.pickup} → {row.destination}
@@ -824,7 +882,6 @@ export default function OperatorAdminJourneysPage() {
                   </span>
                   <span className="text-xs text-neutral-700">
                     Max: <strong>{row.totals.maxTotal}</strong>
-
                   </span>
                 </div>
               </div>
@@ -847,6 +904,27 @@ export default function OperatorAdminJourneysPage() {
                   <tbody>
                     {row.perBoat.map((b) => {
                       const key = `${row.journey.id}_${b.vehicle_id}`;
+                      const selected = selectedStaff[key];
+
+                      const pillStyles = {
+                        background:
+                          b.statusPill.tone === "green"
+                            ? "#dcfce7"
+                            : b.statusPill.tone === "amber"
+                            ? "#fef3c7"
+                            : b.statusPill.tone === "gray"
+                            ? "#f3f4f6"
+                            : "#eef2ff",
+                        color:
+                          b.statusPill.tone === "green"
+                            ? "#166534"
+                            : b.statusPill.tone === "amber"
+                            ? "#92400e"
+                            : "#374151",
+                      };
+
+                      const canShowChooser = row.horizon === "T72" || row.horizon === ">72h";
+
                       return (
                         <tr key={key} className="border-t align-top">
                           <td className="p-3">
@@ -881,20 +959,109 @@ export default function OperatorAdminJourneysPage() {
                             )}
                           </td>
 
-                          {/* NEW Status cell with inline assignment dropdown */}
+                          {/* Status + inline assignee */}
                           <td className="p-3">
-                            <StatusCell journeyId={row.journey.id} vehicleId={b.vehicle_id} />
+                            {/* Pill with clickable captain name -> toggles chooser */}
+                            <span
+                              className="px-2 py-1 rounded text-xs"
+                              style={pillStyles}
+                            >
+                              {b.assignee?.name ? (
+                                <>
+                                  {/* Make captain name a button to reveal chooser */}
+                                  <button
+                                    type="button"
+                                    className="underline underline-offset-2"
+                                    onClick={() =>
+                                      setOpenChooser((prev) => ({
+                                        ...prev,
+                                        [key]: !prev[key],
+                                      }))
+                                    }
+                                    disabled={!canShowChooser}
+                                    title={canShowChooser ? "Reassign captain" : "Locked at T-24"}
+                                  >
+                                    {b.assignee.name}
+                                  </button>{" "}
+                                  {b.assignee.status === "confirmed"
+                                    ? "Confirmed"
+                                    : `${b.assignee.assign_source === "auto" ? "(Auto) " : ""}Assigned`}
+                                </>
+                              ) : (
+                                b.statusPill.label
+                              )}
+                            </span>
+
+                            {/* Inline chooser (also shown when unassigned) */}
+                            {canShowChooser && (openChooser[key] || !b.assignee?.name) && (
+                              <div className="mt-2 flex items-center gap-2">
+                                {eligibleStaff.length <= 1 ? (
+                                  <span className="text-xs">
+                                    {eligibleStaff[0]
+                                      ? `${eligibleStaff[0].first_name ?? ""} ${
+                                          eligibleStaff[0].last_name ?? ""
+                                        }`.trim()
+                                      : "No staff"}
+                                  </span>
+                                ) : (
+                                  <select
+                                    className="border rounded px-2 py-1 text-xs"
+                                    value={selected || ""}
+                                    onChange={(e) =>
+                                      setSelectedStaff((prev) => ({
+                                        ...prev,
+                                        [key]: e.target.value as UUID,
+                                      }))
+                                    }
+                                  >
+                                    <option value="">Select crew…</option>
+                                    {eligibleStaff.map((s) => {
+                                      const name =
+                                        `${s.last_name ?? ""} ${s.first_name ?? ""}`.trim() ||
+                                        "Unnamed";
+                                      return (
+                                        <option key={s.id} value={s.id}>
+                                          {name}
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                )}
+
+                                <button
+                                  className="px-2 py-1 rounded text-xs text-white disabled:opacity-40"
+                                  style={{ backgroundColor: "#111827" }}
+                                  disabled={
+                                    assigning === key ||
+                                    (!selected && eligibleStaff.length !== 1)
+                                  }
+                                  onClick={() =>
+                                    onAssign(
+                                      row.journey.id,
+                                      b.vehicle_id,
+                                      (eligibleStaff.length === 1 && !selected
+                                        ? eligibleStaff[0]?.id
+                                        : selected) as UUID | undefined
+                                    )
+                                  }
+                                >
+                                  {assigning === key ? "Assigning…" : b.assignee?.name ? "Reassign" : "Assign"}
+                                </button>
+                              </div>
+                            )}
                           </td>
 
                           <td className="p-3 space-x-2">
                             {(row.horizon === "T72" || row.horizon === ">72h") && (
-                              <button
-                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                                style={{ backgroundColor: "#2563eb" }}
-                                onClick={() => onManifest(row.journey.id, b.vehicle_id)}
-                              >
-                                Manifest
-                              </button>
+                              <>
+                                <button
+                                  className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                  style={{ backgroundColor: "#2563eb" }}
+                                  onClick={() => onManifest(row.journey.id, b.vehicle_id)}
+                                >
+                                  Manifest
+                                </button>
+                              </>
                             )}
                           </td>
                         </tr>
