@@ -9,7 +9,7 @@ const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-/** Create/refresh the row in public.users for the current auth user, then cache ps_user and auto-link staff. */
+/** keep your ps_user cache + crew auto-link */
 async function syncUserRowAndCache() {
   try {
     const { data: ures } = await sb.auth.getUser();
@@ -20,7 +20,6 @@ async function syncUserRowAndCache() {
     const metaFirst = (u.user_metadata?.first_name || "").trim();
     const metaLast = (u.user_metadata?.last_name || "").trim();
 
-    // Upsert on real unique key: id
     await sb.from("users").upsert(
       {
         id: u.id,
@@ -38,13 +37,9 @@ async function syncUserRowAndCache() {
       .eq("id", u.id)
       .maybeSingle();
 
-    if (me.data) {
-      localStorage.setItem("ps_user", JSON.stringify(me.data));
-    } else {
-      localStorage.removeItem("ps_user");
-    }
+    if (me.data) localStorage.setItem("ps_user", JSON.stringify(me.data));
+    else localStorage.removeItem("ps_user");
 
-    // Non-blocking: auto-link any operator_staff with same email
     try { await fetch("/api/crew/auto-link", { method: "POST" }); } catch {}
   } catch {}
 }
@@ -81,16 +76,8 @@ export default function LoginPage(): JSX.Element {
   const [working, setWorking] = React.useState(false);
 
   const goNext = React.useCallback((url: string) => {
-    try {
-      router.replace(url);
-      setTimeout(() => {
-        if (window.location.pathname.startsWith("/login")) {
-          window.location.assign(url);
-        }
-      }, 50);
-    } catch {
-      window.location.assign(url);
-    }
+    try { router.replace(url); setTimeout(() => { if (location.pathname.startsWith("/login")) location.assign(url); }, 50); }
+    catch { location.assign(url); }
   }, [router]);
 
   React.useEffect(() => {
@@ -129,7 +116,7 @@ export default function LoginPage(): JSX.Element {
     e.preventDefault();
     setMsg(null);
 
-    // Validation like before
+    // basic validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return setMsg("Please enter a valid email address.");
     if (!firstName.trim() || !lastName.trim()) return setMsg("Please provide first and last name.");
@@ -138,39 +125,53 @@ export default function LoginPage(): JSX.Element {
 
     setWorking(true);
     try {
-      // Create auth user
-      const { data, error } = await sb.auth.signUp({
+      // 1) Create auth user
+      const { error: suErr } = await sb.auth.signUp({
         email,
         password,
         options: { data: { first_name: firstName.trim(), last_name: lastName.trim() } },
       });
-      if (error) throw error;
-
-      // Ensure the user is SIGNED IN *now* (no email verification gate).
-      let session = (await sb.auth.getSession()).data.session;
-      if (!session) {
-        const { error: signinErr } = await sb.auth.signInWithPassword({ email, password });
-        if (signinErr) throw signinErr;
-        session = (await sb.auth.getSession()).data.session;
+      if (suErr && suErr.message && !/User already registered/i.test(suErr.message)) {
+        throw suErr;
       }
 
-      // Persist optional fields to public.users and cache
-      if (session?.user) {
-        try {
+      // 2) Try to sign in immediately
+      let signinErr: any | null = null;
+      const { error: sErr } = await sb.auth.signInWithPassword({ email, password });
+      if (sErr) signinErr = sErr;
+
+      // 3) If blocked by "email not confirmed", force-confirm on the server and retry once
+      if (signinErr && /email not confirmed/i.test(String(signinErr.message))) {
+        await fetch("/api/auth/force-confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        const { error: s2 } = await sb.auth.signInWithPassword({ email, password });
+        if (s2) throw s2;
+      } else if (signinErr) {
+        throw signinErr;
+      }
+
+      // 4) Upsert optional fields to public.users
+      try {
+        const { data: ures } = await sb.auth.getUser();
+        const u = ures?.user;
+        if (u) {
           const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
           const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
           const update: Record<string, any> = {
-            id: session.user.id,
-            auth_user_id: session.user.id,
+            id: u.id,
+            auth_user_id: u.id,
             first_name: firstName.trim(),
-            last_name : lastName.trim(),
+            last_name: lastName.trim(),
             email,
           };
           if (mobileNum && Number.isFinite(mobileNum)) update.mobile = mobileNum;
           if (ccNum && Number.isFinite(ccNum)) update.country_code = ccNum;
           await sb.from("users").upsert(update, { onConflict: "id" });
-        } catch {}
-      }
+        }
+      } catch {}
 
       await syncUserRowAndCache();
       goNext(nextUrl);
@@ -211,25 +212,11 @@ export default function LoginPage(): JSX.Element {
         <form className="mt-6 space-y-4" onSubmit={onLogin}>
           <label className="block">
             <span className="text-sm text-neutral-700">Email</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
+            <input className="mt-1 w-full rounded-lg border px-3 py-2" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
           </label>
           <label className="block">
             <span className="text-sm text-neutral-700">Password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
+            <input className="mt-1 w-full rounded-lg border px-3 py-2" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
           </label>
           {msg && <p className="text-sm text-red-600">{msg}</p>}
           <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
@@ -241,79 +228,38 @@ export default function LoginPage(): JSX.Element {
           <div className="grid md:grid-cols-2 gap-4">
             <label className="block">
               <span className="text-sm text-neutral-700">First name</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                required
-              />
+              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={firstName} onChange={(e) => setFirstName(e.target.value)} required />
             </label>
             <label className="block">
               <span className="text-sm text-neutral-700">Last name</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                required
-              />
+              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={lastName} onChange={(e) => setLastName(e.target.value)} required />
             </label>
           </div>
 
           <label className="block">
             <span className="text-sm text-neutral-700">Email</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
+            <input className="mt-1 w-full rounded-lg border px-3 py-2" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
           </label>
 
           <div className="grid md:grid-cols-2 gap-4">
             <label className="block">
               <span className="text-sm text-neutral-700">Mobile</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={mobile}
-                onChange={(e) => setMobile(e.target.value)}
-                inputMode="numeric"
-              />
+              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={mobile} onChange={(e) => setMobile(e.target.value)} inputMode="numeric" />
             </label>
             <label className="block">
               <span className="text-sm text-neutral-700">Country code</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={countryCode}
-                onChange={(e) => setCountryCode(e.target.value)}
-                inputMode="numeric"
-              />
+              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={countryCode} onChange={(e) => setCountryCode(e.target.value)} inputMode="numeric" />
             </label>
           </div>
 
           <label className="block">
             <span className="text-sm text-neutral-700">Password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-            />
+            <input className="mt-1 w-full rounded-lg border px-3 py-2" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
           </label>
 
           <label className="block">
             <span className="text-sm text-neutral-700">Confirm password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              autoComplete="new-password"
-            />
+            <input className="mt-1 w-full rounded-lg border px-3 py-2" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" />
           </label>
 
           {msg && <p className="text-sm text-red-600">{msg}</p>}
