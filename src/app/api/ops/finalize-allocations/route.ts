@@ -33,11 +33,15 @@ type OrderRow = {
 type LockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
 function sbAdmin() {
-  const url = process.env.SUPABASE_URL!;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  const url =
+    process.env.SUPABASE_URL ??
+    process.env.NEXT_PUBLIC_SUPABASE_URL ?? // fallback to public if server var isn’t set
+    "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  if (!url || !key) throw new Error("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   return createClient(url, key);
 }
+
 
 function toDateISO(d: Date) {
   const y = d.getFullYear();
