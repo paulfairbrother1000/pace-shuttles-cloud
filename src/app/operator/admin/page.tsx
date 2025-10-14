@@ -230,6 +230,7 @@ export default function OperatorAdminPage() {
   }>({ open: false, fetching: false, items: [] });
 
   const assignTimersRef = useRef<Record<string, number>>({});
+  const autoAssignAttemptsRef = useRef<Record<string, number>>({}); // key -> attempts
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -617,27 +618,37 @@ export default function OperatorAdminPage() {
         if (b.captainName) return;
         const key = `${row.journey.id}:${b.vehicle_id}`;
         const timers = assignTimersRef.current;
+        const attempts = autoAssignAttemptsRef.current[key] ?? 0;
+        if (attempts >= 2) return; // small safety: avoid spamming the API
         if (timers[key]) return;
         timers[key] = window.setTimeout(async () => {
           try {
-            await fetch("/api/ops/auto-assign", {
+            const r = await fetch("/api/ops/auto-assign", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journeyId: row.journey.id, vehicleId: b.vehicle_id }),
             });
-            const r = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
-              cache: "no-store",
-            });
-            if (r.ok) {
-              const { data } = (await r.json()) as { ok: boolean; data: CrewMinRow[] };
-              setCrewMinByJourney((prev) => {
-                const copy = new Map(prev);
-                copy.set(row.journey.id, data || []);
-                return copy;
+            if (!r.ok) {
+              autoAssignAttemptsRef.current[key] = attempts + 1;
+              const msg = await r.text().catch(() => `${r.status}`);
+              setErr((prev) => prev ?? `Auto-assign failed (${r.status}): ${msg || "Server error"}`);
+            } else {
+              // refresh crew list for this journey
+              const list = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
+                cache: "no-store",
               });
+              if (list.ok) {
+                const { data } = (await list.json()) as { ok: boolean; data: CrewMinRow[] };
+                setCrewMinByJourney((prev) => {
+                  const copy = new Map(prev);
+                  copy.set(row.journey.id, data || []);
+                  return copy;
+                });
+              }
             }
-          } catch {
-            /* ignore */
+          } catch (e: any) {
+            autoAssignAttemptsRef.current[key] = attempts + 1;
+            setErr((prev) => prev ?? (e?.message || "Auto-assign failed"));
           } finally {
             clearTimeout(assignTimersRef.current[key]);
             delete assignTimersRef.current[key];
@@ -797,7 +808,9 @@ export default function OperatorAdminPage() {
         </div>
       </header>
 
-      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
+      {err && (
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>
+      )}
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
@@ -825,9 +838,7 @@ export default function OperatorAdminPage() {
                   ) : row.horizon === "T72" ? (
                     <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">T-72 (Confirmed)</span>
                   ) : (
-                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
-                      &gt;72h (Prep)
-                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">&gt;72h (Prep)</span>
                   )}
 
                   <span className="text-xs text-neutral-700">
