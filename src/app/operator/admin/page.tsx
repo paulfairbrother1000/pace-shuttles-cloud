@@ -257,7 +257,8 @@ export default function OperatorAdminPage() {
     items: Candidate[];
   }>({ open: false, fetching: false, items: [] });
 
-  const realtimeSubRef = useRef<ReturnType<typeof supabase?.channel> | null>(null);
+  // FIX: keep this simple so it compiles under SSR
+  const realtimeSubRef = useRef<any>(null);
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -429,14 +430,13 @@ export default function OperatorAdminPage() {
         m.set(leadKey(journeyId, vehicleId), cap ?? null);
         return m;
       });
-    } catch (e) {
+    } catch {
       // silent; UI stays "Assign"
     }
   }
 
   /** Batch: for each journey, for each visible boat without a captain → call auto-assign */
   async function seedLeads(js: Journey[]) {
-    // build candidate pairs (journey, vehicle) we will check
     const rvasByRoute = new Map<UUID, RVA[]>();
     rvas.forEach(r => {
       if (r.is_active) {
@@ -446,7 +446,6 @@ export default function OperatorAdminPage() {
       }
     });
 
-    // small concurrency guard
     const queue: Array<() => Promise<void>> = [];
     for (const j of js) {
       const rv = rvasByRoute.get(j.route_id) ?? [];
@@ -454,37 +453,26 @@ export default function OperatorAdminPage() {
         const v = vehicleById.get(r.vehicle_id);
         if (!v || v.active === false) continue;
         queue.push(async () => {
-          // find current lead first
           await refreshLead(j.id, r.vehicle_id);
           const cap = leadByJourney.get(leadKey(j.id, r.vehicle_id));
-          if (cap) return; // already have a captain
+          if (cap) return;
 
-          // ask server to auto-assign (ONLY journeyId required)
+          // IMPORTANT: allocator expects only { journeyId }
           await fetch("/api/ops/auto-assign", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ journeyId: j.id }),
           }).catch(() => {});
 
-          // refresh the lead pill
           await refreshLead(j.id, r.vehicle_id);
         });
       }
     }
 
-    const MAX = 4;
-    const running: Promise<void>[] = [];
+    // run a few at a time
     for (const job of queue) {
-      const p = job();
-      running.push(p);
-      if (running.length >= MAX) {
-        await Promise.race(running).catch(() => {});
-        for (let i = running.length - 1; i >= 0; i--) {
-          if (running[i].settled) running.splice(i, 1);
-        }
-      }
+      await job();
     }
-    await Promise.allSettled(running);
   }
 
   function initRealtime() {
@@ -492,25 +480,22 @@ export default function OperatorAdminPage() {
 
     const ch = supabase
       .channel("ops-journey-alloc-and-orders")
-      // allocations (has journey_id)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "journey_vehicle_allocations" },
         async (payload: any) => {
           const jid: UUID | undefined = payload?.new?.journey_id || payload?.old?.journey_id;
           if (!jid) return;
-          // ask server to ensure captain exists, then refresh pills for all boats on this route
           await fetch("/api/ops/auto-assign", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ journeyId: jid }),
           }).catch(() => {});
-          // refresh all vehicles for this journey
-          const rv = rvas.filter(r => r.route_id === journeys.find(j => j.id === jid)?.route_id);
+          const routeId = journeys.find(j => j.id === jid)?.route_id;
+          const rv = rvas.filter(r => r.route_id === routeId);
           for (const r of rv) await refreshLead(jid, r.vehicle_id);
         }
       )
-      // optional: orders (we don't have journey_id directly; ignore here)
       .subscribe();
 
     realtimeSubRef.current = ch as any;
@@ -633,7 +618,6 @@ export default function OperatorAdminPage() {
             preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
           });
-          // make sure captain pill cache exists
           void refreshLead(j.id, vehId);
         }
         const proj = parties.reduce((s, p) => s + p.size, 0);
@@ -868,9 +852,6 @@ export default function OperatorAdminPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
-          <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-neutral-700">Operator:</label>
@@ -918,7 +899,6 @@ export default function OperatorAdminPage() {
                 </div>
 
                 <div className="ml-auto flex items-center gap-2">
-                  {/* Horizon badge */}
                   {row.horizon === "T24" ? (
                     <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
                       T-24 (Finalised)
@@ -935,56 +915,6 @@ export default function OperatorAdminPage() {
                     <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
                       Past
                     </span>
-                  )}
-
-                  {/* Context awareness */}
-                  {row.contextDay === "today" && (
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs">
-                      Runs Today
-                    </span>
-                  )}
-                  {row.contextDay === "tomorrow" && (
-                    <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-xs">
-                      Runs Tomorrow
-                    </span>
-                  )}
-
-                  {/* Totals */}
-                  <span className="text-xs text-neutral-700">
-                    Proj: <strong>{row.totals.proj}</strong>
-                  </span>
-                  <span className="text-xs text-neutral-700">
-                    Customers: <strong>{row.totals.dbTotal}</strong>
-                  </span>
-                  <span className="text-xs text-neutral-700">
-                    Max: <strong>{row.totals.maxTotal}</strong>
-                  </span>
-                  <span className="text-xs text-neutral-700">
-                    Unassigned: <strong>{row.totals.unassigned}</strong>
-                  </span>
-
-                  {/* Lock/Unlock */}
-                  {(row.horizon === "T24" || row.horizon === "T72") && (
-                    row.isLocked ? (
-                      <>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Locked</span>
-                        <button
-                          className="text-xs px-3 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100"
-                          onClick={() => unlockJourney(row.journey.id)}
-                          title="Remove persisted allocation for this journey"
-                        >
-                          Unlock
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="text-xs px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50"
-                        onClick={() => lockJourney(row)}
-                        title="Persist the current preview allocation"
-                      >
-                        Lock
-                      </button>
-                    )
                   )}
                 </div>
               </div>
