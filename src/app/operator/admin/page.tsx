@@ -1,7 +1,7 @@
-// /src/app/admin/page.tsx
+// /src/app/operator/admin/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
 type UUID = string;
@@ -12,14 +12,14 @@ type Journey = {
   route_id: UUID;
   departure_ts: string; // timestamptz ISO
   is_active: boolean;
+  vehicle_id: UUID | null;
+  operator_id: UUID | null;
 };
 
 type Route = { id: UUID; pickup_id: UUID; destination_id: UUID };
 type Pickup = { id: UUID; name: string };
 type Destination = { id: UUID; name: string };
-
 type RVA = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean };
-
 type Vehicle = {
   id: UUID;
   name: string;
@@ -28,9 +28,7 @@ type Vehicle = {
   maxseats: number | string | null;
   operator_id: UUID | null;
 };
-
 type Operator = { id: UUID; name: string };
-
 type Order = {
   id: UUID;
   status: "requires_payment" | "paid" | "cancelled" | "refunded" | "expired";
@@ -38,8 +36,18 @@ type Order = {
   journey_date: string | null; // YYYY-MM-DD
   qty: number | null;
 };
-
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
+
+type CaptainAssignRow = {
+  id: UUID;
+  journey_id: UUID;
+  vehicle_id: UUID;
+  staff_id: UUID;
+  role_code: string; // 'CAPTAIN'
+  status: string; // assigned/confirmed
+  assigned_at: string | null;
+};
+type Staff = { id: UUID; first_name?: string | null; last_name?: string | null };
 
 /* ---------- Client Helpers ---------- */
 const supabase =
@@ -59,7 +67,9 @@ function toDateISO(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
-function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
+type Horizon = "T24" | "T72" | ">72h" | "past";
+
+function horizonFor(tsISO: string): Horizon {
   const now = new Date();
   const dep = new Date(tsISO);
   if (dep <= now) return "past";
@@ -69,7 +79,7 @@ function horizonFor(tsISO: string): "T24" | "T72" | ">72h" | "past" {
   return ">72h";
 }
 
-function isT72orT24(h: "T24" | "T72" | ">72h" | "past") {
+function isT72orT24(h: Horizon) {
   return h === "T24" || h === "T72";
 }
 
@@ -85,225 +95,116 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
   return null;
 }
 
-/* ---------- Allocation (preview) ---------- */
+/* ---------- Server-like allocation helpers (match API) ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
   preferred: boolean;
-
-  // capacity & policy
-  min: number;          // vehicle min seats
-  max: number;          // vehicle max seats (cap)
-
-  // optional ranking helpers
+  min: number;
+  max: number;
   operator_id?: UUID | null;
-  price_cents?: number | null; // keep null for now; wire real prices later
 };
 
-type DetailedAlloc = {
-  byBoat: Map<
-    UUID,
-    {
-      seats: number;
-      orders: { order_id: UUID; size: number }[];
-    }
-  >;
-  unassigned: { order_id: UUID; size: number }[];
-  total: number;
-};
+type ByBoat = Map<
+  UUID,
+  { seats: number; orders: { order_id: UUID; size: number }[] }
+>;
 
-/** Preferred only wins within same operator; otherwise deterministic id tiebreak */
-function boatTieBreak(a: Boat, b: Boat) {
-  if ((a.operator_id || null) === (b.operator_id || null)) {
-    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-  }
+function sortBoats(a: Boat, b: Boat) {
+  if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
+  if (a.max !== b.max) return a.max - b.max;
   return a.vehicle_id.localeCompare(b.vehicle_id);
 }
 
-function allocateDetailed(
+function allocateRoundRobinByOperator(
   parties: Party[],
-  boats: Boat[],
-  opts?: { horizon?: "T24" | "T72" | ">72h" | "past" }
-): DetailedAlloc {
-  const horizon = opts?.horizon ?? ">72h";
+  boats: Boat[]
+): ByBoat {
+  const byOp = new Map<string, Boat[]>();
+  for (const b of boats.slice().sort(sortBoats)) {
+    const key = b.operator_id ?? "none";
+    byOp.set(key, [...(byOp.get(key) ?? []), b]);
+  }
+  const opKeys = [...byOp.keys()].sort();
+  const byBoat: ByBoat = new Map();
+  const used = new Map<UUID, number>();
 
-  // Sort boats: cheapest first (unknown prices = same tier), then preferred within same operator,
-  // then deterministic by id.
-  const boatRank = (a: Boat, b: Boat) => {
-    const pa = a.price_cents ?? 0;
-    const pb = b.price_cents ?? 0;
-    if (pa !== pb) return pa - pb;
-
-    // same "price tier" — apply preferred only within the same operator
-    const sameOp = (a.operator_id ?? null) === (b.operator_id ?? null);
-    if (sameOp && a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-
-    return String(a.vehicle_id).localeCompare(String(b.vehicle_id));
-  };
-
-  const boatsSorted = [...boats].sort(boatRank);
-
-  // Working state
-  type W = {
-    def: Boat;
-    used: number;
-    groups: { order_id: UUID; size: number }[];
-  };
-  const work = new Map<UUID, W>();
-  boatsSorted.forEach(b =>
-    work.set(b.vehicle_id, { def: b, used: 0, groups: [] })
-  );
-
-  const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
-  const bump = (boatId: UUID, order_id: UUID, size: number) => {
-    const w = work.get(boatId)!;
-    w.used += size;
-    w.groups.push({ order_id, size });
-
-    const cur = byBoat.get(boatId) ?? { seats: 0, orders: [] };
+  function bump(id: UUID, order_id: UUID, size: number) {
+    used.set(id, (used.get(id) ?? 0) + size);
+    const cur =
+      byBoat.get(id) ?? ({ seats: 0, orders: [] } as {
+        seats: number;
+        orders: { order_id: UUID; size: number }[];
+      });
     cur.seats += size;
     cur.orders.push({ order_id, size });
-    byBoat.set(boatId, cur);
+    byBoat.set(id, cur);
+  }
+
+  const remaining = parties.slice().sort((a, b) => b.size - a.size);
+  const iter = () => {
+    for (const op of opKeys) {
+      const stack = byOp.get(op)!;
+      let target: Boat | null = null;
+      for (const b of stack) {
+        const u = used.get(b.vehicle_id) ?? 0;
+        if (u < b.max) {
+          target = b;
+          if (u < b.min) break; // top to MIN first
+        }
+      }
+      if (!target) continue;
+
+      const idx = remaining.findIndex(
+        (g) => g.size <= (target!.max - (used.get(target!.vehicle_id) ?? 0))
+      );
+      if (idx === -1) continue;
+      const [g] = remaining.splice(idx, 1);
+      bump(target.vehicle_id, g.order_id, g.size);
+      return true;
+    }
+    return false;
   };
 
-  const remaining: Party[] = [...parties]
-    .filter(p => p.size > 0)
-    .sort((a, b) => b.size - a.size);
+  let progress = true;
+  while (remaining.length && progress) progress = iter();
 
-  const unassigned: { order_id: UUID; size: number }[] = [];
-
-  // Phase A — seed vehicles to MIN in price order
-  {
-    const next: Party[] = [];
-    for (const g of remaining) {
-      const candidate = boatsSorted.find(b => {
-        const w = work.get(b.vehicle_id)!;
-        const free = b.max - w.used;
-        return w.used < b.min && free >= g.size;
-      });
-      if (candidate) {
-        bump(candidate.vehicle_id, g.order_id, g.size);
-      } else {
-        next.push(g);
-      }
-    }
-    remaining.length = 0;
-    remaining.push(...next);
-  }
-
-  // Phase B — after all seeded to MIN, fill cheapest-first up to MAX
-  {
-    const next: Party[] = [];
-    for (const g of remaining) {
-      const candidate = boatsSorted.find(b => {
-        const w = work.get(b.vehicle_id)!;
-        const free = b.max - w.used;
-        return free >= g.size;
-      });
-      if (candidate) {
-        bump(candidate.vehicle_id, g.order_id, g.size);
-      } else {
-        next.push(g);
-      }
-    }
-    remaining.length = 0;
-    remaining.push(...next);
-  }
-
-  // Anything still left cannot fit
-  for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
-
-  // T-72 rebalancer (min seats discipline)
-  if (horizon === "T72") {
-    const active = () => [...work.values()].filter(w => w.used > 0);
-    const underMin = () => active().filter(w => w.used < w.def.min);
-    const overMin = () => active().filter(w => w.used > w.def.min);
-
-    const tryMove = (donor: any, receiver: any) => {
-      const free = receiver.def.max - receiver.used;
-      if (free <= 0) return false;
-      const sorted = [...donor.groups].sort((a, b) => a.size - b.size);
-      let pick: { order_id: UUID; size: number } | null = null;
-
-      for (const g of sorted) {
-        if (g.size > free) continue;
-        const donorWouldBe = donor.used - g.size;
-        if (donorWouldBe < donor.def.min) continue;
-        pick = g; break;
-      }
-      if (!pick) return false;
-
-      donor.used -= pick.size;
-      receiver.used += pick.size;
-
-      const idx = donor.groups.findIndex((x: any) => x.order_id === pick!.order_id && x.size === pick!.size);
-      if (idx >= 0) donor.groups.splice(idx, 1);
-      receiver.groups.push(pick);
-
-      const dMap = byBoat.get(donor.def.vehicle_id)!;
-      const rMap = byBoat.get(receiver.def.vehicle_id) ?? { seats: 0, orders: [] };
-      dMap.seats -= pick.size;
-      const boIdx = dMap.orders.findIndex((x: any) => x.order_id === pick!.order_id && x.size === pick!.size);
-      if (boIdx >= 0) dMap.orders.splice(boIdx, 1);
-      rMap.seats += pick.size;
-      rMap.orders.push(pick);
-      byBoat.set(receiver.def.vehicle_id, rMap);
-
-      return true;
-    };
-
-    let changed = true;
-    while (changed) {
-      changed = false;
-      const receivers = underMin().sort((a, b) => (b.def.min - b.used) - (a.def.min - a.used));
-      if (!receivers.length) break;
-      for (const recv of receivers) {
-        const donors = overMin().sort((a, b) => (b.used - b.def.min) - (a.used - a.def.min));
-        for (const don of donors) {
-          if (tryMove(don, recv)) { changed = true; break; }
-        }
-      }
-    }
-
-    let under = underMin().sort((a, b) => a.used - b.used);
-    while (under.length > 1) {
-      const src = under[0];
-      let moved = false;
-      const targets = active()
-        .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
-        .sort((a, b) => (b.def.max - b.used) - (a.def.max - a.used));
-      for (const g of [...src.groups].sort((a, b) => a.size - b.size)) {
-        for (const tgt of targets) {
-          const free = tgt.def.max - tgt.used;
-          if (g.size > free) continue;
-          src.used -= g.size;
-          tgt.used += g.size;
-
-          const idx = src.groups.findIndex((x: any) => x.order_id === g.order_id && x.size === g.size);
-          if (idx >= 0) src.groups.splice(idx, 1);
-          tgt.groups.push(g);
-
-          const sMap = byBoat.get(src.def.vehicle_id)!;
-          const tMap = byBoat.get(tgt.def.vehicle_id) ?? { seats: 0, orders: [] };
-          sMap.seats -= g.size;
-          const boIdx = sMap.orders.findIndex((x: any) => x.order_id === g.order_id && x.size === g.size);
-          if (boIdx >= 0) sMap.orders.splice(boIdx, 1);
-          tMap.seats += g.size;
-          tMap.orders.push(g);
-          byBoat.set(tgt.def.vehicle_id, tMap);
-
-          moved = true; break;
-        }
-      }
-      if (!moved) break;
-      under = underMin().sort((a, b) => a.used - b.used);
-    }
-  }
-
-  const total = parties.reduce((s, p) => s + (p.size || 0), 0);
-  return { byBoat, unassigned, total };
+  return byBoat;
 }
 
+/** T-72 gating: keep only in-play boats, drop empties, require MIN except single-boat MIN-1 */
+function enforceT72Gates(
+  byBoat: ByBoat,
+  boats: Boat[],
+  inPlay: Set<UUID>
+): ByBoat {
+  const gated: ByBoat = new Map();
+  for (const [vid, rec] of byBoat.entries()) {
+    if (inPlay.has(vid)) gated.set(vid, rec);
+  }
+  for (const [vid, rec] of [...gated.entries()]) {
+    if ((rec?.seats ?? 0) <= 0) gated.delete(vid);
+  }
+
+  const survivors = [...gated.entries()];
+  if (!survivors.length) return gated;
+
+  if (survivors.length === 1) {
+    const [vid, rec] = survivors[0];
+    const def = boats.find((b) => b.vehicle_id === vid);
+    if (!def) return gated;
+    if (rec.seats >= def.min - 1) return gated;
+    gated.delete(vid);
+    return gated;
+  }
+
+  for (const [vid, rec] of [...gated.entries()]) {
+    const def = boats.find((b) => b.vehicle_id === vid);
+    if (!def) continue;
+    if (rec.seats < def.min) gated.delete(vid);
+  }
+  return gated;
+}
 
 /* ---------- Page ---------- */
 export default function AdminPage() {
@@ -318,22 +219,24 @@ export default function AdminPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-
-  // Persisted locks we read back from DB
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
 
-  // NEW: captains by (journey_id, vehicle_id)
-  const [captainByJV, setCaptainByJV] = useState<Map<string, { staff_id: UUID; name: string }>>(new Map());
+  // Captains (journey_id+vehicle_id → staff_id)
+  const [captains, setCaptains] = useState<Map<string, UUID>>(new Map());
+  const [staffById, setStaffById] = useState<Map<UUID, Staff>>(new Map());
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
-  // Captain picker modal
-  const [capOpen, setCapOpen] = useState(false);
-  const [capLoading, setCapLoading] = useState(false);
-  const [capChoices, setCapChoices] = useState<Array<{ staff_id: UUID; name: string }>>([]);
-  const [capJourney, setCapJourney] = useState<UUID | null>(null);
-  const [capVehicle, setCapVehicle] = useState<UUID | null>(null);
+  // modal state for reassigning captain
+  const [capModalOpen, setCapModalOpen] = useState(false);
+  const [capModalJourney, setCapModalJourney] = useState<UUID | null>(null);
+  const [capModalVehicle, setCapModalVehicle] = useState<UUID | null>(null);
+  const [capCandidates, setCapCandidates] = useState<Staff[]>([]);
+  const [capBusy, setCapBusy] = useState(false);
 
+  const realtimeSubRef = useRef<ReturnType<typeof supabase?.channel> | null>(null);
+
+  /* ---------- Initial load ---------- */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -346,10 +249,10 @@ export default function AdminPage() {
       setErr(null);
 
       try {
-        // 1) future, active journeys
+        // 1) future, active journeys (+vehicle/operator for captain logic)
         const { data: jData, error: jErr } = await supabase
           .from("journeys")
-          .select("id,route_id,departure_ts,is_active")
+          .select("id,route_id,departure_ts,is_active,vehicle_id,operator_id")
           .gte("departure_ts", new Date().toISOString())
           .eq("is_active", true)
           .order("departure_ts", { ascending: true });
@@ -359,8 +262,8 @@ export default function AdminPage() {
         if (off) return;
 
         setJourneys(js);
-        const routeIds = Array.from(new Set(js.map(j => j.route_id)));
-        const journeyIds = js.map(j => j.id);
+        const routeIds = Array.from(new Set(js.map((j) => j.route_id)));
+        const journeyIds = js.map((j) => j.id);
 
         // 2) lookups
         const [rQ, puQ, deQ] = await Promise.all([
@@ -376,7 +279,7 @@ export default function AdminPage() {
         setPickups((puQ.data || []) as Pickup[]);
         setDestinations((deQ.data || []) as Destination[]);
 
-        // 3) RVAs, vehicles (include min/max), operators
+        // 3) RVAs, vehicles, operators
         const [rvaQ, vQ, oQ] = await Promise.all([
           supabase
             .from("route_vehicle_assignments")
@@ -397,8 +300,8 @@ export default function AdminPage() {
         setVehicles((vQ.data || []) as Vehicle[]);
         setOperators((oQ.data || []) as Operator[]);
 
-        // 4) paid orders (filter via route+date window)
-        const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
+        // 4) paid orders window
+        const dateSet = new Set(js.map((j) => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await supabase
           .from("orders")
@@ -408,7 +311,7 @@ export default function AdminPage() {
         if (oErr) throw oErr;
         setOrders((oData || []) as Order[]);
 
-        // 5) read persisted locks (if any)
+        // 5) persisted allocations
         if (journeyIds.length) {
           const { data: lockData, error: lockErr } = await supabase
             .from("journey_vehicle_allocations")
@@ -432,80 +335,204 @@ export default function AdminPage() {
           setLocksByJourney(new Map());
         }
 
-        // 6) captains per (journey, vehicle)
-        if (journeyIds.length) {
-          const { data: caps, error: cErr } = await supabase
-            .from("journey_crew_assignments")
-            .select("journey_id, vehicle_id, staff_id, operator_staff:staff_id(first_name,last_name)")
-            .in("journey_id", journeyIds)
-            .eq("role_code", "CAPTAIN");
-          if (cErr) throw cErr;
+        // 6) Load current captain assignments (no embeds to avoid ambiguity)
+        await refreshCaptainsFor(journeyIds);
 
-          const m = new Map<string, { staff_id: UUID; name: string }>();
-          (caps || []).forEach((r: any) => {
-            const key = `${r.journey_id}_${r.vehicle_id}`;
-            const nm =
-              [r.operator_staff?.first_name, r.operator_staff?.last_name].filter(Boolean).join(" ") || "—";
-            m.set(key, { staff_id: r.staff_id as UUID, name: nm });
-          });
-          setCaptainByJV(m);
-        } else {
-          setCaptainByJV(new Map());
-        }
+        // 7) Auto-assign captains on load for journeys at/after T-72 with vehicle but no captain
+        await autoAssignCaptainsIfMissing(js);
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
         if (!off) setLoading(false);
       }
     })();
+
     return () => {
       off = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* ---------- Realtime: new bookings -> finalize + auto-assign captain ---------- */
+  useEffect(() => {
+    if (!supabase) return;
+
+    const ch = supabase
+      .channel("ops-admin-bookings")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "bookings" },
+        async (payload: any) => {
+          const jid = payload?.new?.journey_id as UUID | null;
+          if (!jid) return;
+          try {
+            // Re-run server allocation (keeps T-72/T-24 rules)
+            await fetch("/api/ops/finalize-allocations", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ journey_id: jid }),
+            });
+
+            // Auto-assign captain if missing (server picks from prefs + fair use)
+            await fetch("/api/ops/auto-assign", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ journey_id: jid, role_code: "CAPTAIN" }),
+            });
+
+            // Refresh local captain rows & locks for that journey
+            await refreshCaptainsFor([jid]);
+            await refreshLocksFor([jid]);
+          } catch (e) {
+            console.error("booking realtime handler failed:", e);
+          }
+        }
+      )
+      .subscribe();
+
+    realtimeSubRef.current = ch;
+    return () => {
+      if (realtimeSubRef.current) {
+        supabase.removeChannel(realtimeSubRef.current);
+        realtimeSubRef.current = null;
+      }
+    };
+  }, []);
+
+  async function refreshLocksFor(journeyIds: UUID[]) {
+    if (!supabase || !journeyIds.length) return;
+    const { data, error } = await supabase
+      .from("journey_vehicle_allocations")
+      .select("journey_id,vehicle_id,order_id,seats")
+      .in("journey_id", journeyIds);
+    if (error) return;
+    setLocksByJourney((prev) => {
+      const copy = new Map(prev);
+      const byJ = new Map<UUID, JVALockRow[]>();
+      (data || []).forEach((row: any) => {
+        const arr = byJ.get(row.journey_id) ?? [];
+        arr.push({
+          journey_id: row.journey_id,
+          vehicle_id: row.vehicle_id,
+          order_id: row.order_id,
+          seats: Number(row.seats || 0),
+        });
+        byJ.set(row.journey_id, arr);
+      });
+      for (const jid of journeyIds) {
+        copy.set(jid, byJ.get(jid) ?? []);
+      }
+      return copy;
+    });
+  }
+
+  async function refreshCaptainsFor(journeyIds: UUID[]) {
+    if (!supabase || !journeyIds.length) return;
+
+    const { data: capRows, error } = await supabase
+      .from("journey_crew_assignments")
+      .select("id,journey_id,vehicle_id,staff_id,role_code,status,assigned_at")
+      .in("journey_id", journeyIds)
+      .eq("role_code", "CAPTAIN")
+      .in("status", ["assigned", "confirmed"]);
+    if (error) return;
+
+    const map = new Map<string, UUID>();
+    const staffIds = new Set<UUID>();
+    (capRows || []).forEach((r: any) => {
+      if (!r.vehicle_id) return;
+      const k = `${r.journey_id}_${r.vehicle_id}`;
+      // prefer latest assigned_at
+      const existing = map.get(k);
+      if (!existing) map.set(k, r.staff_id as UUID);
+      staffIds.add(r.staff_id as UUID);
+    });
+
+    if (staffIds.size) {
+      const { data: staffData } = await supabase
+        .from("operator_staff")
+        .select("id,first_name,last_name")
+        .in("id", Array.from(staffIds));
+      const sMap = new Map<UUID, Staff>();
+      (staffData || []).forEach((s: any) =>
+        sMap.set(s.id as UUID, { id: s.id, first_name: s.first_name, last_name: s.last_name })
+      );
+      setStaffById((prev) => new Map([...prev, ...sMap]));
+    }
+
+    setCaptains((prev) => {
+      const copy = new Map(prev);
+      for (const [k, v] of map.entries()) copy.set(k, v);
+      return copy;
+    });
+  }
+
+  async function autoAssignCaptainsIfMissing(js: Journey[]) {
+    // Fire only for journeys at/after T-72 with a vehicle but no captain yet.
+    const targets: Journey[] = [];
+    for (const j of js) {
+      const h = horizonFor(j.departure_ts);
+      if ((h === "T72" || h === "T24") && j.vehicle_id) {
+        const key = `${j.id}_${j.vehicle_id}`;
+        if (!captains.get(key)) targets.push(j);
+      }
+    }
+    if (!targets.length) return;
+
+    for (const j of targets) {
+      try {
+        await fetch("/api/ops/auto-assign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ journey_id: j.id, role_code: "CAPTAIN" }),
+        });
+      } catch {}
+    }
+    await refreshCaptainsFor(targets.map((t) => t.id));
+  }
 
   /* ---------- Lookups ---------- */
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
-    routes.forEach(r => m.set(r.id, r));
+    routes.forEach((r) => m.set(r.id, r));
     return m;
   }, [routes]);
 
   const pickupNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    pickups.forEach(p => m.set(p.id, p.name));
+    pickups.forEach((p) => m.set(p.id, p.name));
     return m;
   }, [pickups]);
 
   const destNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    destinations.forEach(d => m.set(d.id, d.name));
+    destinations.forEach((d) => m.set(d.id, d.name));
     return m;
   }, [destinations]);
 
   const vehicleById = useMemo(() => {
     const m = new Map<UUID, Vehicle>();
-    vehicles.forEach(v => m.set(v.id, v));
+    vehicles.forEach((v) => m.set(v.id, v));
     return m;
   }, [vehicles]);
 
   const operatorNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    operators.forEach(o => m.set(o.id, o.name || "—"));
+    operators.forEach((o) => m.set(o.id, o.name || "—"));
     return m;
   }, [operators]);
 
   /* ---------- UI Rows ---------- */
   type UiBoat = {
-    vehicle_id: UUID | "__unassigned__";
+    vehicle_id: UUID;
     vehicle_name: string;
     operator_name: string;
-    db: number;                   // customers on this boat
+    db: number;
     min: number | null;
     max: number | null;
     preferred?: boolean;
-    groups: number[];             // group sizes (chips)
-    // NEW: captain
-    captain?: { staff_id: UUID; name: string } | null;
+    groups: number[];
+    captainName?: string;
   };
 
   type UiRow = {
@@ -514,18 +541,12 @@ export default function AdminPage() {
     destination: string;
     depDate: string;
     depTime: string;
-    horizon: "T24" | "T72" | ">72h" | "past";
+    horizon: Horizon;
     contextDay?: "today" | "tomorrow" | null;
     isLocked: boolean;
     perBoat: UiBoat[];
-    totals: {
-      proj: number;       // total pax from orders
-      dbTotal: number;    // sum on actual boats (excl unassigned)
-      maxTotal: number;   // sum of max seats across boats
-      unassigned: number; // pax not fitting
-    };
-    // For lock/unlock actions:
-    previewAlloc?: DetailedAlloc;
+    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
+    previewAlloc?: { byBoat: ByBoat };
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
     boats?: Boat[];
@@ -566,15 +587,15 @@ export default function AdminPage() {
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
       const parties: Party[] = oArr
-        .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter(g => g.size > 0);
+        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter((g) => g.size > 0);
 
       if (!parties.length) continue; // skip journeys with no customers
 
-      // Candidate boats
-      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
+      // Candidate boats from RVAs
+      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
       const boats: Boat[] = rvaArr
-        .map(x => {
+        .map((x) => {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const min = Number(v?.minseats ?? 0);
@@ -585,12 +606,22 @@ export default function AdminPage() {
             min: Number.isFinite(min) ? min : 0,
             max: Number.isFinite(max) ? max : 0,
             operator_id: v.operator_id ?? null,
-            price_cents: null,
           };
         })
         .filter(Boolean) as Boat[];
 
-      let previewAlloc = allocateDetailed(parties, boats, { horizon });
+      // Build preview allocation using the same policy as the server
+      let byBoat: ByBoat | undefined;
+      if (horizon === ">72h" || horizon === "T72") {
+        const rr = allocateRoundRobinByOperator(parties, boats);
+        if (horizon === "T72") {
+          // in-play vehicle ids from persisted rows:
+          const inPlay = new Set<UUID>((locksByJourney.get(j.id) ?? []).map((x) => x.vehicle_id));
+          byBoat = enforceT72Gates(rr, boats, inPlay);
+        } else {
+          byBoat = rr;
+        }
+      }
 
       const maxTotal = boats.reduce((s, b) => s + b.max, 0);
 
@@ -602,8 +633,17 @@ export default function AdminPage() {
       let dbTotal = 0;
       let unassigned = 0;
 
-      if (isLocked) {
-        // Build per-boat view from saved rows
+      const addCaptainName = (jid: UUID, vid: UUID) => {
+        const key = `${jid}_${vid}`;
+        const sid = captains.get(key);
+        if (!sid) return undefined;
+        const st = staffById.get(sid);
+        const name = [st?.first_name, st?.last_name].filter(Boolean).join(" ").trim();
+        return name || "—";
+      };
+
+      if (isLocked && horizon !== ">72h") {
+        // Use persisted rows in T72/T24/past
         const groupByVeh = new Map<UUID, { seats: number; groups: number[] }>();
         for (const row of locked) {
           const cur = groupByVeh.get(row.vehicle_id) ?? { seats: 0, groups: [] };
@@ -611,76 +651,51 @@ export default function AdminPage() {
           cur.groups.push(Number(row.seats || 0));
           groupByVeh.set(row.vehicle_id, cur);
         }
-
         for (const [vehId, data] of groupByVeh.entries()) {
           const v = vehicleById.get(vehId);
           const min = v?.minseats != null ? Number(v.minseats) : null;
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
-
-          const cap = captainByJV.get(`${j.id}_${vehId}`) ?? null;
-
           perBoat.push({
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
-            operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+            operator_name: v?.operator_id ? operatorNameById.get(v.operator_id) ?? "—" : "—",
             db: data.seats,
             min,
             max,
-            preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
+            preferred: !!rvaArr.find((x) => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
-            captain: cap,
+            captainName: addCaptainName(j.id, vehId),
           });
         }
-
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
-
-        // Include boats with zero today so ops still see them (>72h only)
-        if (!isT72orT24(horizon)) {
-          for (const b of boats) {
-            if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
-            const v = vehicleById.get(b.vehicle_id);
-            perBoat.push({
-              vehicle_id: b.vehicle_id,
-              vehicle_name: v?.name ?? "Unknown",
-              operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
-              db: 0,
-              min: v?.minseats != null ? Number(v.minseats) : null,
-              max: v?.maxseats != null ? Number(v.maxseats) : null,
-              preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
-              groups: [],
-              captain: captainByJV.get(`${j.id}_${b.vehicle_id}`) ?? null,
-            });
-          }
-        } else {
-          // At T-72/T-24: hide zero-customer boats
-          for (let i = perBoat.length - 1; i >= 0; i--) {
-            if (perBoat[i].db <= 0) perBoat.splice(i, 1);
-          }
+        // hide zero-customer boats in T72/T24
+        for (let i = perBoat.length - 1; i >= 0; i--) {
+          if (perBoat[i].db <= 0) perBoat.splice(i, 1);
         }
       } else {
-        // Use preview allocation; at T-72/T-24 the allocator already rebalanced to min constraints
+        // Preview from byBoat
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
-          const entry = previewAlloc.byBoat.get(b.vehicle_id);
+          const entry = byBoat?.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
           dbTotal += seats;
+          const groups = (entry?.orders ?? []).map((o) => o.size).sort((a, b) => b - a);
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
-            operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+            operator_name: v?.operator_id ? operatorNameById.get(v.operator_id) ?? "—" : "—",
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
-            groups: (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a),
-            captain: captainByJV.get(`${j.id}_${b.vehicle_id}`) ?? null,
+            preferred: !!rvaArr.find((x) => x.vehicle_id === b.vehicle_id)?.preferred,
+            groups,
+            captainName: addCaptainName(j.id, b.vehicle_id),
           });
         }
-        unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
-
-        // At T-72/T-24: hide zero-customer boats (release)
+        const proj = parties.reduce((s, p) => s + p.size, 0);
+        unassigned = Math.max(0, proj - dbTotal);
         if (isT72orT24(horizon)) {
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
@@ -688,7 +703,6 @@ export default function AdminPage() {
         }
       }
 
-      // Sort: by operator name, then within same operator preferred first, then vehicle name
       perBoat.sort((a, b) => {
         const ao = a.operator_name || "";
         const bo = b.operator_name || "";
@@ -713,27 +727,25 @@ export default function AdminPage() {
           maxTotal,
           unassigned,
         },
-        previewAlloc,
+        previewAlloc: byBoat ? { byBoat } : undefined,
         lockedAlloc: locked,
         parties,
         boats,
       });
     }
 
-    // Operator filter (keep journeys with at least one row for that operator)
     const filtered =
       operatorFilter === "all"
         ? out
         : out
-            .map(row => ({
+            .map((row) => ({
               ...row,
               perBoat: row.perBoat.filter(
-                b =>
-                  b.vehicle_id === "__unassigned__" ||
-                  vehicles.find(v => v.id === b.vehicle_id)?.operator_id === operatorFilter
+                (b) =>
+                  vehicles.find((v) => v.id === b.vehicle_id)?.operator_id === operatorFilter
               ),
             }))
-            .filter(row => row.perBoat.length > 0);
+            .filter((row) => row.perBoat.length > 0);
 
     filtered.sort(
       (a, b) =>
@@ -752,80 +764,51 @@ export default function AdminPage() {
     operators,
     orders,
     locksByJourney,
-    captainByJV,
     operatorFilter,
     routeById,
     pickupNameById,
     destNameById,
     vehicleById,
     operatorNameById,
+    captains,
+    staffById,
   ]);
 
   /* ---------- Actions: Lock / Unlock ---------- */
 
   async function lockJourney(row: UiRow) {
-    if (!supabase) return;
     try {
-      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] =
-        [];
-
-      if (row.previewAlloc && row.parties && row.boats) {
-        for (const [vehId, data] of row.previewAlloc.byBoat.entries()) {
-          for (const o of data.orders) {
-            allocToSave.push({
-              journey_id: row.journey.id,
-              vehicle_id: vehId,
-              order_id: o.order_id,
-              seats: o.size,
-            });
-          }
-        }
-      } else {
-        alert("No preview allocation available to lock.");
-        return;
-      }
-
-      // Replace existing rows for this journey
-      const del = await supabase
-        .from("journey_vehicle_allocations")
-        .delete()
-        .eq("journey_id", row.journey.id);
-      if (del.error) throw del.error;
-
-      if (allocToSave.length) {
-        const ins = await supabase
-          .from("journey_vehicle_allocations")
-          .insert(allocToSave);
-        if (ins.error) throw ins.error;
-      }
-
-      // Refresh locks state for this journey
-      const { data: lockData, error: lockErr } = await supabase
-        .from("journey_vehicle_allocations")
-        .select("journey_id,vehicle_id,order_id,seats")
-        .eq("journey_id", row.journey.id);
-      if (lockErr) throw lockErr;
-
-      setLocksByJourney(prev => {
-        const copy = new Map(prev);
-        copy.set(row.journey.id, (lockData || []) as any);
-        return copy;
+      // Let server compute and persist using its canonical logic
+      const res = await fetch("/api/ops/finalize-allocations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ journey_id: row.journey.id }),
       });
+      if (!res.ok) throw new Error("Finalize failed");
+
+      // Auto-assign captain if missing
+      await fetch("/api/ops/auto-assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ journey_id: row.journey.id, role_code: "CAPTAIN" }),
+      });
+
+      await refreshLocksFor([row.journey.id]);
+      await refreshCaptainsFor([row.journey.id]);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
   }
 
   async function unlockJourney(journeyId: UUID) {
-    if (!supabase) return;
     try {
-      const del = await supabase
+      const del = await supabase!
         .from("journey_vehicle_allocations")
         .delete()
         .eq("journey_id", journeyId);
       if (del.error) throw del.error;
 
-      setLocksByJourney(prev => {
+      setLocksByJourney((prev) => {
         const copy = new Map(prev);
         copy.delete(journeyId);
         return copy;
@@ -835,65 +818,59 @@ export default function AdminPage() {
     }
   }
 
-  /* ---------- Captain picker logic ---------- */
-  function openCaptainPicker(journeyId: UUID, vehicleId: UUID) {
-    setCapJourney(journeyId);
-    setCapVehicle(vehicleId);
-    setCapOpen(true);
-    setCapLoading(true);
-    setCapChoices([]);
-    // fetch eligible candidates
-    fetch("/api/ops/captain-candidates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ journeyId, vehicleId }),
-    })
-      .then(r => r.json())
-      .then(js => {
-        setCapChoices((js?.items ?? []).map((x: any) => ({ staff_id: x.staff_id, name: x.name })));
-      })
-      .catch(e => setErr(e?.message ?? String(e)))
-      .finally(() => setCapLoading(false));
-  }
-
-  function closeCaptainPicker() {
-    setCapOpen(false);
-    setCapJourney(null);
-    setCapVehicle(null);
-    setCapChoices([]);
-  }
-
-  async function chooseCaptain(staffId: UUID) {
-    if (!capJourney || !capVehicle) return;
+  /* ---------- Captain: open modal, fetch candidates, assign ---------- */
+  async function openCaptainModal(journeyId: UUID, vehicleId: UUID) {
+    setCapModalJourney(journeyId);
+    setCapModalVehicle(vehicleId);
+    setCapCandidates([]);
+    setCapBusy(false);
+    setCapModalOpen(true);
     try {
-      await fetch("/api/ops/assign/lead", {
+      const r = await fetch(
+        `/api/ops/captain-candidates?journey_id=${encodeURIComponent(
+          journeyId
+        )}&vehicle_id=${encodeURIComponent(vehicleId)}`
+      );
+      const js = (await r.json()) as { ok: boolean; candidates?: Array<{ id: UUID; first_name?: string; last_name?: string }> };
+      const items: Staff[] =
+        js?.candidates?.map((c) => ({
+          id: c.id,
+          first_name: c.first_name ?? "",
+          last_name: c.last_name ?? "",
+        })) ?? [];
+      setCapCandidates(items);
+    } catch (e) {
+      // best-effort
+    }
+  }
+  function closeCaptainModal() {
+    setCapModalOpen(false);
+    setCapModalJourney(null);
+    setCapModalVehicle(null);
+    setCapCandidates([]);
+    setCapBusy(false);
+  }
+
+  async function assignCaptain(staffId: UUID) {
+    if (!capModalJourney || !capModalVehicle) return;
+    setCapBusy(true);
+    try {
+      const res = await fetch("/api/ops/assign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId: capJourney, vehicleId: capVehicle, staffId }),
+        body: JSON.stringify({
+          journey_id: capModalJourney,
+          vehicle_id: capModalVehicle,
+          staff_id: staffId,
+          role_code: "CAPTAIN",
+        }),
       });
-      // refresh captain mapping for this JV
-      if (supabase) {
-        const { data: caps } = await supabase
-          .from("journey_crew_assignments")
-          .select("journey_id, vehicle_id, staff_id, operator_staff:staff_id(first_name,last_name)")
-          .eq("journey_id", capJourney)
-          .eq("vehicle_id", capVehicle)
-          .eq("role_code", "CAPTAIN")
-          .maybeSingle();
-        if (caps) {
-          const nm =
-            [caps.operator_staff?.first_name, caps.operator_staff?.last_name].filter(Boolean).join(" ") || "—";
-          setCaptainByJV(prev => {
-            const cp = new Map(prev);
-            cp.set(`${capJourney}_${capVehicle}`, { staff_id: caps.staff_id as UUID, name: nm });
-            return cp;
-          });
-        }
-      }
+      if (!res.ok) throw new Error("Captain assignment failed");
+      await refreshCaptainsFor([capModalJourney]);
+      closeCaptainModal();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-    } finally {
-      closeCaptainPicker();
+      setCapBusy(false);
     }
   }
 
@@ -904,7 +881,7 @@ export default function AdminPage() {
         <div>
           <h1 className="text-2xl font-semibold">Site Admin — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · No DB writes (preview allocation) — use <strong>Lock</strong> to persist.
+            Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -912,10 +889,10 @@ export default function AdminPage() {
           <select
             className="border rounded-lg px-2 py-1 text-sm"
             value={operatorFilter}
-            onChange={e => setOperatorFilter((e.target.value || "all") as any)}
+            onChange={(e) => setOperatorFilter((e.target.value || "all") as any)}
           >
             <option value="all">All operators</option>
-            {operators.map(o => (
+            {operators.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}
               </option>
@@ -938,7 +915,7 @@ export default function AdminPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {rows.map(row => (
+          {rows.map((row) => (
             <section
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
@@ -999,10 +976,12 @@ export default function AdminPage() {
                   </span>
 
                   {/* Lock/Unlock */}
-                  {(row.horizon === "T24" || row.horizon === "T72") && (
-                    row.isLocked ? (
+                  {(row.horizon === "T24" || row.horizon === "T72") &&
+                    (row.isLocked ? (
                       <>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Locked</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+                          Locked
+                        </span>
                         <button
                           className="text-xs px-3 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100"
                           onClick={() => unlockJourney(row.journey.id)}
@@ -1015,12 +994,11 @@ export default function AdminPage() {
                       <button
                         className="text-xs px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50"
                         onClick={() => lockJourney(row)}
-                        title="Persist the current preview allocation"
+                        title="Persist the current allocation via server"
                       >
                         Lock
                       </button>
-                    )
-                  )}
+                    ))}
                 </div>
               </div>
 
@@ -1039,30 +1017,35 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {row.perBoat.map(b => (
+                    {row.perBoat.map((b) => (
                       <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
                         <td className="p-3">
-                          <div className="flex flex-col gap-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium">{b.vehicle_name}</span>
-                              {b.preferred && b.vehicle_name !== "Unassigned" && (
-                                <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
-                                  preferred
-                                </span>
-                              )}
-                            </div>
-                            {/* Captain line (click to change) */}
-                            {b.vehicle_id !== "__unassigned__" && (
-                              <div className="text-xs text-neutral-600">
-                                Captain:{" "}
-                                <button
-                                  className="underline underline-offset-2 hover:text-neutral-900"
-                                  onClick={() => openCaptainPicker(row.journey.id, b.vehicle_id as UUID)}
-                                  title="Change captain"
-                                >
-                                  {b.captain?.name ?? "Assign"}
-                                </button>
-                              </div>
+                          <div className="flex items-start gap-2">
+                            <div className="font-medium">{b.vehicle_name}</div>
+                            {b.preferred && (
+                              <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                                preferred
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-neutral-600 mt-1">
+                            Captain:&nbsp;
+                            {b.captainName ? (
+                              <button
+                                className="underline hover:opacity-80"
+                                onClick={() => openCaptainModal(row.journey.id, b.vehicle_id)}
+                                title="Change captain"
+                              >
+                                {b.captainName}
+                              </button>
+                            ) : (
+                              <button
+                                className="underline hover:opacity-80"
+                                onClick={() => openCaptainModal(row.journey.id, b.vehicle_id)}
+                                title="Assign captain"
+                              >
+                                Assign
+                              </button>
                             )}
                           </div>
                         </td>
@@ -1088,7 +1071,7 @@ export default function AdminPage() {
                           )}
                         </td>
                         <td className="p-3">
-                          {(row.horizon === "T24" || row.horizon === "T72") && b.vehicle_id !== "__unassigned__" ? (
+                          {(row.horizon === "T24" || row.horizon === "T72") ? (
                             <button
                               className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
                               style={{ backgroundColor: "#2563eb" }}
@@ -1112,31 +1095,36 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* Captain picker modal */}
-      {capOpen && (
+      {/* Captain selection modal */}
+      {capModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4">
           <div className="w-full max-w-md rounded-xl bg-white shadow p-4 space-y-3">
-            <div className="text-base font-semibold">Select captain</div>
-            {capLoading ? (
-              <div className="text-sm text-neutral-600">Loading…</div>
-            ) : capChoices.length === 0 ? (
-              <div className="text-sm text-neutral-600">No eligible captains found.</div>
+            <div className="text-base font-semibold">Select a captain</div>
+            {capCandidates.length === 0 ? (
+              <div className="text-sm text-neutral-600">Loading candidates…</div>
             ) : (
-              <ul className="max-h-64 overflow-auto divide-y">
-                {capChoices.map(c => (
-                  <li key={c.staff_id} className="py-2">
+              <div className="space-y-2 max-h-72 overflow-auto pr-1">
+                {capCandidates.map((c) => {
+                  const name = [c.first_name, c.last_name].filter(Boolean).join(" ") || "—";
+                  return (
                     <button
-                      onClick={() => chooseCaptain(c.staff_id)}
+                      key={c.id}
+                      onClick={() => assignCaptain(c.id)}
+                      disabled={capBusy}
                       className="w-full text-left rounded-md border px-3 py-2 hover:bg-neutral-50"
                     >
-                      {c.name}
+                      {name}
                     </button>
-                  </li>
-                ))}
-              </ul>
+                  );
+                })}
+              </div>
             )}
             <div className="flex items-center justify-end gap-2 pt-2">
-              <button onClick={closeCaptainPicker} className="rounded-md border px-3 py-1 text-sm hover:bg-neutral-50">
+              <button
+                onClick={closeCaptainModal}
+                className="rounded-md border px-3 py-1 text-sm hover:bg-gray-50"
+                disabled={capBusy}
+              >
                 Close
               </button>
             </div>
