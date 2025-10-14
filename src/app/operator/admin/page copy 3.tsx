@@ -92,6 +92,24 @@ function isFuture(ts: string) {
   return new Date(ts).getTime() > Date.now();
 }
 
+type Horizon = ">72h" | "T72" | "T24" | "past";
+function horizonFor(tsISO: string): Horizon {
+  const now = Date.now();
+  const dep = new Date(tsISO).getTime();
+  if (dep <= now) return "past";
+  const hours = (dep - now) / 36e5;
+  if (hours <= 24) return "T24";
+  if (hours <= 72) return "T72";
+  return ">72h";
+}
+
+function horizonBadge(h: Horizon) {
+  if (h === ">72h") return { text: ">72h (Prep)", cls: "bg-gray-100 text-gray-700" };
+  if (h === "T72") return { text: "T-72 (Confirmed)", cls: "bg-amber-100 text-amber-800" };
+  if (h === "T24") return { text: "T-24 (Finalised)", cls: "bg-rose-100 text-rose-800" };
+  return { text: "Past", cls: "bg-gray-100 text-gray-500" };
+}
+
 /* ---------------------- Component ---------------------- */
 export default function JourneyBoardsPage(): JSX.Element {
   const [user, setUser] = React.useState<PsUser | null>(null);
@@ -334,7 +352,9 @@ export default function JourneyBoardsPage(): JSX.Element {
   function canRemove(row: WithVehicleRow) {
     if (!canOperate(row.vehicle_operator_id)) return false;
     if (REMOVAL_RULES.blockPastDeparture && !isFuture(row.departure_ts)) return false;
-    // Allowed even with bookings: moves journey right for reassignment.
+    // Guardrail: no changes at/after T-72
+    const h = horizonFor(row.departure_ts);
+    if (h === "T72" || h === "T24" || h === "past") return false;
     return true;
   }
 
@@ -359,6 +379,30 @@ export default function JourneyBoardsPage(): JSX.Element {
         .eq("is_active", true);
 
       if (error) throw error;
+      setRefreshKey((x) => x + 1);
+    } catch (e: any) {
+      console.error(e);
+      setErr(e.message ?? String(e));
+    }
+  }
+
+  /** -------- Recalculate (server finalize-allocations) -------- */
+  async function recalc(journeyId: string) {
+    try {
+      const opId = readCachedUser()?.operator_id ?? undefined;
+      const body: any = { journey_id: journeyId };
+      // Scope to operator if we have one; server keeps “no new boats after T-72”
+      if (opId) body.operator_id = opId;
+
+      const res = await fetch("/api/ops/finalize-allocations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.ok === false) {
+        throw new Error(json?.error || "Recalculate failed");
+      }
       setRefreshKey((x) => x + 1);
     } catch (e: any) {
       console.error(e);
@@ -433,6 +477,10 @@ export default function JourneyBoardsPage(): JSX.Element {
                 {withVehicle.map((row) => {
                   const allowRemove = canRemove(row);
                   const over = row.seats_capacity != null && row.booked_seats > row.seats_capacity;
+                  const h = horizonFor(row.departure_ts);
+                  const hb = horizonBadge(h);
+                  const canChangeAtAll = h === ">72h"; // per policy: no changes at/after T-72
+
                   return (
                     <li key={row.id} className="py-3">
                       <div className="flex flex-col gap-2">
@@ -445,11 +493,21 @@ export default function JourneyBoardsPage(): JSX.Element {
                               {fmtDate(row.departure_ts)} · Vehicle: {row.vehicle_name}
                             </div>
                           </div>
-                          <div className="ml-3 shrink-0 text-right">
-                            <div className={classNames("text-sm font-semibold", over && "text-red-600")}>
-                              {row.booked_seats}/{row.seats_capacity ?? "?"}
+                          <div className="ml-3 flex items-center gap-2">
+                            <span className={classNames("rounded-md px-2 py-0.5 text-[11px]", hb.cls)}>{hb.text}</span>
+                            <button
+                              onClick={() => recalc(row.id)}
+                              className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
+                              title="Recalculate with server rules"
+                            >
+                              Recalculate
+                            </button>
+                            <div className="shrink-0 text-right">
+                              <div className={classNames("text-sm font-semibold", over && "text-red-600")}>
+                                {row.booked_seats}/{row.seats_capacity ?? "?"}
+                              </div>
+                              <div className="text-[11px] text-gray-500 text-right">booked / capacity</div>
                             </div>
-                            <div className="text-[11px] text-gray-500">booked / capacity</div>
                           </div>
                         </div>
 
@@ -470,9 +528,9 @@ export default function JourneyBoardsPage(): JSX.Element {
 
                           <button
                             onClick={() => openAssign(row.id)}
-                            className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
-                            title="Change vehicle"
-                            disabled={!canOperate(row.vehicle_operator_id) || !isFuture(row.departure_ts)}
+                            className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+                            title={canChangeAtAll ? "Change vehicle" : "Changes disabled at/after T-72"}
+                            disabled={!canChangeAtAll || !canOperate(row.vehicle_operator_id) || !isFuture(row.departure_ts)}
                           >
                             Change vehicle
                           </button>
@@ -486,7 +544,7 @@ export default function JourneyBoardsPage(): JSX.Element {
                             title={
                               allowRemove
                                 ? "Remove vehicle assignment"
-                                : "You don’t have permission or the departure is in the past"
+                                : "You don’t have permission, it’s past departure, or it’s within T-72"
                             }
                             disabled={!allowRemove}
                           >
@@ -513,43 +571,59 @@ export default function JourneyBoardsPage(): JSX.Element {
               </div>
             ) : (
               <ul className="divide-y">
-                {needsAssign.map((row) => (
-                  <li key={row.id} className="py-3">
-                    <div className="flex items-center justify-between">
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">
-                          {row.pickup_name ?? "Pickup"} → {row.destination_name ?? "Destination"}
+                {needsAssign.map((row) => {
+                  const h = horizonFor(row.departure_ts);
+                  const hb = horizonBadge(h);
+                  const canAssign = h === ">72h"; // cannot invite a new vehicle at/after T-72
+                  return (
+                    <li key={row.id} className="py-3">
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">
+                            {row.pickup_name ?? "Pickup"} → {row.destination_name ?? "Destination"}
+                          </div>
+                          <div className="text-xs text-gray-500">{fmtDate(row.departure_ts)}</div>
                         </div>
-                        <div className="text-xs text-gray-500">{fmtDate(row.departure_ts)}</div>
+                        <div className="ml-3 flex items-center gap-2">
+                          <span className={classNames("rounded-md px-2 py-0.5 text-[11px]", hb.cls)}>{hb.text}</span>
+                          <div className="shrink-0 text-right">
+                            <div className="text-sm font-semibold">{row.booked_seats}</div>
+                            <div className="text-[11px] text-gray-500">booked seats</div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="ml-3 shrink-0 text-right">
-                        <div className="text-sm font-semibold">{row.booked_seats}</div>
-                        <div className="text-[11px] text-gray-500">booked seats</div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          onClick={() => openAssign(row.id)}
+                          className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+                          disabled={!canAssign || !canOperate()}
+                          title={canAssign ? "Assign vehicle" : "Assignments disabled at/after T-72"}
+                        >
+                          Assign vehicle
+                        </button>
+                        <button
+                          onClick={() =>
+                            openManifest(
+                              row.id,
+                              `${row.pickup_name ?? "Pickup"} → ${row.destination_name ?? "Destination"}`,
+                              fmtDate(row.departure_ts)
+                            )
+                          }
+                          className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
+                        >
+                          Manifest
+                        </button>
+                        <button
+                          onClick={() => recalc(row.id)}
+                          className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
+                          title="Recalculate with server rules"
+                        >
+                          Recalculate
+                        </button>
                       </div>
-                    </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        onClick={() => openAssign(row.id)}
-                        className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
-                        disabled={!canOperate()}
-                      >
-                        Assign vehicle
-                      </button>
-                      <button
-                        onClick={() =>
-                          openManifest(
-                            row.id,
-                            `${row.pickup_name ?? "Pickup"} → ${row.destination_name ?? "Destination"}`,
-                            fmtDate(row.departure_ts)
-                          )
-                        }
-                        className="rounded-md border px-2 py-1 text-xs hover:bg-gray-50"
-                      >
-                        Manifest
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
