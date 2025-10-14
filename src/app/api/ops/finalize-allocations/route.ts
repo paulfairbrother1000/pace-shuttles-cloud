@@ -5,7 +5,6 @@ import { createClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-
 type UUID = string;
 
 type Journey = {
@@ -36,13 +35,31 @@ type OrderRow = {
 
 type LockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
+/** Strict admin client that only accepts the HTTPS REST URL (not a Postgres DSN). */
 function sbAdmin() {
   const url =
     process.env.SUPABASE_URL ??
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? // fallback to public if server var isn’t set
     "";
+
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  if (!url || !key) throw new Error("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!url || !key) {
+    throw new Error(
+      "Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
+    );
+  }
+
+  // Guard: must be https://<project>.supabase.co (REST), not postgresql://...
+  if (!/^https:\/\/.+\.supabase\.co\/?$/i.test(url)) {
+    throw new Error(
+      `SUPABASE_URL must be the HTTPS REST URL (https://<ref>.supabase.co), got: ${url.slice(
+        0,
+        60
+      )}…`
+    );
+  }
+
   return createClient(url, key);
 }
 
@@ -89,67 +106,22 @@ function sortBoatsForFill(a: Boat, b: Boat) {
 }
 
 /**
- * Exact selector that enforces Σ(min) ≤ demand + 1 and total cap ≥ demand,
- * while preferring the fewest boats, smallest total cap, and more preferred boats.
- * Falls back to the smallest set that covers demand if the min-rule is impossible.
+ * Choose a minimal subset of boats to cover total demand (by capacity),
+ * preferring preferred boats and smaller caps (consolidation).
+ * This naturally drops empties at T-72 when we persist only non-empty.
  */
-function pickBoatSet(parties: Party[], boats: Boat[]): Boat[] {
+function chooseMinimalBoatSet(parties: Party[], boats: Boat[]): Boat[] {
   const demand = parties.reduce((s, p) => s + p.size, 0);
-  if (demand <= 0 || boats.length === 0) return [];
-
+  if (demand <= 0) return [];
   const sorted = boats.slice().sort(sortBoatsForFill);
-
-  type Score = { set: Boat[]; boats: number; cap: number; preferredCount: number };
-  let best: Score | null = null;
-
-  const n = sorted.length;
-  const maxMask = 1 << Math.min(n, 16); // guard; n is typically small (<10)
-
-  for (let mask = 1; mask < (1 << n) && mask < (1 << 16); mask++) {
-    let capSum = 0, minSum = 0, pref = 0;
-    const set: Boat[] = [];
-    for (let i = 0; i < n; i++) {
-      if ((mask & (1 << i)) === 0) continue;
-      const b = sorted[i];
-      set.push(b);
-      capSum += b.cap;
-      minSum += b.min;
-      if (b.preferred) pref++;
-    }
-    if (capSum < demand) continue;
-    if (minSum > demand + 1) continue; // key rule
-
-    const cand: Score = { set, boats: set.length, cap: capSum, preferredCount: pref };
-    if (
-      !best ||
-      cand.boats < best.boats ||
-      (cand.boats === best.boats && cand.cap < best.cap) ||
-      (cand.boats === best.boats && cand.cap === best.cap && cand.preferredCount > best.preferredCount)
-    ) {
-      best = cand;
-    }
+  const out: Boat[] = [];
+  let cap = 0;
+  for (const b of sorted) {
+    out.push(b);
+    cap += b.cap;
+    if (cap >= demand) break;
   }
-
-  // Fallback if Σ(min) rule impossible for this demand/boat set.
-  if (!best) {
-    let fb: { set: Boat[]; boats: number; cap: number } | null = null;
-    for (let mask = 1; mask < (1 << n) && mask < (1 << 16); mask++) {
-      let capSum = 0;
-      const set: Boat[] = [];
-      for (let i = 0; i < n; i++) {
-        if ((mask & (1 << i)) === 0) continue;
-        const b = sorted[i];
-        set.push(b);
-        capSum += b.cap;
-      }
-      if (capSum < demand) continue;
-      const cand = { set, boats: set.length, cap: capSum };
-      if (!fb || cand.boats < fb.boats || (cand.boats === fb.boats && cand.cap < fb.cap)) fb = cand;
-    }
-    best = fb ? { ...fb, preferredCount: fb.set.filter(b => b.preferred).length } as Score : null;
-  }
-
-  return best ? best.set : [];
+  return out;
 }
 
 /**
@@ -461,8 +433,8 @@ async function runFinalizeForJourney(
     return { journey_id: j.id, locked: false, written: 0, reason: "No boats in scope" };
   }
 
-  // Select boat set using Σ(min) ≤ demand + 1 rule, then allocate with min-awareness.
-  const boatSet = pickBoatSet(parties, allBoats);
+  // Minimal set then allocate with min-awareness
+  const boatSet = chooseMinimalBoatSet(parties, allBoats);
   const alloc = allocateBalanced(parties, boatSet, horizon);
 
   // Persist non-empty boats only (dropping empties at T-72)
