@@ -87,7 +87,7 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
   return null;
 }
 
-/* ---------- Allocation preview (unchanged core) ---------- */
+/* ---------- Allocation preview ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
@@ -178,7 +178,6 @@ function allocateDetailed(
 
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
-  // T-72 rebalance (compact; same as before)
   if (horizon === "T72") {
     const active = () => [...work.values()].filter(w => w.used > 0);
     const underMin = () => active().filter(w => w.used < w.def.min);
@@ -234,7 +233,7 @@ function allocateDetailed(
   return { byBoat, unassigned, total };
 }
 
-/* ---------- Page ---------- */
+/* ---------- Crew helpers ---------- */
 type CrewMin = {
   assignment_id: UUID;
   journey_id: UUID;
@@ -245,9 +244,9 @@ type CrewMin = {
   last_name: string | null;
   role_label: string | null;
 };
-
 type Candidate = { staff_id: UUID; name: string; email: string | null; priority: number; recent: number };
 
+/* ---------- Page ---------- */
 export default function OperatorAdminPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -260,7 +259,6 @@ export default function OperatorAdminPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
@@ -276,7 +274,7 @@ export default function OperatorAdminPage() {
     items: Candidate[];
   }>({ open: false, fetching: false, items: [] });
 
-  // simple ref to avoid re-alloc storm; typing kept loose to avoid build error
+  // dummy ref (avoid type that caused build error previously)
   const realtimeSubRef = useRef<any>(null);
 
   /* ---------- Initial load ---------- */
@@ -384,23 +382,22 @@ export default function OperatorAdminPage() {
     };
   }, []);
 
-  /* ---------- Fire auto-allocator on load (vehicle + captain) ---------- */
+  /* ---------- Fire auto-allocator once per journey on load ---------- */
   useEffect(() => {
-    // call allocator once per journey id to try vehicle + captain selection
     const run = async () => {
       const unique = Array.from(new Set(journeys.map(j => j.id)));
       for (const jid of unique) {
         try {
+          // your allocator accepts { journeyId } and chooses vehicle + captain
           await fetch("/api/ops/allocator", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ journeyId: jid }),
           });
         } catch {
-          // swallow; we'll still render with current data
+          // swallow; UI still loads
         }
       }
-      // after running allocator, refresh crew cache for visible rows
       await refreshAllCrew();
     };
     if (journeys.length) run();
@@ -455,7 +452,7 @@ export default function OperatorAdminPage() {
         copy.set(crewKey(journey_id, vehicle_id), items);
         return copy;
       });
-    } catch (e) {
+    } catch {
       // ignore
     }
   }
@@ -463,12 +460,14 @@ export default function OperatorAdminPage() {
   async function refreshAllCrew() {
     const pairs: Array<{ j: UUID; v: UUID }> = [];
     for (const j of journeys) {
+      // derive visible vehicle ids: from locked rows or journey.vehicle_id
       const locks = locksByJourney.get(j.id) ?? [];
       const vehIds = new Set<UUID>();
       locks.forEach(r => vehIds.add(r.vehicle_id));
       if (vehIds.size === 0 && j.vehicle_id) vehIds.add(j.vehicle_id);
       vehIds.forEach(v => pairs.push({ j: j.id, v }));
     }
+    if (pairs.length === 0) return;
     await Promise.all(pairs.map(p => loadCrew(p.j, p.v)));
   }
 
@@ -509,6 +508,7 @@ export default function OperatorAdminPage() {
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
+    // Group orders by (route_id, journey_date)
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -518,6 +518,7 @@ export default function OperatorAdminPage() {
       ordersByKey.set(k, arr);
     }
 
+    // Group RVAs by route
     const rvasByRoute = new Map<UUID, RVA[]>();
     for (const r of rvas) {
       if (!r.is_active) continue;
@@ -542,7 +543,7 @@ export default function OperatorAdminPage() {
         .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
         .filter(g => g.size > 0);
 
-      // Candidate boats for preview
+      // Candidate boats
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
       const boats: Boat[] = rvaArr
         .map(x => {
@@ -716,7 +717,7 @@ export default function OperatorAdminPage() {
     operatorNameById,
   ]);
 
-  /* ---------- Actions ---------- */
+  /* ---------- Actions: Lock / Unlock ---------- */
   async function lockJourney(row: UiRow) {
     if (!supabase) return;
     try {
@@ -744,9 +745,7 @@ export default function OperatorAdminPage() {
       if (del.error) throw del.error;
 
       if (allocToSave.length) {
-        const ins = await supabase
-          .from("journey_vehicle_allocations")
-          .insert(allocToSave);
+        const ins = await supabase.from("journey_vehicle_allocations").insert(allocToSave);
         if (ins.error) throw ins.error;
       }
 
@@ -762,7 +761,6 @@ export default function OperatorAdminPage() {
         return copy;
       });
 
-      // refresh crew after lock (no-op if unchanged)
       await refreshAllCrew();
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -818,7 +816,6 @@ export default function OperatorAdminPage() {
       const j = await res.json();
       if (!res.ok) throw new Error(j?.error || "Assign failed");
 
-      // refresh crew cache for this journey/vehicle
       await loadCrew(assignModal.journeyId, assignModal.vehicleId);
       setAssignModal({ open: false, fetching: false, items: [] });
     } catch (e: any) {
@@ -832,9 +829,6 @@ export default function OperatorAdminPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
-          <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-neutral-700">Operator:</label>
@@ -852,6 +846,10 @@ export default function OperatorAdminPage() {
           </select>
         </div>
       </header>
+
+      <p className="text-neutral-600 text-sm">
+        Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
+      </p>
 
       {err && (
         <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
@@ -931,4 +929,19 @@ export default function OperatorAdminPage() {
                   {(row.horizon === "T24" || row.horizon === "T72") && (
                     row.isLocked ? (
                       <>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 t
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+                          Locked
+                        </span>
+                        <button
+                          className="text-xs px-3 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100"
+                          onClick={() => unlockJourney(row.journey.id)}
+                          title="Remove persisted allocation for this journey"
+                        >
+                          Unlock
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="text-xs px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50"
+                        onClick={() => lockJourney(row)}
+                       
