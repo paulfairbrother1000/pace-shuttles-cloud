@@ -168,7 +168,6 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
     const active = () => [...work.values()].filter((w) => w.used > 0);
     const under = () => active().filter((w) => w.used < w.def.min);
     while (under().length > 1) {
-      // try to empty the smallest under-min into others
       const src = under().sort((a, b) => a.used - b.used)[0];
       if (!src) break;
       let moved = false;
@@ -222,7 +221,6 @@ export default function OperatorAdminPage() {
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
-  // captain modal
   type Candidate = { staff_id: UUID; name: string; email: string | null; priority: number; recent: number };
   const [capModal, setCapModal] = useState<{
     open: boolean;
@@ -232,7 +230,6 @@ export default function OperatorAdminPage() {
     items: Candidate[];
   }>({ open: false, fetching: false, items: [] });
 
-  // ref only for debounce; don't use supabase types in generics (caused build errors earlier)
   const assignTimersRef = useRef<Record<string, number>>({});
 
   /* ---------- Initial load ---------- */
@@ -331,7 +328,7 @@ export default function OperatorAdminPage() {
         const crewMap = new Map<UUID, CrewMinRow[]>();
         for (const j of js) {
           const url = `/api/ops/crew/list?journey_id=${encodeURIComponent(j.id)}`;
-          const r = await fetch(url, { method: "GET" });
+          const r = await fetch(url, { method: "GET", cache: "no-store" });
           if (r.ok) {
             const { data } = (await r.json()) as { ok: boolean; data: CrewMinRow[] };
             crewMap.set(j.id, data || []);
@@ -436,7 +433,9 @@ export default function OperatorAdminPage() {
       const horizon = horizonFor(j.departure_ts);
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
-      const parties: Party[] = oArr.map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) })).filter((g) => g.size > 0);
+      const parties: Party[] = oArr
+        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter((g) => g.size > 0);
       if (!parties.length) continue;
 
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
@@ -481,9 +480,10 @@ export default function OperatorAdminPage() {
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
           maxTotal += Number(max ?? 0);
-          // captain from crewMinByJourney
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find((c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt"));
+          const cap = crewRows.find(
+            (c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt")
+          );
           perBoat.push({
             vehicle_id: vid,
             vehicle_name: name,
@@ -504,7 +504,9 @@ export default function OperatorAdminPage() {
           dbTotal += seats;
           maxTotal += b.max;
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find((c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt"));
+          const cap = crewRows.find(
+            (c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt")
+          );
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
@@ -561,8 +563,7 @@ export default function OperatorAdminPage() {
             .filter((row) => row.perBoat.length > 0);
 
     filtered.sort(
-      (a, b) =>
-        new Date(a.journey.departure_ts).getTime() - new Date(b.journey.departure_ts).getTime()
+      (a, b) => new Date(a.journey.departure_ts).getTime() - new Date(b.journey.departure_ts).getTime()
     );
     return filtered;
   }, [
@@ -586,11 +587,9 @@ export default function OperatorAdminPage() {
 
   /* ---------- Captain auto-assign on page load/refresh ---------- */
   useEffect(() => {
-    // For each journey/boat combo that shows no captain, hit /api/ops/auto-assign
     rows.forEach((row) => {
       row.perBoat.forEach((b) => {
         if (b.captainName) return;
-        // debounce per journey-vehicle key
         const key = `${row.journey.id}:${b.vehicle_id}`;
         const timers = assignTimersRef.current;
         if (timers[key]) return;
@@ -601,8 +600,9 @@ export default function OperatorAdminPage() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journeyId: row.journey.id, vehicleId: b.vehicle_id }),
             });
-            // refresh crew list for this journey
-            const r = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`);
+            const r = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
+              cache: "no-store",
+            });
             if (r.ok) {
               const { data } = (await r.json()) as { ok: boolean; data: CrewMinRow[] };
               setCrewMinByJourney((prev) => {
@@ -617,7 +617,7 @@ export default function OperatorAdminPage() {
             clearTimeout(assignTimersRef.current[key]);
             delete assignTimersRef.current[key];
           }
-        }, 300); // tiny debounce
+        }, 300);
       });
     });
   }, [rows]);
@@ -626,8 +626,6 @@ export default function OperatorAdminPage() {
   async function lockJourney(row: UiRow) {
     if (!supabase) return;
     try {
-      // Build preview again to persist
-      // (We only persist preview; server enforces T-rules)
       const parties: Party[] = (orders || [])
         .filter((o) => o.status === "paid" && o.route_id === routeById.get(row.journey.route_id)?.id)
         .filter((o) => o.journey_date === toDateISO(new Date(row.journey.departure_ts)))
@@ -651,7 +649,6 @@ export default function OperatorAdminPage() {
 
       const preview = allocateDetailed(parties, boats, row.horizon);
 
-      // replace rows in DB
       await supabase.from("journey_vehicle_allocations").delete().eq("journey_id", row.journey.id);
 
       const toInsert: JVALockRow[] = [];
@@ -665,7 +662,6 @@ export default function OperatorAdminPage() {
         const ins = await supabase.from("journey_vehicle_allocations").insert(toInsert);
         if (ins.error) throw ins.error;
       }
-      // refresh locks in state
       const { data: lockData, error: lockErr } = await supabase
         .from("journey_vehicle_allocations")
         .select("journey_id,vehicle_id,order_id,seats")
@@ -726,8 +722,9 @@ export default function OperatorAdminPage() {
         body: JSON.stringify({ journeyId, staffId }),
       });
       if (r.ok) {
-        // refresh crew min rows
-        const get = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`);
+        const get = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`, {
+          cache: "no-store",
+        });
         if (get.ok) {
           const { data } = (await get.json()) as { ok: boolean; data: CrewMinRow[] };
           setCrewMinByJourney((prev) => {
@@ -944,7 +941,10 @@ export default function OperatorAdminPage() {
           <div className="bg-white rounded-xl shadow-xl w-[520px] max-w-[95vw]">
             <div className="flex items-center justify-between p-3 border-b">
               <div className="font-medium">Assign captain</div>
-              <button className="text-sm text-neutral-600" onClick={() => setCapModal({ open: false, fetching: false, items: [] })}>
+              <button
+                className="text-sm text-neutral-600"
+                onClick={() => setCapModal({ open: false, fetching: false, items: [] })}
+              >
                 Close
               </button>
             </div>
