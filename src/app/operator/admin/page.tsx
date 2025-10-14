@@ -175,9 +175,8 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
         const tgt = active()
           .filter((w) => w.def.vehicle_id !== src.def.vehicle_id)
           .sort((a, b) => (b.def.max - b.used) - (a.def.max - a.used))[0];
-        if (!tgt) break;
-        const free = tgt.def.max - tgt.used;
-        if (g.size <= free) {
+        const free = tgt?.def.max! - (tgt?.used ?? 0);
+        if (tgt && g.size <= free) {
           // move g
           src.used -= g.size;
           tgt.used += g.size;
@@ -464,38 +463,69 @@ export default function OperatorAdminPage() {
       let maxTotal = 0;
 
       if (isLocked) {
-        const grouped = new Map<UUID, { seats: number; groups: number[] }>();
+        // ---- FIX: show locked + preview of remaining paid ----
+        // 1) LOCKED aggregation (by boat and by order)
+        const lockedByBoat = new Map<UUID, { seats: number; groups: number[] }>();
+        const lockedByOrder = new Map<UUID, number>();
         for (const row of lockedRows) {
-          const cur = grouped.get(row.vehicle_id) ?? { seats: 0, groups: [] as number[] };
-          cur.seats += Number(row.seats || 0);
-          cur.groups.push(Number(row.seats || 0));
-          grouped.set(row.vehicle_id, cur);
+          const seats = Number(row.seats || 0);
+          const cur = lockedByBoat.get(row.vehicle_id) ?? { seats: 0, groups: [] as number[] };
+          cur.seats += seats;
+          cur.groups.push(seats);
+          lockedByBoat.set(row.vehicle_id, cur);
+          lockedByOrder.set(row.order_id, (lockedByOrder.get(row.order_id) ?? 0) + seats);
         }
-        for (const [vid, data] of grouped) {
+
+        // 2) REMAINING parties = paid - locked per order
+        const remainingParties: Party[] = [];
+        for (const o of oArr) {
+          const paidSize = Math.max(0, Number(o.qty ?? 0));
+          const alreadyLocked = lockedByOrder.get(o.id) ?? 0;
+          const remaining = paidSize - alreadyLocked;
+          if (remaining > 0) remainingParties.push({ order_id: o.id, size: remaining });
+        }
+
+        // 3) Preview remaining and merge with locked per boat
+        const previewRemaining = allocateDetailed(remainingParties, boats, horizon);
+
+        for (const b of boats) {
+          const vid = b.vehicle_id;
           const v = vehicleById.get(vid);
           const rva = rvaArr.find((x) => x.vehicle_id === vid);
           const name = v?.name ?? "Unknown";
           const opName = v?.operator_id ? operatorNameById.get(v.operator_id) ?? "—" : "—";
           const min = v?.minseats != null ? Number(v.minseats) : null;
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
-          dbTotal += data.seats;
+
+          const locked = lockedByBoat.get(vid) ?? { seats: 0, groups: [] as number[] };
+          const prev = previewRemaining.byBoat.get(vid);
+
+          const mergedGroups = [
+            ...locked.groups,
+            ...((prev?.orders ?? []).map((o) => o.size)),
+          ].sort((a, b) => b - a);
+
+          dbTotal += locked.seats;          // Locked metric stays locked only
           maxTotal += Number(max ?? 0);
+
           const crewRows = crewMinByJourney.get(j.id) || [];
           const cap = crewRows.find(
             (c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt")
           );
+
           perBoat.push({
             vehicle_id: vid,
             vehicle_name: name,
             operator_name: opName,
-            db: data.seats,
+            db: locked.seats,
             min,
             max,
             preferred: !!rva?.preferred,
-            groups: data.groups.sort((a, b) => b - a),
+            groups: mergedGroups,           // <-- now shows locked + preview
             captainName: cap ? [cap.first_name, cap.last_name].filter(Boolean).join(" ") : null,
           });
         }
+        // ---- end FIX ----
       } else {
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
