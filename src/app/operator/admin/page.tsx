@@ -207,7 +207,7 @@ function enforceT72Gates(
 }
 
 /* ---------- Page ---------- */
-export default function AdminPage() {
+export default function OperatorAdminPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -776,7 +776,7 @@ export default function AdminPage() {
 
   /* ---------- Actions: Lock / Unlock ---------- */
 
-  async function lockJourney(row: UiRow) {
+  async function lockJourney(row: any) {
     try {
       // Let server compute and persist using its canonical logic
       const res = await fetch("/api/ops/finalize-allocations", {
@@ -879,7 +879,7 @@ export default function AdminPage() {
     <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Site Admin — Live Journeys</h1>
+          <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
             Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
           </p>
