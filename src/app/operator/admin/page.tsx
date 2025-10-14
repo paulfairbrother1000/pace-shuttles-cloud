@@ -300,7 +300,7 @@ export default function OperatorAdminPage() {
         if (oErr) throw oErr;
         setOrders((oData || []) as Order[]);
 
-        // 5) persisted allocations
+        // 5) persisted allocations (locks)
         if (journeyIds.length) {
           const { data: lockData, error: lockErr } = await supabase
             .from("journey_vehicle_allocations")
@@ -383,7 +383,7 @@ export default function OperatorAdminPage() {
     vehicle_id: UUID;
     vehicle_name: string;
     operator_name: string;
-    db: number;
+    db: number; // locked seats
     min: number | null;
     max: number | null;
     preferred?: boolean;
@@ -399,13 +399,13 @@ export default function OperatorAdminPage() {
     horizon: Horizon;
     isLocked: boolean;
     perBoat: UiBoat[];
-    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
+    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number }; // proj=paid; dbTotal=locked
   };
 
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
-    // orders keyed route+date
+    // orders keyed route+date (only PAID)
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -534,8 +534,8 @@ export default function OperatorAdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-      const proj = parties.reduce((s, p) => s + p.size, 0);
-      const unassigned = Math.max(0, proj - dbTotal);
+      const proj = parties.reduce((s, p) => s + p.size, 0); // PAID
+      const unassigned = Math.max(0, proj - dbTotal); // PAID minus LOCKED
 
       out.push({
         journey: j,
@@ -627,7 +627,7 @@ export default function OperatorAdminPage() {
     if (!supabase) return;
     try {
       const parties: Party[] = (orders || [])
-        .filter((o) => o.status === "paid" && o.route_id === routeById.get(row.journey.route_id)?.id)
+        .filter((o) => o.status === "paid" && o.route_id === row.journey.route_id)
         .filter((o) => o.journey_date === toDateISO(new Date(row.journey.departure_ts)))
         .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
         .filter((g) => g.size > 0);
@@ -751,7 +751,8 @@ export default function OperatorAdminPage() {
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
+            Future journeys only · <strong>Paid</strong> = confirmed bookings · <strong>Locked</strong> = seats persisted to boats.
+            At <strong>T-72/T-24</strong> you may keep accepting bookings; press <strong>Lock</strong> to persist an updated split.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -778,7 +779,7 @@ export default function OperatorAdminPage() {
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : rows.length === 0 ? (
-        <div className="p-4 border rounded-xl bg-white shadow">No journeys with client assignments.</div>
+        <div className="p-4 border rounded-xl bg-white shadow">No journeys with paid bookings yet.</div>
       ) : (
         <div className="space-y-6">
           {rows.map((row) => (
@@ -805,10 +806,10 @@ export default function OperatorAdminPage() {
                   )}
 
                   <span className="text-xs text-neutral-700">
-                    Proj: <strong>{row.totals.proj}</strong>
+                    Paid: <strong>{row.totals.proj}</strong>
                   </span>
                   <span className="text-xs text-neutral-700">
-                    Customers: <strong>{row.totals.dbTotal}</strong>
+                    Locked: <strong>{row.totals.dbTotal}</strong>
                   </span>
                   <span className="text-xs text-neutral-700">
                     Max: <strong>{row.totals.maxTotal}</strong>
@@ -848,7 +849,7 @@ export default function OperatorAdminPage() {
                     <tr>
                       <th className="text-left p-3">Boat</th>
                       <th className="text-left p-3">Operator</th>
-                      <th className="text-right p-3">Customers</th>
+                      <th className="text-right p-3">Locked</th>
                       <th className="text-right p-3">Min</th>
                       <th className="text-right p-3">Max</th>
                       <th className="text-left p-3">Groups</th>
