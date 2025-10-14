@@ -82,7 +82,7 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
   return null;
 }
 
-/* ---------- Allocation  (exactly mirrors the server) ---------- */
+/* ---------- Allocation  (mirrors server finalize route) ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
@@ -94,13 +94,12 @@ type Boat = {
 type AllocMap = Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>;
 
 function sortBoats(a: Boat, b: Boat) {
-  // preferred first, then smaller cap, then id
   if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
   if (a.cap !== b.cap) return a.cap - b.cap;
   return a.vehicle_id.localeCompare(b.vehicle_id);
 }
 
-/** >72h: fill one boat per operator to MIN, then round-robin. */
+/** >72h: fill one boat per operator to MIN, then round-robin the rest. */
 function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap {
   const byOp = new Map<string, Boat[]>();
   for (const b of boats.slice().sort(sortBoats)) {
@@ -128,7 +127,7 @@ function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap
         const u = used.get(b.vehicle_id) ?? 0;
         if (u < b.cap) {
           target = b;
-          if (u < b.min) break; // prioritise reaching min
+          if (u < b.min) break;
         }
       }
       if (!target) continue;
@@ -148,7 +147,7 @@ function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap
   return byBoat;
 }
 
-/** T-72 gates: keep in-play vehicles, drop empties, require MIN (allow single-boat MIN-1) */
+/** T-72: keep in-play vehicles, drop empties, enforce MIN (allow single-boat MIN-1). */
 function enforceT72Gates(byBoat: AllocMap, boats: Boat[], inPlay: Set<UUID>): AllocMap {
   const gated = new Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>();
   for (const [vid, rec] of byBoat.entries()) if (inPlay.has(vid)) gated.set(vid, rec);
@@ -257,7 +256,7 @@ export default function OperatorAdminPage() {
         setVehicles((vQ.data || []) as Vehicle[]);
         setOperators((oQ.data || []) as Operator[]);
 
-        // 4) paid orders (window)
+        // 4) paid orders
         const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await supabase
@@ -370,7 +369,6 @@ export default function OperatorAdminPage() {
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
-    // Orders grouped by (route_id, date)
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -380,7 +378,6 @@ export default function OperatorAdminPage() {
       ordersByKey.set(k, arr);
     }
 
-    // RVAs by route
     const rvasByRoute = new Map<UUID, RVA[]>();
     for (const r of rvas) {
       if (!r.is_active) continue;
@@ -424,14 +421,11 @@ export default function OperatorAdminPage() {
         })
         .filter(Boolean) as Boat[];
 
-      // Build preview using the exact server logic
       let preview: AllocMap = allocateRoundRobinByOperator(parties, boats);
 
-      // If journey already has persisted rows, derive from DB; otherwise show preview
       const locked = locksByJourney.get(j.id) ?? [];
       const isLocked = locked.length > 0;
 
-      // In-play vehicles come from current allocations (for T-72 gating)
       const inPlay = new Set<UUID>((locked || []).map(r => r.vehicle_id));
       if (horizon === "T72") preview = enforceT72Gates(preview, boats, inPlay);
 
@@ -468,7 +462,6 @@ export default function OperatorAdminPage() {
           for (let i = perBoat.length - 1; i >= 0; i--) if (perBoat[i].customers <= 0) perBoat.splice(i, 1);
         }
       } else {
-        // from preview
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
           const entry = preview.get(b.vehicle_id);
@@ -486,7 +479,6 @@ export default function OperatorAdminPage() {
             groups: (entry?.groups ?? []).map(o => o.size).sort((a, b) => b - a),
           });
         }
-        const un = [...preview.values()].flatMap(v => v.groups).reduce((s, g) => s, 0); // placeholder
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
         if (isT72orT24(horizon)) {
@@ -561,14 +553,21 @@ export default function OperatorAdminPage() {
     operatorNameById,
   ]);
 
-  /* ---------- Captain auto-assign triggers ---------- */
+  /* ---------- Captain auto-assign ---------- */
 
-  async function triggerCaptainAssign(journey_id: UUID, vehicle_id: UUID) {
+  // ensure we don't spam the API: one call per (journey, vehicle) per page life
+  const autoAssignSent = useRef<Set<string>>(new Set());
+
+  async function triggerCaptainAssign(journeyId: UUID, vehicleId: UUID) {
+    const key = `${journeyId}_${vehicleId}`;
+    if (autoAssignSent.current.has(key)) return;
+    autoAssignSent.current.add(key);
+
     try {
       const res = await fetch("/api/ops/auto-assign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journey_id, vehicle_id }),
+        body: JSON.stringify({ journeyId, vehicleId }), // ✅ correct keys
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
@@ -579,9 +578,8 @@ export default function OperatorAdminPage() {
     }
   }
 
-  // fire once after initial render
+  // after rows compute, fire auto-assign for boats that have customers
   useEffect(() => {
-    if (!rows.length) return;
     for (const r of rows) {
       for (const b of r.perBoat) {
         if (b.customers > 0) triggerCaptainAssign(r.journey.id, b.vehicle_id);
@@ -590,7 +588,7 @@ export default function OperatorAdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.length]);
 
-  // realtime: new or updated paid orders -> reload + auto assign
+  // realtime: when a new PAID order appears, reload data (auto-assign will run again)
   useEffect(() => {
     if (!supabase) return;
     if (realtimeSubRef.current) return;
@@ -600,16 +598,13 @@ export default function OperatorAdminPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "orders" },
-        async (payload: any) => {
+        (payload: any) => {
           const after = payload.new;
           const before = payload.old;
           const nowPaid =
             (after?.status === "paid" && before?.status !== "paid") ||
             (payload.eventType === "INSERT" && after?.status === "paid");
-          if (nowPaid) {
-            // simple approach: refresh page data; captain assign will run after rows recompute
-            window.location.reload();
-          }
+          if (nowPaid) window.location.reload();
         }
       )
       .subscribe();
@@ -626,7 +621,6 @@ export default function OperatorAdminPage() {
   /* ---------- Lock / Unlock ---------- */
   async function lockJourney(row: UiRow) {
     try {
-      // ask server to finalize using the same policy
       const res = await fetch("/api/ops/finalize-allocations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -637,7 +631,6 @@ export default function OperatorAdminPage() {
         setErr(`Finalize failed: ${res.status} ${txt}`);
         return;
       }
-      // refresh locks for this journey
       if (supabase) {
         const { data, error } = await supabase
           .from("journey_vehicle_allocations")
@@ -657,13 +650,6 @@ export default function OperatorAdminPage() {
 
   async function unlockJourney(journeyId: UUID) {
     try {
-      const res = await fetch("/api/ops/finalize-allocations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // clearing by sending no demand -> server deletes, but we’ll just hard delete here for safety in UI
-        body: JSON.stringify({}), 
-      });
-      // ignore response; do local delete
       if (supabase) {
         const del = await supabase
           .from("journey_vehicle_allocations")
