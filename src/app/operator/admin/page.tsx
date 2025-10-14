@@ -220,6 +220,7 @@ export default function OperatorAdminPage() {
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
+  // captain modal
   type Candidate = { staff_id: UUID; name: string; email: string | null; priority: number; recent: number };
   const [capModal, setCapModal] = useState<{
     open: boolean;
@@ -229,8 +230,8 @@ export default function OperatorAdminPage() {
     items: Candidate[];
   }>({ open: false, fetching: false, items: [] });
 
+  // ref only for debounce
   const assignTimersRef = useRef<Record<string, number>>({});
-  const autoAssignAttemptsRef = useRef<Record<string, number>>({}); // key -> attempts
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -300,7 +301,7 @@ export default function OperatorAdminPage() {
         if (oErr) throw oErr;
         setOrders((oData || []) as Order[]);
 
-        // 5) persisted allocations (locks)
+        // 5) persisted allocations
         if (journeyIds.length) {
           const { data: lockData, error: lockErr } = await supabase
             .from("journey_vehicle_allocations")
@@ -383,7 +384,7 @@ export default function OperatorAdminPage() {
     vehicle_id: UUID;
     vehicle_name: string;
     operator_name: string;
-    db: number; // locked seats
+    db: number;
     min: number | null;
     max: number | null;
     preferred?: boolean;
@@ -399,13 +400,13 @@ export default function OperatorAdminPage() {
     horizon: Horizon;
     isLocked: boolean;
     perBoat: UiBoat[];
-    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number }; // proj=paid; dbTotal=locked
+    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
   };
 
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
-    // orders keyed route+date (only PAID)
+    // orders keyed route+date
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -433,9 +434,7 @@ export default function OperatorAdminPage() {
       const horizon = horizonFor(j.departure_ts);
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
-      const parties: Party[] = oArr
-        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter((g) => g.size > 0);
+      const parties: Party[] = oArr.map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) })).filter((g) => g.size > 0);
       if (!parties.length) continue;
 
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
@@ -464,7 +463,7 @@ export default function OperatorAdminPage() {
       let maxTotal = 0;
 
       if (isLocked) {
-        // ---- show locked + preview of remaining paid ----
+        // show locked + preview of remaining paid
         const lockedByBoat = new Map<UUID, { seats: number; groups: number[] }>();
         const lockedByOrder = new Map<UUID, number>();
         for (const row of lockedRows) {
@@ -498,18 +497,16 @@ export default function OperatorAdminPage() {
           const locked = lockedByBoat.get(vid) ?? { seats: 0, groups: [] as number[] };
           const prev = previewRemaining.byBoat.get(vid);
 
-          const mergedGroups = [...locked.groups, ...((prev?.orders ?? []).map((o) => o.size))].sort(
-            (a, b) => b - a
-          );
+          const mergedGroups = [
+            ...locked.groups,
+            ...((prev?.orders ?? []).map((o) => o.size)),
+          ].sort((a, b) => b - a);
 
-          dbTotal += locked.seats; // Locked metric stays locked only
+          dbTotal += locked.seats;
           maxTotal += Number(max ?? 0);
 
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find(
-            (c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt")
-          );
-
+          const cap = crewRows.find((c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt"));
           perBoat.push({
             vehicle_id: vid,
             vehicle_name: name,
@@ -530,9 +527,7 @@ export default function OperatorAdminPage() {
           dbTotal += seats;
           maxTotal += b.max;
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find(
-            (c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt")
-          );
+          const cap = crewRows.find((c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt"));
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
@@ -560,8 +555,8 @@ export default function OperatorAdminPage() {
         return a.vehicle_name.localeCompare(b.vehicle_name);
       });
 
-      const proj = parties.reduce((s, p) => s + p.size, 0); // PAID
-      const unassigned = Math.max(0, proj - dbTotal); // PAID minus LOCKED
+      const proj = parties.reduce((s, p) => s + p.size, 0);
+      const unassigned = Math.max(0, proj - dbTotal);
 
       out.push({
         journey: j,
@@ -589,7 +584,8 @@ export default function OperatorAdminPage() {
             .filter((row) => row.perBoat.length > 0);
 
     filtered.sort(
-      (a, b) => new Date(a.journey.departure_ts).getTime() - new Date(b.journey.departure_ts).getTime()
+      (a, b) =>
+        new Date(a.journey.departure_ts).getTime() - new Date(b.journey.departure_ts).getTime()
     );
     return filtered;
   }, [
@@ -618,37 +614,27 @@ export default function OperatorAdminPage() {
         if (b.captainName) return;
         const key = `${row.journey.id}:${b.vehicle_id}`;
         const timers = assignTimersRef.current;
-        const attempts = autoAssignAttemptsRef.current[key] ?? 0;
-        if (attempts >= 2) return; // small safety: avoid spamming the API
         if (timers[key]) return;
         timers[key] = window.setTimeout(async () => {
           try {
-            const r = await fetch("/api/ops/auto-assign", {
+            await fetch("/api/ops/auto-assign", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journeyId: row.journey.id, vehicleId: b.vehicle_id }),
             });
-            if (!r.ok) {
-              autoAssignAttemptsRef.current[key] = attempts + 1;
-              const msg = await r.text().catch(() => `${r.status}`);
-              setErr((prev) => prev ?? `Auto-assign failed (${r.status}): ${msg || "Server error"}`);
-            } else {
-              // refresh crew list for this journey
-              const list = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
-                cache: "no-store",
+            const r = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
+              cache: "no-store",
+            });
+            if (r.ok) {
+              const { data } = (await r.json()) as { ok: boolean; data: CrewMinRow[] };
+              setCrewMinByJourney((prev) => {
+                const copy = new Map(prev);
+                copy.set(row.journey.id, data || []);
+                return copy;
               });
-              if (list.ok) {
-                const { data } = (await list.json()) as { ok: boolean; data: CrewMinRow[] };
-                setCrewMinByJourney((prev) => {
-                  const copy = new Map(prev);
-                  copy.set(row.journey.id, data || []);
-                  return copy;
-                });
-              }
             }
-          } catch (e: any) {
-            autoAssignAttemptsRef.current[key] = attempts + 1;
-            setErr((prev) => prev ?? (e?.message || "Auto-assign failed"));
+          } catch {
+            /* ignore */
           } finally {
             clearTimeout(assignTimersRef.current[key]);
             delete assignTimersRef.current[key];
@@ -663,7 +649,7 @@ export default function OperatorAdminPage() {
     if (!supabase) return;
     try {
       const parties: Party[] = (orders || [])
-        .filter((o) => o.status === "paid" && o.route_id === row.journey.route_id)
+        .filter((o) => o.status === "paid" && o.route_id === routeById.get(row.journey.route_id)?.id)
         .filter((o) => o.journey_date === toDateISO(new Date(row.journey.departure_ts)))
         .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
         .filter((g) => g.size > 0);
@@ -732,10 +718,12 @@ export default function OperatorAdminPage() {
   async function openCapModal(journeyId: UUID, vehicleId: UUID) {
     setCapModal({ open: true, journeyId, vehicleId, fetching: true, items: [] });
     try {
+      // ✅ send BOTH journeyId and vehicleId so server can use vehicle prefs
       const r = await fetch("/api/ops/captain-candidates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId, vehicleId }), // include vehicleId
+        body: JSON.stringify({ journeyId, vehicleId }),
+        cache: "no-store",
       });
       if (r.ok) {
         const data = (await r.json()) as { items?: Candidate[] };
@@ -755,7 +743,7 @@ export default function OperatorAdminPage() {
       const r = await fetch("/api/ops/assign/lead", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId, vehicleId, staffId }), // include vehicleId
+        body: JSON.stringify({ journeyId, staffId }),
       });
       if (r.ok) {
         const get = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`, {
@@ -978,10 +966,7 @@ export default function OperatorAdminPage() {
           <div className="bg-white rounded-xl shadow-xl w-[520px] max-w-[95vw]">
             <div className="flex items-center justify-between p-3 border-b">
               <div className="font-medium">Assign captain</div>
-              <button
-                className="text-sm text-neutral-600"
-                onClick={() => setCapModal({ open: false, fetching: false, items: [] })}
-              >
+              <button className="text-sm text-neutral-600" onClick={() => setCapModal({ open: false, fetching: false, items: [] })}>
                 Close
               </button>
             </div>
