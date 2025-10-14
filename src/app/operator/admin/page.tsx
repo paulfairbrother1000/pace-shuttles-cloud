@@ -463,8 +463,7 @@ export default function OperatorAdminPage() {
       let maxTotal = 0;
 
       if (isLocked) {
-        // ---- FIX: show locked + preview of remaining paid ----
-        // 1) LOCKED aggregation (by boat and by order)
+        // ---- show locked + preview of remaining paid ----
         const lockedByBoat = new Map<UUID, { seats: number; groups: number[] }>();
         const lockedByOrder = new Map<UUID, number>();
         for (const row of lockedRows) {
@@ -476,7 +475,6 @@ export default function OperatorAdminPage() {
           lockedByOrder.set(row.order_id, (lockedByOrder.get(row.order_id) ?? 0) + seats);
         }
 
-        // 2) REMAINING parties = paid - locked per order
         const remainingParties: Party[] = [];
         for (const o of oArr) {
           const paidSize = Math.max(0, Number(o.qty ?? 0));
@@ -485,7 +483,6 @@ export default function OperatorAdminPage() {
           if (remaining > 0) remainingParties.push({ order_id: o.id, size: remaining });
         }
 
-        // 3) Preview remaining and merge with locked per boat
         const previewRemaining = allocateDetailed(remainingParties, boats, horizon);
 
         for (const b of boats) {
@@ -500,12 +497,11 @@ export default function OperatorAdminPage() {
           const locked = lockedByBoat.get(vid) ?? { seats: 0, groups: [] as number[] };
           const prev = previewRemaining.byBoat.get(vid);
 
-          const mergedGroups = [
-            ...locked.groups,
-            ...((prev?.orders ?? []).map((o) => o.size)),
-          ].sort((a, b) => b - a);
+          const mergedGroups = [...locked.groups, ...((prev?.orders ?? []).map((o) => o.size))].sort(
+            (a, b) => b - a
+          );
 
-          dbTotal += locked.seats;          // Locked metric stays locked only
+          dbTotal += locked.seats; // Locked metric stays locked only
           maxTotal += Number(max ?? 0);
 
           const crewRows = crewMinByJourney.get(j.id) || [];
@@ -521,11 +517,10 @@ export default function OperatorAdminPage() {
             min,
             max,
             preferred: !!rva?.preferred,
-            groups: mergedGroups,           // <-- now shows locked + preview
+            groups: mergedGroups,
             captainName: cap ? [cap.first_name, cap.last_name].filter(Boolean).join(" ") : null,
           });
         }
-        // ---- end FIX ----
       } else {
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
@@ -729,7 +724,7 @@ export default function OperatorAdminPage() {
       const r = await fetch("/api/ops/captain-candidates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId }),
+        body: JSON.stringify({ journeyId, vehicleId }), // include vehicleId
       });
       if (r.ok) {
         const data = (await r.json()) as { items?: Candidate[] };
@@ -749,7 +744,7 @@ export default function OperatorAdminPage() {
       const r = await fetch("/api/ops/assign/lead", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId, staffId }),
+        body: JSON.stringify({ journeyId, vehicleId, staffId }), // include vehicleId
       });
       if (r.ok) {
         const get = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`, {
@@ -802,9 +797,7 @@ export default function OperatorAdminPage() {
         </div>
       </header>
 
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>
-      )}
+      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
 
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
@@ -832,7 +825,9 @@ export default function OperatorAdminPage() {
                   ) : row.horizon === "T72" ? (
                     <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">T-72 (Confirmed)</span>
                   ) : (
-                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">&gt;72h (Prep)</span>
+                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
+                      &gt;72h (Prep)
+                    </span>
                   )}
 
                   <span className="text-xs text-neutral-700">
