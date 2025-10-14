@@ -38,15 +38,6 @@ type Order = {
 };
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-type CaptainAssignRow = {
-  id: UUID;
-  journey_id: UUID;
-  vehicle_id: UUID;
-  staff_id: UUID;
-  role_code: string; // 'CAPTAIN'
-  status: string; // assigned/confirmed
-  assigned_at: string | null;
-};
 type Staff = { id: UUID; first_name?: string | null; last_name?: string | null };
 
 /* ---------- Client Helpers ---------- */
@@ -234,7 +225,8 @@ export default function OperatorAdminPage() {
   const [capCandidates, setCapCandidates] = useState<Staff[]>([]);
   const [capBusy, setCapBusy] = useState(false);
 
-  const realtimeSubRef = useRef<ReturnType<typeof supabase?.channel> | null>(null);
+  // simpler typing to avoid TS error during build
+  const realtimeSubRef = useRef<any>(null);
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -335,7 +327,7 @@ export default function OperatorAdminPage() {
           setLocksByJourney(new Map());
         }
 
-        // 6) Load current captain assignments (no embeds to avoid ambiguity)
+        // 6) Load current captain assignments
         await refreshCaptainsFor(journeyIds);
 
         // 7) Auto-assign captains on load for journeys at/after T-72 with vehicle but no captain
@@ -366,21 +358,18 @@ export default function OperatorAdminPage() {
           const jid = payload?.new?.journey_id as UUID | null;
           if (!jid) return;
           try {
-            // Re-run server allocation (keeps T-72/T-24 rules)
             await fetch("/api/ops/finalize-allocations", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journey_id: jid }),
             });
 
-            // Auto-assign captain if missing (server picks from prefs + fair use)
             await fetch("/api/ops/auto-assign", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journey_id: jid, role_code: "CAPTAIN" }),
             });
 
-            // Refresh local captain rows & locks for that journey
             await refreshCaptainsFor([jid]);
             await refreshLocksFor([jid]);
           } catch (e) {
@@ -392,7 +381,7 @@ export default function OperatorAdminPage() {
 
     realtimeSubRef.current = ch;
     return () => {
-      if (realtimeSubRef.current) {
+      if (realtimeSubRef.current && supabase) {
         supabase.removeChannel(realtimeSubRef.current);
         realtimeSubRef.current = null;
       }
@@ -442,9 +431,7 @@ export default function OperatorAdminPage() {
     (capRows || []).forEach((r: any) => {
       if (!r.vehicle_id) return;
       const k = `${r.journey_id}_${r.vehicle_id}`;
-      // prefer latest assigned_at
-      const existing = map.get(k);
-      if (!existing) map.set(k, r.staff_id as UUID);
+      if (!map.get(k)) map.set(k, r.staff_id as UUID);
       staffIds.add(r.staff_id as UUID);
     });
 
@@ -468,7 +455,6 @@ export default function OperatorAdminPage() {
   }
 
   async function autoAssignCaptainsIfMissing(js: Journey[]) {
-    // Fire only for journeys at/after T-72 with a vehicle but no captain yet.
     const targets: Journey[] = [];
     for (const j of js) {
       const h = horizonFor(j.departure_ts);
@@ -778,7 +764,6 @@ export default function OperatorAdminPage() {
 
   async function lockJourney(row: any) {
     try {
-      // Let server compute and persist using its canonical logic
       const res = await fetch("/api/ops/finalize-allocations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -786,7 +771,6 @@ export default function OperatorAdminPage() {
       });
       if (!res.ok) throw new Error("Finalize failed");
 
-      // Auto-assign captain if missing
       await fetch("/api/ops/auto-assign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -839,7 +823,7 @@ export default function OperatorAdminPage() {
           last_name: c.last_name ?? "",
         })) ?? [];
       setCapCandidates(items);
-    } catch (e) {
+    } catch {
       // best-effort
     }
   }
@@ -930,7 +914,6 @@ export default function OperatorAdminPage() {
                 </div>
 
                 <div className="ml-auto flex items-center gap-2">
-                  {/* Horizon badge */}
                   {row.horizon === "T24" ? (
                     <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
                       T-24 (Finalised)
@@ -949,7 +932,6 @@ export default function OperatorAdminPage() {
                     </span>
                   )}
 
-                  {/* Context awareness */}
                   {row.contextDay === "today" && (
                     <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs">
                       Runs Today
@@ -961,7 +943,6 @@ export default function OperatorAdminPage() {
                     </span>
                   )}
 
-                  {/* Totals */}
                   <span className="text-xs text-neutral-700">
                     Proj: <strong>{row.totals.proj}</strong>
                   </span>
@@ -975,7 +956,6 @@ export default function OperatorAdminPage() {
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
-                  {/* Lock/Unlock */}
                   {(row.horizon === "T24" || row.horizon === "T72") &&
                     (row.isLocked ? (
                       <>
@@ -1017,6 +997,7 @@ export default function OperatorAdminPage() {
                     </tr>
                   </thead>
                   <tbody>
+                    {rows.map}
                     {row.perBoat.map((b) => (
                       <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
                         <td className="p-3">
