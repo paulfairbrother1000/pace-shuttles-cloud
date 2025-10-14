@@ -41,7 +41,8 @@ type Order = {
 
 type JVALockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-type CrewMinRow = {
+/* Crew list (from /api/ops/crew/list) */
+type CrewRowMin = {
   assignment_id: UUID;
   journey_id: UUID;
   vehicle_id: UUID;
@@ -49,8 +50,10 @@ type CrewMinRow = {
   status_simple: string | null;
   first_name: string | null;
   last_name: string | null;
-  role_label: string | null; // "Captain"/etc from your view
+  role_label: string | null;
 };
+
+type Candidate = { staff_id: UUID; name: string; email: string | null; priority: number; recent: number };
 
 /* ---------- Client Helpers ---------- */
 const supabase =
@@ -96,14 +99,13 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
   return null;
 }
 
-/* ---------- Allocation preview (unchanged core) ---------- */
+/* ---------- Allocation (preview) ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
   preferred: boolean;
-
-  min: number; // min seats
-  max: number; // cap
+  min: number;
+  max: number;
   operator_id?: UUID | null;
   price_cents?: number | null;
 };
@@ -134,8 +136,8 @@ function allocateDetailed(
     if (sameOp && a.preferred !== b.preferred) return a.preferred ? -1 : 1;
     return String(a.vehicle_id).localeCompare(String(b.vehicle_id));
   };
-
   const boatsSorted = [...boats].sort(boatRank);
+
   type W = { def: Boat; used: number; groups: { order_id: UUID; size: number }[] };
   const work = new Map<UUID, W>();
   boatsSorted.forEach((b) => work.set(b.vehicle_id, { def: b, used: 0, groups: [] }));
@@ -151,13 +153,10 @@ function allocateDetailed(
     byBoat.set(boatId, cur);
   };
 
-  const remaining: Party[] = [...parties]
-    .filter((p) => p.size > 0)
-    .sort((a, b) => b.size - a.size);
-
+  const remaining = [...parties].filter((p) => p.size > 0).sort((a, b) => b.size - a.size);
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  // Phase A — seed to MIN
+  // Phase A: seed to MIN
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -172,8 +171,7 @@ function allocateDetailed(
     remaining.length = 0;
     remaining.push(...next);
   }
-
-  // Phase B — fill to MAX
+  // Phase B: fill up to MAX
   {
     const next: Party[] = [];
     for (const g of remaining) {
@@ -188,57 +186,42 @@ function allocateDetailed(
     remaining.length = 0;
     remaining.push(...next);
   }
-
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
-  // T-72 rebalance minimalism (keep <=1 under-min)
+  // Minimal T-72 rebalance to avoid multiple under-min actives
   if (horizon === "T72") {
     const active = () => [...work.values()].filter((w) => w.used > 0);
     const underMin = () => active().filter((w) => w.used < w.def.min);
-    const overMin = () => active().filter((w) => w.used > w.def.min);
-    const tryMove = (donor: W, receiver: W) => {
-      const free = receiver.def.max - receiver.used;
-      if (free <= 0) return false;
-      const sorted = [...donor.groups].sort((a, b) => a.size - b.size);
-      let pick: { order_id: UUID; size: number } | null = null;
-      for (const g of sorted) {
-        if (g.size > free) continue;
-        const donorWouldBe = donor.used - g.size;
-        if (donorWouldBe < donor.def.min) continue;
-        pick = g;
-        break;
-      }
-      if (!pick) return false;
-      donor.used -= pick.size;
-      receiver.used += pick.size;
-      const di = donor.groups.findIndex((x) => x.order_id === pick!.order_id && x.size === pick!.size);
-      if (di >= 0) donor.groups.splice(di, 1);
-      receiver.groups.push(pick);
-      const dMap = byBoat.get(donor.def.vehicle_id)!;
-      const rMap = byBoat.get(receiver.def.vehicle_id) ?? { seats: 0, orders: [] };
-      dMap.seats -= pick.size;
-      const boIdx = dMap.orders.findIndex((x) => x.order_id === pick!.order_id && x.size === pick!.size);
-      if (boIdx >= 0) dMap.orders.splice(boIdx, 1);
-      rMap.seats += pick.size;
-      rMap.orders.push(pick);
-      byBoat.set(receiver.def.vehicle_id, rMap);
-      return true;
-    };
-
-    let changed = true;
-    while (changed) {
-      changed = false;
-      const receivers = underMin().sort((a, b) => b.def.min - a.def.min);
-      if (!receivers.length) break;
-      for (const recv of receivers) {
-        const donors = overMin().sort((a, b) => (b.used - b.def.min) - (a.used - a.def.min));
-        for (const don of donors) {
-          if (tryMove(don, recv)) {
-            changed = true;
-            break;
-          }
+    let under = underMin().sort((a, b) => a.used - b.used);
+    while (under.length > 1) {
+      const src = under[0];
+      let moved = false;
+      const targets = active()
+        .filter((w) => w.def.vehicle_id !== src.def.vehicle_id)
+        .sort((a, b) => (b.def.max - b.used) - (a.def.max - a.used));
+      for (const grp of [...src.groups].sort((a, b) => a.size - b.size)) {
+        for (const tgt of targets) {
+          const free = tgt.def.max - tgt.used;
+          if (grp.size > free) continue;
+          src.used -= grp.size;
+          tgt.used += grp.size;
+          src.groups.splice(src.groups.findIndex((x) => x.order_id === grp.order_id && x.size === grp.size), 1);
+          tgt.groups.push(grp);
+          const sMap = byBoat.get(src.def.vehicle_id)!;
+          const tMap = byBoat.get(tgt.def.vehicle_id) ?? { seats: 0, orders: [] };
+          sMap.seats -= grp.size;
+          const idx = sMap.orders.findIndex((x) => x.order_id === grp.order_id && x.size === grp.size);
+          if (idx >= 0) sMap.orders.splice(idx, 1);
+          tMap.seats += grp.size;
+          tMap.orders.push(grp);
+          byBoat.set(tgt.def.vehicle_id, tMap);
+          moved = true;
+          break;
         }
+        if (moved) break;
       }
+      if (!moved) break;
+      under = underMin().sort((a, b) => a.used - b.used);
     }
   }
 
@@ -260,16 +243,21 @@ export default function OperatorAdminPage() {
   const [operators, setOperators] = useState<Operator[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
+  const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
-  // Captains loaded from view (lead per journey/vehicle)
-  const [captainByJV, setCaptainByJV] = useState<Map<string, CrewMinRow>>(new Map());
+  /** leadByJourney caches the captain (lead) row keyed by (journey_id, vehicle_id) */
+  const [leadByJourney, setLeadByJourney] = useState<Map<string, CrewRowMin | null>>(new Map());
 
-  // Assign modal state
-  const [assigning, setAssigning] = useState<{ journeyId: UUID; vehicleId: UUID } | null>(null);
-  const [capCandidates, setCapCandidates] = useState<Array<{ staff_id: UUID; name: string; email: string | null; priority: number; recent: number }>>([]);
-  const [capBusy, setCapBusy] = useState(false);
+  /** candidate modal */
+  const [capModal, setCapModal] = useState<{
+    open: boolean;
+    journeyId?: UUID;
+    vehicleId?: UUID;
+    fetching: boolean;
+    items: Candidate[];
+  }>({ open: false, fetching: false, items: [] });
 
-  const realtimeRef = useRef<any>(null);
+  const realtimeSubRef = useRef<ReturnType<typeof supabase?.channel> | null>(null);
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -284,7 +272,7 @@ export default function OperatorAdminPage() {
       setErr(null);
 
       try {
-        // future & active journeys
+        // 1) future, active journeys
         const { data: jData, error: jErr } = await supabase
           .from("journeys")
           .select("id,route_id,departure_ts,is_active")
@@ -295,12 +283,12 @@ export default function OperatorAdminPage() {
 
         const js = (jData || []) as Journey[];
         if (off) return;
+
         setJourneys(js);
+        const routeIds = Array.from(new Set(js.map(j => j.route_id)));
+        const journeyIds = js.map(j => j.id);
 
-        const routeIds = Array.from(new Set(js.map((j) => j.route_id)));
-        const journeyIds = js.map((j) => j.id);
-
-        // lookups
+        // 2) lookups
         const [rQ, puQ, deQ] = await Promise.all([
           supabase.from("routes").select("id,pickup_id,destination_id").in("id", routeIds),
           supabase.from("pickup_points").select("id,name"),
@@ -314,7 +302,7 @@ export default function OperatorAdminPage() {
         setPickups((puQ.data || []) as Pickup[]);
         setDestinations((deQ.data || []) as Destination[]);
 
-        // RVAs, vehicles, operators
+        // 3) RVAs, vehicles, operators
         const [rvaQ, vQ, oQ] = await Promise.all([
           supabase
             .from("route_vehicle_assignments")
@@ -335,8 +323,8 @@ export default function OperatorAdminPage() {
         setVehicles((vQ.data || []) as Vehicle[]);
         setOperators((oQ.data || []) as Operator[]);
 
-        // orders (paid)
-        const dateSet = new Set(js.map((j) => toDateISO(new Date(j.departure_ts))));
+        // 4) paid orders
+        const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await supabase
           .from("orders")
@@ -346,7 +334,7 @@ export default function OperatorAdminPage() {
         if (oErr) throw oErr;
         setOrders((oData || []) as Order[]);
 
-        // allocations
+        // 5) read persisted locks
         if (journeyIds.length) {
           const { data: lockData, error: lockErr } = await supabase
             .from("journey_vehicle_allocations")
@@ -370,8 +358,12 @@ export default function OperatorAdminPage() {
           setLocksByJourney(new Map());
         }
 
-        // current captain leads from view API (per journey)
-        await refreshCaptainsBulk(journeyIds);
+        // 6) initial captain auto-assign for journeys missing a lead
+        await seedLeads(js);
+
+        // 7) realtime: on any allocation write, try auto-assign lead for that journey
+        if (!off) initRealtime();
+
       } catch (e: any) {
         if (!off) setErr(e?.message ?? String(e));
       } finally {
@@ -381,177 +373,152 @@ export default function OperatorAdminPage() {
 
     return () => {
       off = true;
+      if (realtimeSubRef.current && supabase) {
+        supabase.removeChannel(realtimeSubRef.current as any);
+        realtimeSubRef.current = null;
+      }
     };
   }, []);
 
-  /* ---------- helpers: lookups ---------- */
+  /* ---------- Lookups ---------- */
   const routeById = useMemo(() => {
     const m = new Map<UUID, Route>();
-    routes.forEach((r) => m.set(r.id, r));
+    routes.forEach(r => m.set(r.id, r));
     return m;
   }, [routes]);
 
   const pickupNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    pickups.forEach((p) => m.set(p.id, p.name));
+    pickups.forEach(p => m.set(p.id, p.name));
     return m;
   }, [pickups]);
 
   const destNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    destinations.forEach((d) => m.set(d.id, d.name));
+    destinations.forEach(d => m.set(d.id, d.name));
     return m;
   }, [destinations]);
 
   const vehicleById = useMemo(() => {
     const m = new Map<UUID, Vehicle>();
-    vehicles.forEach((v) => m.set(v.id, v));
+    vehicles.forEach(v => m.set(v.id, v));
     return m;
   }, [vehicles]);
 
   const operatorNameById = useMemo(() => {
     const m = new Map<UUID, string>();
-    operators.forEach((o) => m.set(o.id, o.name || "—"));
+    operators.forEach(o => m.set(o.id, o.name || "—"));
     return m;
   }, [operators]);
 
-  /* ---------- Captain refresh + auto-assign ---------- */
+  /* ---------- Crew helpers ---------- */
 
-  async function refreshCaptainsBulk(journeyIds: UUID[]) {
-    try {
-      const newMap = new Map<string, CrewMinRow>();
-      for (const jid of journeyIds) {
-        const res = await fetch("/api/ops/crew/list?journey_id=" + jid, { method: "GET" });
-        const js = await res.json();
-        const rows: CrewMinRow[] = (js?.data || []).filter((r: any) => (r.role_label || "").toLowerCase().includes("capt"));
-        for (const r of rows) {
-          const key = `${r.journey_id}_${r.vehicle_id}`;
-          newMap.set(key, r);
-        }
-      }
-      setCaptainByJV(newMap);
-
-      // Fire auto-assign for empty boats
-      await autoAssignMissingCaptains();
-    } catch (e: any) {
-      console.warn("captain refresh failed", e?.message || e);
-    }
+  function leadKey(jid: UUID, vid: UUID) {
+    return `${jid}_${vid}`;
   }
 
-  async function refreshCaptainsOne(journeyId: UUID) {
+  async function refreshLead(journeyId: UUID, vehicleId: UUID) {
     try {
-      const res = await fetch("/api/ops/crew/list?journey_id=" + journeyId, { method: "GET" });
+      const res = await fetch(`/api/ops/crew/list?journey_id=${journeyId}&vehicle_id=${vehicleId}`);
       const js = await res.json();
-      const rows: CrewMinRow[] = (js?.data || []).filter((r: any) => (r.role_label || "").toLowerCase().includes("capt"));
-
-      setCaptainByJV((prev) => {
-        const copy = new Map(prev);
-        // clear existing keys for this journey
-        for (const k of [...copy.keys()]) {
-          if (k.startsWith(journeyId + "_")) copy.delete(k);
-        }
-        rows.forEach((r) => copy.set(`${r.journey_id}_${r.vehicle_id}`, r));
-        return copy;
+      if (!res.ok) throw new Error(js?.error || "crew/list failed");
+      const rows = (js?.data || []) as CrewRowMin[];
+      const cap = rows.find(r => (r.role_label || "").toLowerCase().includes("capt"));
+      setLeadByJourney(prev => {
+        const m = new Map(prev);
+        m.set(leadKey(journeyId, vehicleId), cap ?? null);
+        return m;
       });
-
-      await autoAssignMissingCaptains([journeyId]);
-    } catch (e: any) {
-      console.warn("captain refresh (one) failed", e?.message || e);
+    } catch (e) {
+      // silent; UI stays "Assign"
     }
   }
 
-  async function autoAssignMissingCaptains(scopeJourneyIds?: UUID[]) {
-    // build current rows to find missing captain per (journey,vehicle)
-    const targetJourneyIds = scopeJourneyIds ?? journeys.map((j) => j.id);
-
-    // Build candidate boats per journey from RVAs
+  /** Batch: for each journey, for each visible boat without a captain → call auto-assign */
+  async function seedLeads(js: Journey[]) {
+    // build candidate pairs (journey, vehicle) we will check
     const rvasByRoute = new Map<UUID, RVA[]>();
-    for (const r of rvas) {
-      if (!r.is_active) continue;
-      const arr = rvasByRoute.get(r.route_id) ?? [];
-      arr.push(r);
-      rvasByRoute.set(r.route_id, arr);
+    rvas.forEach(r => {
+      if (r.is_active) {
+        const arr = rvasByRoute.get(r.route_id) ?? [];
+        arr.push(r);
+        rvasByRoute.set(r.route_id, arr);
+      }
+    });
+
+    // small concurrency guard
+    const queue: Array<() => Promise<void>> = [];
+    for (const j of js) {
+      const rv = rvasByRoute.get(j.route_id) ?? [];
+      for (const r of rv) {
+        const v = vehicleById.get(r.vehicle_id);
+        if (!v || v.active === false) continue;
+        queue.push(async () => {
+          // find current lead first
+          await refreshLead(j.id, r.vehicle_id);
+          const cap = leadByJourney.get(leadKey(j.id, r.vehicle_id));
+          if (cap) return; // already have a captain
+
+          // ask server to auto-assign (ONLY journeyId required)
+          await fetch("/api/ops/auto-assign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ journeyId: j.id }),
+          }).catch(() => {});
+
+          // refresh the lead pill
+          await refreshLead(j.id, r.vehicle_id);
+        });
+      }
     }
 
-    for (const j of journeys.filter((jj) => targetJourneyIds.includes(jj.id))) {
-      const r = routeById.get(j.route_id);
-      if (!r) continue;
-      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
-
-      for (const rv of rvaArr) {
-        const veh = vehicleById.get(rv.vehicle_id);
-        if (!veh || veh.active === false) continue;
-        const key = `${j.id}_${veh.id}`;
-        const haveCaptain = captainByJV.has(key);
-        if (!haveCaptain) {
-          // call /api/ops/auto-assign
-          try {
-            const res = await fetch("/api/ops/auto-assign", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ journeyId: j.id, vehicleId: veh.id }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              console.warn("auto-assign failed", res.status, data?.error || data);
-            } else {
-              // refresh captain list if assignment happened
-              if (data?.assigned || data?.captainAssigned) {
-                await refreshCaptainsOne(j.id);
-              }
-            }
-          } catch (e: any) {
-            console.warn("auto-assign error", e?.message || e);
-          }
+    const MAX = 4;
+    const running: Promise<void>[] = [];
+    for (const job of queue) {
+      const p = job();
+      running.push(p);
+      if (running.length >= MAX) {
+        await Promise.race(running).catch(() => {});
+        for (let i = running.length - 1; i >= 0; i--) {
+          if (running[i].settled) running.splice(i, 1);
         }
       }
     }
+    await Promise.allSettled(running);
   }
 
-  /* ---------- Realtime: watch for new bookings/allocations ---------- */
-  useEffect(() => {
-    if (!supabase || journeys.length === 0) return;
+  function initRealtime() {
+    if (!supabase || realtimeSubRef.current) return;
 
-    // clean previous
-    if (realtimeRef.current) {
-      realtimeRef.current.unsubscribe?.();
-      realtimeRef.current = null;
-    }
-
-    // Watch order payments & journey_vehicle_allocations updates; refetch captains for affected journey
-    const channel = supabase
-      .channel("ops-operator-admin")
+    const ch = supabase
+      .channel("ops-journey-alloc-and-orders")
+      // allocations (has journey_id)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "journey_vehicle_allocations" },
-        (payload) => {
-          const row = (payload.new || payload.old) as any;
-          if (row?.journey_id) refreshCaptainsOne(row.journey_id as UUID);
+        async (payload: any) => {
+          const jid: UUID | undefined = payload?.new?.journey_id || payload?.old?.journey_id;
+          if (!jid) return;
+          // ask server to ensure captain exists, then refresh pills for all boats on this route
+          await fetch("/api/ops/auto-assign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ journeyId: jid }),
+          }).catch(() => {});
+          // refresh all vehicles for this journey
+          const rv = rvas.filter(r => r.route_id === journeys.find(j => j.id === jid)?.route_id);
+          for (const r of rv) await refreshLead(jid, r.vehicle_id);
         }
       )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "orders" },
-        (payload) => {
-          const row = payload.new as any;
-          // we don’t know journey_id directly from orders; refresh all, cheap enough
-          if (row?.status === "paid") refreshCaptainsBulk(journeys.map((j) => j.id));
-        }
-      )
+      // optional: orders (we don't have journey_id directly; ignore here)
       .subscribe();
 
-    realtimeRef.current = channel;
+    realtimeSubRef.current = ch as any;
+  }
 
-    return () => {
-      channel.unsubscribe();
-      realtimeRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, journeys.length]);
-
-  /* ---------- UI rows ---------- */
+  /* ---------- UI Rows (alloc preview) ---------- */
   type UiBoat = {
-    vehicle_id: UUID;
+    vehicle_id: UUID | "__unassigned__";
     vehicle_name: string;
     operator_name: string;
     db: number;
@@ -559,7 +526,6 @@ export default function OperatorAdminPage() {
     max: number | null;
     preferred?: boolean;
     groups: number[];
-    captain?: { name: string; staff_id: UUID } | null;
   };
 
   type UiRow = {
@@ -572,12 +538,7 @@ export default function OperatorAdminPage() {
     contextDay?: "today" | "tomorrow" | null;
     isLocked: boolean;
     perBoat: UiBoat[];
-    totals: {
-      proj: number;
-      dbTotal: number;
-      maxTotal: number;
-      unassigned: number;
-    };
+    totals: { proj: number; dbTotal: number; maxTotal: number; unassigned: number };
     previewAlloc?: DetailedAlloc;
     lockedAlloc?: JVALockRow[];
     parties?: Party[];
@@ -587,7 +548,6 @@ export default function OperatorAdminPage() {
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
-    // orders grouped
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -610,7 +570,6 @@ export default function OperatorAdminPage() {
     for (const j of journeys) {
       const r = routeById.get(j.route_id);
       if (!r) continue;
-
       const dep = new Date(j.departure_ts);
       const dateISO = toDateISO(dep);
       const horizon = horizonFor(j.departure_ts);
@@ -618,13 +577,14 @@ export default function OperatorAdminPage() {
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
       const parties: Party[] = oArr
-        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
-        .filter((g) => g.size > 0);
+        .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter(g => g.size > 0);
 
-      // show journeys even if 0 customers (to allow captain assignment prep)
-      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
+      if (!parties.length) continue;
+
+      const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
       const boats: Boat[] = rvaArr
-        .map((x) => {
+        .map(x => {
           const v = vehicleById.get(x.vehicle_id);
           if (!v || v.active === false) return null;
           const min = Number(v?.minseats ?? 0);
@@ -658,66 +618,73 @@ export default function OperatorAdminPage() {
           cur.groups.push(Number(row.seats || 0));
           groupByVeh.set(row.vehicle_id, cur);
         }
-
         for (const [vehId, data] of groupByVeh.entries()) {
           const v = vehicleById.get(vehId);
           const min = v?.minseats != null ? Number(v.minseats) : null;
           const max = v?.maxseats != null ? Number(v.maxseats) : null;
           dbTotal += data.seats;
-
-          const key = `${j.id}_${vehId}`;
-          const cap = captainByJV.get(key);
-          const capName = cap ? [cap.first_name, cap.last_name].filter(Boolean).join(" ") : null;
-
           perBoat.push({
             vehicle_id: vehId,
             vehicle_name: v?.name ?? "Unknown",
-            operator_name: v?.operator_id ? operatorNameById.get(v.operator_id) ?? "—" : "—",
+            operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
             db: data.seats,
             min,
             max,
-            preferred: !!rvaArr.find((x) => x.vehicle_id === vehId)?.preferred,
+            preferred: !!rvaArr.find(x => x.vehicle_id === vehId)?.preferred,
             groups: data.groups.sort((a, b) => b - a),
-            captain: cap ? { name: capName || "—", staff_id: cap.staff_id } : null,
           });
+          // make sure captain pill cache exists
+          void refreshLead(j.id, vehId);
         }
-
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
+        if (!isT72orT24(horizon)) {
+          for (const b of boats) {
+            if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
+            const v = vehicleById.get(b.vehicle_id);
+            perBoat.push({
+              vehicle_id: b.vehicle_id,
+              vehicle_name: v?.name ?? "Unknown",
+              operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
+              db: 0,
+              min: v?.minseats != null ? Number(v.minseats) : null,
+              max: v?.maxseats != null ? Number(v.maxseats) : null,
+              preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
+              groups: [],
+            });
+            void refreshLead(j.id, b.vehicle_id);
+          }
+        } else {
+          for (let i = perBoat.length - 1; i >= 0; i--) {
+            if (perBoat[i].db <= 0) perBoat.splice(i, 1);
+          }
+        }
       } else {
         for (const b of boats) {
           const v = vehicleById.get(b.vehicle_id);
           const entry = previewAlloc.byBoat.get(b.vehicle_id);
           const seats = entry?.seats ?? 0;
           dbTotal += seats;
-
-          const key = `${j.id}_${b.vehicle_id}`;
-          const cap = captainByJV.get(key);
-          const capName = cap ? [cap.first_name, cap.last_name].filter(Boolean).join(" ") : null;
-
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
-            operator_name: v?.operator_id ? operatorNameById.get(v.operator_id) ?? "—" : "—",
+            operator_name: v?.operator_id ? (operatorNameById.get(v.operator_id) ?? "—") : "—",
             db: seats,
             min: v?.minseats != null ? Number(v.minseats) : null,
             max: v?.maxseats != null ? Number(v.maxseats) : null,
-            preferred: !!rvaArr.find((x) => x.vehicle_id === b.vehicle_id)?.preferred,
-            groups: (entry?.orders ?? []).map((o) => o.size).sort((a, b) => b - a),
-            captain: cap ? { name: capName || "—", staff_id: cap.staff_id } : null,
+            preferred: !!rvaArr.find(x => x.vehicle_id === b.vehicle_id)?.preferred,
+            groups: (entry?.orders ?? []).map(o => o.size).sort((a, b) => b - a),
           });
+          void refreshLead(j.id, b.vehicle_id);
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
-      }
-
-      // At T-72/T-24 hide zero-customer boats (release)
-      if (isT72orT24(horizon)) {
-        for (let i = perBoat.length - 1; i >= 0; i--) {
-          if (perBoat[i].db <= 0) perBoat.splice(i, 1);
+        if (isT72orT24(horizon)) {
+          for (let i = perBoat.length - 1; i >= 0; i--) {
+            if (perBoat[i].db <= 0) perBoat.splice(i, 1);
+          }
         }
       }
 
-      // sort
       perBoat.sort((a, b) => {
         const ao = a.operator_name || "";
         const bo = b.operator_name || "";
@@ -749,12 +716,27 @@ export default function OperatorAdminPage() {
       });
     }
 
-    out.sort(
+    const filtered =
+      operatorFilter === "all"
+        ? out
+        : out
+            .map(row => ({
+              ...row,
+              perBoat: row.perBoat.filter(
+                b =>
+                  b.vehicle_id === "__unassigned__" ||
+                  vehicles.find(v => v.id === b.vehicle_id)?.operator_id === operatorFilter
+              ),
+            }))
+            .filter(row => row.perBoat.length > 0);
+
+    filtered.sort(
       (a, b) =>
         new Date(a.journey.departure_ts).getTime() -
         new Date(b.journey.departure_ts).getTime()
     );
-    return out;
+
+    return filtered;
   }, [
     journeys,
     routes,
@@ -765,7 +747,7 @@ export default function OperatorAdminPage() {
     operators,
     orders,
     locksByJourney,
-    captainByJV,
+    operatorFilter,
     routeById,
     pickupNameById,
     destNameById,
@@ -773,11 +755,14 @@ export default function OperatorAdminPage() {
     operatorNameById,
   ]);
 
-  /* ---------- Lock / Unlock ---------- */
+  /* ---------- Actions: Lock / Unlock ---------- */
+
   async function lockJourney(row: UiRow) {
     if (!supabase) return;
     try {
-      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] = [];
+      const allocToSave: { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number }[] =
+        [];
+
       if (row.previewAlloc && row.parties && row.boats) {
         for (const [vehId, data] of row.previewAlloc.byBoat.entries()) {
           for (const o of data.orders) {
@@ -813,14 +798,11 @@ export default function OperatorAdminPage() {
         .eq("journey_id", row.journey.id);
       if (lockErr) throw lockErr;
 
-      setLocksByJourney((prev) => {
+      setLocksByJourney(prev => {
         const copy = new Map(prev);
         copy.set(row.journey.id, (lockData || []) as any);
         return copy;
       });
-
-      // after lock, also re-check captains in case boats changed
-      await refreshCaptainsOne(row.journey.id);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
@@ -835,22 +817,20 @@ export default function OperatorAdminPage() {
         .eq("journey_id", journeyId);
       if (del.error) throw del.error;
 
-      setLocksByJourney((prev) => {
+      setLocksByJourney(prev => {
         const copy = new Map(prev);
         copy.delete(journeyId);
         return copy;
       });
-
-      await refreshCaptainsOne(journeyId);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
   }
 
-  /* ---------- Manual Assign flow ---------- */
-  async function openAssign(journeyId: UUID, vehicleId: UUID) {
-    setAssigning({ journeyId, vehicleId });
-    setCapBusy(true);
+  /* ---------- Captain assignment UI ---------- */
+
+  async function openCapModal(journeyId: UUID, vehicleId: UUID) {
+    setCapModal({ open: true, journeyId, vehicleId, fetching: true, items: [] });
     try {
       const res = await fetch("/api/ops/captain-candidates", {
         method: "POST",
@@ -858,35 +838,27 @@ export default function OperatorAdminPage() {
         body: JSON.stringify({ journeyId }),
       });
       const js = await res.json();
-      setCapCandidates(js?.items || []);
+      if (!res.ok) throw new Error(js?.error || "candidates failed");
+      setCapModal({ open: true, journeyId, vehicleId, fetching: false, items: js?.items ?? [] });
     } catch (e: any) {
-      setCapCandidates([]);
-      console.warn("candidate load failed", e?.message || e);
-    } finally {
-      setCapBusy(false);
+      setCapModal({ open: true, journeyId, vehicleId, fetching: false, items: [] });
+      setErr(e?.message ?? "Failed to load candidates");
     }
   }
 
-  async function assignCaptain(staffId: UUID) {
-    if (!assigning) return;
-    setCapBusy(true);
+  async function assignCaptain(journeyId: UUID, vehicleId: UUID, staffId: UUID) {
     try {
       const res = await fetch("/api/ops/assign/lead", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ journeyId: assigning.journeyId, staffId }),
+        body: JSON.stringify({ journeyId, staffId }),
       });
       const js = await res.json();
-      if (!res.ok) {
-        alert("Assign failed: " + (js?.error || res.statusText));
-      } else {
-        setAssigning(null);
-        await refreshCaptainsOne(assigning.journeyId);
-      }
+      if (!res.ok) throw new Error(js?.error || "assign failed");
+      setCapModal({ open: false, fetching: false, items: [] });
+      await refreshLead(journeyId, vehicleId);
     } catch (e: any) {
-      alert("Assign failed: " + (e?.message || String(e)));
-    } finally {
-      setCapBusy(false);
+      setErr(e?.message ?? "Assign failed");
     }
   }
 
@@ -900,7 +872,21 @@ export default function OperatorAdminPage() {
             Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
           </p>
         </div>
-        <div />
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-neutral-700">Operator:</label>
+          <select
+            className="border rounded-lg px-2 py-1 text-sm"
+            value={operatorFilter}
+            onChange={e => setOperatorFilter((e.target.value || "all") as any)}
+          >
+            <option value="all">All operators</option>
+            {operators.map(o => (
+              <option key={o.id} value={o.id}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </header>
 
       {err && (
@@ -913,11 +899,11 @@ export default function OperatorAdminPage() {
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : rows.length === 0 ? (
         <div className="p-4 border rounded-xl bg-white shadow">
-          No journeys.
+          No journeys with client assignments.
         </div>
       ) : (
         <div className="space-y-6">
-          {rows.map((row) => (
+          {rows.map(row => (
             <section
               key={row.journey.id}
               className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden"
@@ -977,8 +963,9 @@ export default function OperatorAdminPage() {
                     Unassigned: <strong>{row.totals.unassigned}</strong>
                   </span>
 
-                  {(row.horizon === "T24" || row.horizon === "T72") &&
-                    (row.isLocked ? (
+                  {/* Lock/Unlock */}
+                  {(row.horizon === "T24" || row.horizon === "T72") && (
+                    row.isLocked ? (
                       <>
                         <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Locked</span>
                         <button
@@ -997,7 +984,8 @@ export default function OperatorAdminPage() {
                       >
                         Lock
                       </button>
-                    ))}
+                    )
+                  )}
                 </div>
               </div>
 
@@ -1012,82 +1000,89 @@ export default function OperatorAdminPage() {
                       <th className="text-right p-3">Min</th>
                       <th className="text-right p-3">Max</th>
                       <th className="text-left p-3">Groups</th>
-                      <th className="text-left p-3">Captain</th>
                       <th className="text-left p-3">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {row.perBoat.map((b) => (
-                      <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
-                        <td className="p-3">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{b.vehicle_name}</span>
-                            {b.preferred && (
-                              <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
-                                preferred
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="p-3">{b.operator_name}</td>
-                        <td className="p-3 text-right">{b.db}</td>
-                        <td className="p-3 text-right">{b.min ?? "—"}</td>
-                        <td className="p-3 text-right">{b.max ?? "—"}</td>
-                        <td className="p-3">
-                          {b.groups.length === 0 ? (
-                            <span className="text-neutral-400">—</span>
-                          ) : (
-                            <div className="flex flex-wrap gap-1">
-                              {b.groups.map((g, i) => (
-                                <span
-                                  key={i}
-                                  className="inline-flex items-center justify-center rounded-lg border px-2 text-xs"
-                                  style={{ minWidth: 24, height: 24 }}
-                                >
-                                  {g}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                        <td className="p-3">
-                          {b.captain ? (
+                    {row.perBoat.map(b => {
+                      const cap = b.vehicle_id !== "__unassigned__"
+                        ? leadByJourney.get(leadKey(row.journey.id, b.vehicle_id as UUID))
+                        : null;
+                      const capName = cap ? [cap.first_name, cap.last_name].filter(Boolean).join(" ") : null;
+
+                      return (
+                        <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
+                          <td className="p-3">
                             <div className="flex items-center gap-2">
-                              <span>{b.captain.name}</span>
-                              <button
-                                className="text-xs underline text-blue-600"
-                                onClick={() => openAssign(row.journey.id, b.vehicle_id)}
-                              >
-                                change
-                              </button>
+                              <span className="font-medium">{b.vehicle_name}</span>
+                              {b.preferred && b.vehicle_name !== "Unassigned" && (
+                                <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                                  preferred
+                                </span>
+                              )}
                             </div>
-                          ) : (
-                            <button
-                              className="text-xs underline text-blue-600"
-                              onClick={() => openAssign(row.journey.id, b.vehicle_id)}
-                              title="Assign a captain"
-                            >
-                              Assign
-                            </button>
-                          )}
-                        </td>
-                        <td className="p-3">
-                          {(row.horizon === "T24" || row.horizon === "T72") ? (
-                            <button
-                              className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
-                              style={{ backgroundColor: "#2563eb" }}
-                              onClick={() =>
-                                (window.location.href = `/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
-                              }
-                            >
-                              Manifest
-                            </button>
-                          ) : (
-                            <span className="text-neutral-400 text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                            {b.vehicle_id !== "__unassigned__" && (
+                              <div className="text-xs text-neutral-600 mt-1">
+                                Captain:&nbsp;
+                                {capName ? (
+                                  <button
+                                    className="underline hover:no-underline"
+                                    onClick={() => openCapModal(row.journey.id, b.vehicle_id as UUID)}
+                                    title="Change captain"
+                                  >
+                                    {capName}
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="underline text-blue-700"
+                                    onClick={() => openCapModal(row.journey.id, b.vehicle_id as UUID)}
+                                    title="Assign captain"
+                                  >
+                                    Assign
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3">{b.operator_name}</td>
+                          <td className="p-3 text-right">{b.db}</td>
+                          <td className="p-3 text-right">{b.min ?? "—"}</td>
+                          <td className="p-3 text-right">{b.max ?? "—"}</td>
+                          <td className="p-3">
+                            {b.groups.length === 0 ? (
+                              <span className="text-neutral-400">—</span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {b.groups.map((g, i) => (
+                                  <span
+                                    key={i}
+                                    className="inline-flex items-center justify-center rounded-lg border px-2 text-xs"
+                                    style={{ minWidth: 24, height: 24 }}
+                                  >
+                                    {g}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            {(row.horizon === "T24" || row.horizon === "T72") && b.vehicle_id !== "__unassigned__" ? (
+                              <button
+                                className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
+                                style={{ backgroundColor: "#2563eb" }}
+                                onClick={() =>
+                                  (window.location.href = `/operator/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
+                                }
+                              >
+                                Manifest
+                              </button>
+                            ) : (
+                              <span className="text-neutral-400 text-xs">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1096,40 +1091,36 @@ export default function OperatorAdminPage() {
         </div>
       )}
 
-      {/* Assign modal */}
-      {assigning && (
+      {/* Captain chooser modal */}
+      {capModal.open && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl p-4 w-[520px]">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Assign captain</h3>
-              <button
-                className="text-sm text-neutral-600 hover:text-black"
-                onClick={() => setAssigning(null)}
-              >
+          <div className="bg-white rounded-xl shadow-xl w-[520px] max-w-[92%]">
+            <div className="px-4 py-3 border-b flex items-center justify-between">
+              <div className="font-medium">Assign captain</div>
+              <button className="text-sm text-neutral-600" onClick={() => setCapModal({ open: false, fetching: false, items: [] })}>
                 Close
               </button>
             </div>
-            <div className="mt-3">
-              {capBusy ? (
+            <div className="p-4 space-y-3">
+              {capModal.fetching ? (
                 <div className="text-sm text-neutral-600">Loading candidates…</div>
-              ) : capCandidates.length === 0 ? (
-                <div className="text-sm text-neutral-600">No candidates available.</div>
+              ) : capModal.items.length === 0 ? (
+                <div className="text-sm text-neutral-600">No eligible captains found.</div>
               ) : (
                 <ul className="divide-y">
-                  {capCandidates.map((c) => (
-                    <li key={c.staff_id} className="py-2 flex items-center justify-between">
+                  {capModal.items.map((c) => (
+                    <li key={c.staff_id} className="py-2 flex items-center justify-between gap-3">
                       <div>
                         <div className="font-medium">{c.name}</div>
                         <div className="text-xs text-neutral-600">
-                          Priority {c.priority} · recent assignments {c.recent}
-                          {c.email ? <> · {c.email}</> : null}
+                          Priority {c.priority} · recent confirmations: {c.recent}
                         </div>
                       </div>
                       <button
-                        className="px-3 py-1 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50 text-sm"
-                        onClick={() => assignCaptain(c.staff_id)}
+                        className="px-3 py-1.5 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50 text-sm"
+                        onClick={() => assignCaptain(capModal.journeyId!, capModal.vehicleId!, c.staff_id)}
                       >
-                        Select
+                        Assign
                       </button>
                     </li>
                   ))}
