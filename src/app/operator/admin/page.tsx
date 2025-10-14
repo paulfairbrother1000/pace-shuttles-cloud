@@ -104,8 +104,12 @@ type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
   preferred: boolean;
-  min: number;
-  max: number;
+
+  // capacity & policy
+  min: number;          // vehicle min seats
+  max: number;          // vehicle max seats (cap)
+
+  // optional helpers
   operator_id?: UUID | null;
   price_cents?: number | null;
 };
@@ -140,27 +144,31 @@ function allocateDetailed(
 
   type W = { def: Boat; used: number; groups: { order_id: UUID; size: number }[] };
   const work = new Map<UUID, W>();
-  boatsSorted.forEach((b) => work.set(b.vehicle_id, { def: b, used: 0, groups: [] }));
+  boatsSorted.forEach(b => work.set(b.vehicle_id, { def: b, used: 0, groups: [] }));
 
   const byBoat = new Map<UUID, { seats: number; orders: { order_id: UUID; size: number }[] }>();
   const bump = (boatId: UUID, order_id: UUID, size: number) => {
     const w = work.get(boatId)!;
     w.used += size;
     w.groups.push({ order_id, size });
+
     const cur = byBoat.get(boatId) ?? { seats: 0, orders: [] };
     cur.seats += size;
     cur.orders.push({ order_id, size });
     byBoat.set(boatId, cur);
   };
 
-  const remaining = [...parties].filter((p) => p.size > 0).sort((a, b) => b.size - a.size);
+  const remaining: Party[] = [...parties]
+    .filter(p => p.size > 0)
+    .sort((a, b) => b.size - a.size);
+
   const unassigned: { order_id: UUID; size: number }[] = [];
 
-  // Phase A: seed to MIN
+  // Phase A — seed to MIN
   {
     const next: Party[] = [];
     for (const g of remaining) {
-      const candidate = boatsSorted.find((b) => {
+      const candidate = boatsSorted.find(b => {
         const w = work.get(b.vehicle_id)!;
         const free = b.max - w.used;
         return w.used < b.min && free >= g.size;
@@ -171,11 +179,12 @@ function allocateDetailed(
     remaining.length = 0;
     remaining.push(...next);
   }
-  // Phase B: fill up to MAX
+
+  // Phase B — fill to MAX
   {
     const next: Party[] = [];
     for (const g of remaining) {
-      const candidate = boatsSorted.find((b) => {
+      const candidate = boatsSorted.find(b => {
         const w = work.get(b.vehicle_id)!;
         const free = b.max - w.used;
         return free >= g.size;
@@ -186,18 +195,19 @@ function allocateDetailed(
     remaining.length = 0;
     remaining.push(...next);
   }
+
   for (const g of remaining) unassigned.push({ order_id: g.order_id, size: g.size });
 
   // Minimal T-72 rebalance to avoid multiple under-min actives
   if (horizon === "T72") {
-    const active = () => [...work.values()].filter((w) => w.used > 0);
-    const underMin = () => active().filter((w) => w.used < w.def.min);
+    const active = () => [...work.values()].filter(w => w.used > 0);
+    const underMin = () => active().filter(w => w.used < w.def.min);
     let under = underMin().sort((a, b) => a.used - b.used);
     while (under.length > 1) {
       const src = under[0];
       let moved = false;
       const targets = active()
-        .filter((w) => w.def.vehicle_id !== src.def.vehicle_id)
+        .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
         .sort((a, b) => (b.def.max - b.used) - (a.def.max - a.used));
       for (const grp of [...src.groups].sort((a, b) => a.size - b.size)) {
         for (const tgt of targets) {
@@ -205,16 +215,20 @@ function allocateDetailed(
           if (grp.size > free) continue;
           src.used -= grp.size;
           tgt.used += grp.size;
-          src.groups.splice(src.groups.findIndex((x) => x.order_id === grp.order_id && x.size === grp.size), 1);
+
+          const idx = src.groups.findIndex(x => x.order_id === grp.order_id && x.size === grp.size);
+          if (idx >= 0) src.groups.splice(idx, 1);
           tgt.groups.push(grp);
+
           const sMap = byBoat.get(src.def.vehicle_id)!;
           const tMap = byBoat.get(tgt.def.vehicle_id) ?? { seats: 0, orders: [] };
           sMap.seats -= grp.size;
-          const idx = sMap.orders.findIndex((x) => x.order_id === grp.order_id && x.size === grp.size);
-          if (idx >= 0) sMap.orders.splice(idx, 1);
+          const boIdx = sMap.orders.findIndex(x => x.order_id === grp.order_id && x.size === grp.size);
+          if (boIdx >= 0) sMap.orders.splice(boIdx, 1);
           tMap.seats += grp.size;
           tMap.orders.push(grp);
           byBoat.set(tgt.def.vehicle_id, tMap);
+
           moved = true;
           break;
         }
@@ -242,6 +256,7 @@ export default function OperatorAdminPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+
   const [locksByJourney, setLocksByJourney] = useState<Map<UUID, JVALockRow[]>>(new Map());
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
@@ -257,7 +272,7 @@ export default function OperatorAdminPage() {
     items: Candidate[];
   }>({ open: false, fetching: false, items: [] });
 
-  // FIX: keep this simple so it compiles under SSR
+  // keep the ref untyped to avoid SSR typeof issues
   const realtimeSubRef = useRef<any>(null);
 
   /* ---------- Initial load ---------- */
@@ -303,7 +318,7 @@ export default function OperatorAdminPage() {
         setPickups((puQ.data || []) as Pickup[]);
         setDestinations((deQ.data || []) as Destination[]);
 
-        // 3) RVAs, vehicles, operators
+        // 3) RVAs, vehicles (include min/max), operators
         const [rvaQ, vQ, oQ] = await Promise.all([
           supabase
             .from("route_vehicle_assignments")
@@ -324,7 +339,7 @@ export default function OperatorAdminPage() {
         setVehicles((vQ.data || []) as Vehicle[]);
         setOperators((oQ.data || []) as Operator[]);
 
-        // 4) paid orders
+        // 4) paid orders (filter via route+date window)
         const dateSet = new Set(js.map(j => toDateISO(new Date(j.departure_ts))));
         const minDate = [...dateSet].sort()[0] ?? toDateISO(new Date());
         const { data: oData, error: oErr } = await supabase
@@ -335,7 +350,7 @@ export default function OperatorAdminPage() {
         if (oErr) throw oErr;
         setOrders((oData || []) as Order[]);
 
-        // 5) read persisted locks
+        // 5) read persisted locks (if any)
         if (journeyIds.length) {
           const { data: lockData, error: lockErr } = await supabase
             .from("journey_vehicle_allocations")
@@ -371,7 +386,6 @@ export default function OperatorAdminPage() {
         if (!off) setLoading(false);
       }
     })();
-
     return () => {
       off = true;
       if (realtimeSubRef.current && supabase) {
@@ -414,13 +428,14 @@ export default function OperatorAdminPage() {
 
   /* ---------- Crew helpers ---------- */
 
-  function leadKey(jid: UUID, vid: UUID) {
-    return `${jid}_${vid}`;
-  }
+  const leadKey = (jid: UUID, vid: UUID) => `${jid}_${vid}`;
 
   async function refreshLead(journeyId: UUID, vehicleId: UUID) {
     try {
-      const res = await fetch(`/api/ops/crew/list?journey_id=${journeyId}&vehicle_id=${vehicleId}`);
+      const url = `/api/ops/crew/list?journey_id=${encodeURIComponent(
+        journeyId
+      )}&vehicle_id=${encodeURIComponent(vehicleId)}`;
+      const res = await fetch(url, { method: "GET" });
       const js = await res.json();
       if (!res.ok) throw new Error(js?.error || "crew/list failed");
       const rows = (js?.data || []) as CrewRowMin[];
@@ -435,8 +450,9 @@ export default function OperatorAdminPage() {
     }
   }
 
-  /** Batch: for each journey, for each visible boat without a captain → call auto-assign */
+  /** Batch: for each journey, for each visible boat without a captain → call allocator directly */
   async function seedLeads(js: Journey[]) {
+    // group RVAs by route
     const rvasByRoute = new Map<UUID, RVA[]>();
     rvas.forEach(r => {
       if (r.is_active) {
@@ -457,19 +473,23 @@ export default function OperatorAdminPage() {
           const cap = leadByJourney.get(leadKey(j.id, r.vehicle_id));
           if (cap) return;
 
-          // IMPORTANT: allocator expects only { journeyId }
-          await fetch("/api/ops/auto-assign", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ journeyId: j.id }),
-          }).catch(() => {});
+          // CALL THE EXISTING ALLOCATOR (POST) WITH ONLY { journeyId }
+          try {
+            const res = await fetch("/api/ops/allocator", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ journeyId: j.id }),
+            });
+            // ignore body; just refresh afterward
+            await res.text().catch(() => {});
+          } catch {}
 
           await refreshLead(j.id, r.vehicle_id);
         });
       }
     }
 
-    // run a few at a time
+    // run sequentially to avoid hammering
     for (const job of queue) {
       await job();
     }
@@ -486,11 +506,15 @@ export default function OperatorAdminPage() {
         async (payload: any) => {
           const jid: UUID | undefined = payload?.new?.journey_id || payload?.old?.journey_id;
           if (!jid) return;
-          await fetch("/api/ops/auto-assign", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ journeyId: jid }),
-          }).catch(() => {});
+          // push allocator again on changes (new booking etc.)
+          try {
+            const res = await fetch("/api/ops/allocator", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ journeyId: jid }),
+            });
+            await res.text().catch(() => {});
+          } catch {}
           const routeId = journeys.find(j => j.id === jid)?.route_id;
           const rv = rvas.filter(r => r.route_id === routeId);
           for (const r of rv) await refreshLead(jid, r.vehicle_id);
@@ -533,6 +557,7 @@ export default function OperatorAdminPage() {
   const rows: UiRow[] = useMemo(() => {
     if (!journeys.length) return [];
 
+    // Group orders by (route_id, journey_date)
     const ordersByKey = new Map<string, Order[]>();
     for (const o of orders) {
       if (o.status !== "paid" || !o.route_id || !o.journey_date) continue;
@@ -542,6 +567,7 @@ export default function OperatorAdminPage() {
       ordersByKey.set(k, arr);
     }
 
+    // Group RVAs by route
     const rvasByRoute = new Map<UUID, RVA[]>();
     for (const r of rvas) {
       if (!r.is_active) continue;
@@ -555,6 +581,7 @@ export default function OperatorAdminPage() {
     for (const j of journeys) {
       const r = routeById.get(j.route_id);
       if (!r) continue;
+
       const dep = new Date(j.departure_ts);
       const dateISO = toDateISO(dep);
       const horizon = horizonFor(j.departure_ts);
@@ -565,8 +592,9 @@ export default function OperatorAdminPage() {
         .map(o => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
         .filter(g => g.size > 0);
 
-      if (!parties.length) continue;
+      if (!parties.length) continue; // skip journeys with no customers
 
+      // Candidate boats
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter(x => x.is_active);
       const boats: Boat[] = rvaArr
         .map(x => {
@@ -588,6 +616,7 @@ export default function OperatorAdminPage() {
       const previewAlloc = allocateDetailed(parties, boats, { horizon });
       const maxTotal = boats.reduce((s, b) => s + b.max, 0);
 
+      // If locked, build from persisted rows
       const locked = locksByJourney.get(j.id) ?? [];
       const isLocked = locked.length > 0;
 
@@ -603,6 +632,7 @@ export default function OperatorAdminPage() {
           cur.groups.push(Number(row.seats || 0));
           groupByVeh.set(row.vehicle_id, cur);
         }
+
         for (const [vehId, data] of groupByVeh.entries()) {
           const v = vehicleById.get(vehId);
           const min = v?.minseats != null ? Number(v.minseats) : null;
@@ -620,8 +650,10 @@ export default function OperatorAdminPage() {
           });
           void refreshLead(j.id, vehId);
         }
+
         const proj = parties.reduce((s, p) => s + p.size, 0);
         unassigned = Math.max(0, proj - dbTotal);
+
         if (!isT72orT24(horizon)) {
           for (const b of boats) {
             if (perBoat.find(x => x.vehicle_id === b.vehicle_id)) continue;
@@ -662,6 +694,7 @@ export default function OperatorAdminPage() {
           void refreshLead(j.id, b.vehicle_id);
         }
         unassigned = previewAlloc.unassigned.reduce((s, u) => s + u.size, 0);
+
         if (isT72orT24(horizon)) {
           for (let i = perBoat.length - 1; i >= 0; i--) {
             if (perBoat[i].db <= 0) perBoat.splice(i, 1);
@@ -763,6 +796,7 @@ export default function OperatorAdminPage() {
         return;
       }
 
+      // Replace existing rows for this journey
       const del = await supabase
         .from("journey_vehicle_allocations")
         .delete()
@@ -776,6 +810,7 @@ export default function OperatorAdminPage() {
         if (ins.error) throw ins.error;
       }
 
+      // Refresh locks state for this journey
       const { data: lockData, error: lockErr } = await supabase
         .from("journey_vehicle_allocations")
         .select("journey_id,vehicle_id,order_id,seats")
@@ -852,6 +887,10 @@ export default function OperatorAdminPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
+          <p className="text-neutral-600 text-sm">
+            Future journeys only · Customers from paid orders · Preview matches server policy —
+            use <strong>Lock</strong> to persist.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-neutral-700">Operator:</label>
