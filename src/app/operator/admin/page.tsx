@@ -86,7 +86,7 @@ function todayTomorrowLabel(tsISO: string): "today" | "tomorrow" | null {
   return null;
 }
 
-/* ---------- Server-like allocation helpers (match API) ---------- */
+/* ---------- Allocation helpers (match API policy) ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
@@ -218,14 +218,14 @@ export default function OperatorAdminPage() {
 
   const [operatorFilter, setOperatorFilter] = useState<UUID | "all">("all");
 
-  // modal state for reassigning captain
+  // captain modal
   const [capModalOpen, setCapModalOpen] = useState(false);
   const [capModalJourney, setCapModalJourney] = useState<UUID | null>(null);
   const [capModalVehicle, setCapModalVehicle] = useState<UUID | null>(null);
   const [capCandidates, setCapCandidates] = useState<Staff[]>([]);
   const [capBusy, setCapBusy] = useState(false);
 
-  // simpler typing to avoid TS error during build
+  // simple ref to hold realtime channel (avoid TS typeof issues)
   const realtimeSubRef = useRef<any>(null);
 
   /* ---------- Initial load ---------- */
@@ -241,7 +241,7 @@ export default function OperatorAdminPage() {
       setErr(null);
 
       try {
-        // 1) future, active journeys (+vehicle/operator for captain logic)
+        // 1) future, active journeys (+vehicle/operator so we can auto-assign captains)
         const { data: jData, error: jErr } = await supabase
           .from("journeys")
           .select("id,route_id,departure_ts,is_active,vehicle_id,operator_id")
@@ -786,7 +786,8 @@ export default function OperatorAdminPage() {
 
   async function unlockJourney(journeyId: UUID) {
     try {
-      const del = await supabase!
+      if (!supabase) throw new Error("Supabase not ready");
+      const del = await supabase
         .from("journey_vehicle_allocations")
         .delete()
         .eq("journey_id", journeyId);
@@ -815,7 +816,10 @@ export default function OperatorAdminPage() {
           journeyId
         )}&vehicle_id=${encodeURIComponent(vehicleId)}`
       );
-      const js = (await r.json()) as { ok: boolean; candidates?: Array<{ id: UUID; first_name?: string; last_name?: string }> };
+      const js = (await r.json()) as {
+        ok: boolean;
+        candidates?: Array<{ id: UUID; first_name?: string; last_name?: string }>;
+      };
       const items: Staff[] =
         js?.candidates?.map((c) => ({
           id: c.id,
@@ -865,7 +869,8 @@ export default function OperatorAdminPage() {
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
-            Future journeys only · Customers from paid orders · Preview matches server policy — use <strong>Lock</strong> to persist.
+            Future journeys only · Customers from paid orders · Preview matches server policy — use{" "}
+            <strong>Lock</strong> to persist.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -997,7 +1002,6 @@ export default function OperatorAdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map}
                     {row.perBoat.map((b) => (
                       <tr key={`${row.journey.id}_${b.vehicle_id}`} className="border-t align-top">
                         <td className="p-3">

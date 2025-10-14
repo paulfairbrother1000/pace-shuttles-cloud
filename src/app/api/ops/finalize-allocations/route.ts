@@ -1,21 +1,16 @@
-// /src/app/api/ops/finalize-allocations/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 type UUID = string;
 
-/* ---------- Types ---------- */
 type Journey = {
   id: UUID;
   route_id: UUID;
   departure_ts: string;
   is_active: boolean | null;
-  vehicle_id: UUID | null;
-  operator_id: UUID | null;
 };
 
 type RVA = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean | null };
-
 type Vehicle = {
   id: UUID;
   name: string | null;
@@ -36,17 +31,16 @@ type OrderRow = {
 
 type LockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-type Horizon = "T24" | "T72" | ">72h" | "past";
-
-/* ---------- Supabase admin ---------- */
 function sbAdmin() {
-  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+  const url =
+    process.env.SUPABASE_URL ??
+    process.env.NEXT_PUBLIC_SUPABASE_URL ??
+    "";
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
   if (!url || !key) throw new Error("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   return createClient(url, key);
 }
 
-/* ---------- Time helpers ---------- */
 function toDateISO(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -54,6 +48,7 @@ function toDateISO(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
+type Horizon = "T24" | "T72" | ">72h" | "past";
 function horizonFor(tsISO: string): Horizon {
   const now = new Date();
   const dep = new Date(tsISO);
@@ -64,19 +59,19 @@ function horizonFor(tsISO: string): Horizon {
   return ">72h";
 }
 
-/* ---------- Allocation models ---------- */
+/* ---------- Allocation types ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
-  cap: number; // max seats
-  min: number; // min seats
+  cap: number;        // max
+  min: number;        // min
   operator_id: UUID | null;
   preferred: boolean;
 };
 type AllocMap = Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>;
 
 function sortBoats(a: Boat, b: Boat) {
-  // preferred first, then smaller capacity
+  // preferred first, then smaller cap
   if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
   if (a.cap !== b.cap) return a.cap - b.cap;
   return a.vehicle_id.localeCompare(b.vehicle_id);
@@ -108,14 +103,15 @@ function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap
   const remaining = parties.slice().sort((a, b) => b.size - a.size); // big→small
   const iter = () => {
     for (const op of opKeys) {
-      const stack = byOp.get(op)!;
+      const stack = byOp.get(op)!; // boats for this operator
       // pick the first boat that is not full; prefer ones below min
       let target: Boat | null = null;
       for (const b of stack) {
         const u = used.get(b.vehicle_id) ?? 0;
         if (u < b.cap) {
           target = b;
-          if (u < b.min) break; // prioritise topping to min
+          // if still below min, break immediately (we must top to min first)
+          if (u < b.min) break;
         }
       }
       if (!target) continue;
@@ -138,6 +134,24 @@ function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap
 
 /** T-72 gating: keep only in-play vehicles (already had rows), drop empties, require MIN except single-boat MIN-1 */
 function enforceT72Gates(byBoat: AllocMap, boats: Boat[], inPlay: Set<UUID>): AllocMap {
+  // If we have *no* in-play rows yet, do not gate — allow allocator result to stand.
+  if (!inPlay || inPlay.size === 0) {
+    // Drop truly empty boats only
+    const out = new Map(byBoat);
+    for (const [vid, rec] of [...out.entries()]) {
+      if ((rec?.seats ?? 0) <= 0) out.delete(vid);
+    }
+    // Apply MIN constraints (all must be >= min except single-boat MIN-1)
+    const survivors = [...out.entries()];
+    if (survivors.length <= 1) return out;
+    for (const [vid, rec] of [...out.entries()]) {
+      const def = boats.find((b) => b.vehicle_id === vid);
+      if (!def) continue;
+      if (rec.seats < def.min) out.delete(vid);
+    }
+    return out;
+  }
+
   // 1) Keep only in-play vehicles
   const gated = new Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>();
   for (const [vid, rec] of byBoat.entries()) {
@@ -158,7 +172,7 @@ function enforceT72Gates(byBoat: AllocMap, boats: Boat[], inPlay: Set<UUID>): Al
     const def = boats.find((b) => b.vehicle_id === vid);
     if (!def) return gated;
     if (rec.seats >= def.min - 1) {
-      return gated; // allow min-1 for single-boat
+      return gated;
     } else {
       gated.delete(vid);
       return gated;
@@ -183,8 +197,11 @@ async function loadJourneysScoped(
 ): Promise<Journey[]> {
   let q = sb
     .from("journeys")
-    .select("id,route_id,departure_ts,is_active,vehicle_id,operator_id")
-    .gte("departure_ts", new Date(new Date().getTime() - 12 * 60 * 60 * 1000).toISOString())
+    .select("id,route_id,departure_ts,is_active")
+    .gte(
+      "departure_ts",
+      new Date(new Date().getTime() - 12 * 60 * 60 * 1000).toISOString()
+    )
     .eq("is_active", true);
 
   if (scope.journey_id) q = q.eq("id", scope.journey_id);
@@ -201,15 +218,22 @@ async function loadBoatsForRoute(
 ): Promise<Boat[]> {
   // RVAs + Vehicles (active)
   const [{ data: rvas, error: rvaErr }, { data: vrows, error: vErr }] = await Promise.all([
-    sb.from("route_vehicle_assignments").select("route_id,vehicle_id,is_active,preferred").eq("route_id", route_id).eq("is_active", true),
-    sb.from("vehicles").select("id,name,active,minseats,maxseats,operator_id").eq("active", true),
+    sb
+      .from("route_vehicle_assignments")
+      .select("route_id,vehicle_id,is_active,preferred")
+      .eq("route_id", route_id)
+      .eq("is_active", true),
+    sb
+      .from("vehicles")
+      .select("id,name,active,minseats,maxseats,operator_id")
+      .eq("active", true),
   ]);
   if (rvaErr) throw rvaErr;
   if (vErr) throw vErr;
 
-  const vById = new Map<UUID, Vehicle>(((vrows || []) as Vehicle[]).map((v) => [v.id as UUID, v]));
+  const vById = new Map<UUID, Vehicle>(((vrows || []) as Vehicle[]).map(v => [v.id as UUID, v]));
   const boats: Boat[] = (rvas || [])
-    .map((r) => {
+    .map(r => {
       const v = vById.get(r.vehicle_id as UUID);
       if (!v) return null;
       if (operatorFilter && v.operator_id !== operatorFilter) return null;
@@ -228,7 +252,10 @@ async function loadBoatsForRoute(
   return boats;
 }
 
-async function loadPartiesForJourney(sb: ReturnType<typeof sbAdmin>, j: Journey): Promise<Party[]> {
+async function loadPartiesForJourney(
+  sb: ReturnType<typeof sbAdmin>,
+  j: Journey
+): Promise<Party[]> {
   const dep = new Date(j.departure_ts);
   const dateISO = toDateISO(dep);
   const { data: od, error: oErr } = await sb
@@ -240,109 +267,11 @@ async function loadPartiesForJourney(sb: ReturnType<typeof sbAdmin>, j: Journey)
   if (oErr) throw oErr;
 
   return ((od || []) as OrderRow[])
-    .map((o) => ({
+    .map(o => ({
       order_id: o.id,
       size: Math.max(0, Number(o.qty ?? 0)),
     }))
-    .filter((p) => p.size > 0);
-}
-
-/* ---------- Aux: demand, picking & captain helpers ---------- */
-
-async function getBookedSeats(sb: ReturnType<typeof sbAdmin>, journeyId: UUID): Promise<number> {
-  // Prefer view journey_order_passenger_counts; fallback to bookings sum
-  const { data: v, error } = await sb
-    .from("journey_order_passenger_counts")
-    .select("pax")
-    .eq("journey_id", journeyId)
-    .maybeSingle();
-  if (!error && v) return Number((v as any).pax) || 0;
-
-  const { data: b } = await sb.from("bookings").select("seats").eq("journey_id", journeyId);
-  return (b ?? []).reduce((s: number, r: any) => s + (Number(r.seats) || 0), 0);
-}
-
-function pickBestBoatThatFits(boats: Boat[], demand: number): Boat | null {
-  // preferred first, then smallest capacity that fits
-  return (
-    boats
-      .slice()
-      .sort((a, b) => {
-        if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
-        if (a.cap !== b.cap) return a.cap - b.cap;
-        return a.vehicle_id.localeCompare(b.vehicle_id);
-      })
-      .find((b) => demand <= b.cap) ?? null
-  );
-}
-
-async function ensureLeadCaptain(sb: ReturnType<typeof sbAdmin>, journeyId: UUID) {
-  // Already assigned?
-  const { data: existing } = await sb
-    .from("journey_crew_assignments")
-    .select("id")
-    .eq("journey_id", journeyId)
-    .eq("role_code", "CAPTAIN")
-    .maybeSingle();
-  if (existing) return;
-
-  // Load journey + vehicle
-  const { data: j } = await sb.from("journeys").select("vehicle_id,operator_id").eq("id", journeyId).single();
-  if (!j?.vehicle_id || !j?.operator_id) return;
-
-  // vehicle-specific captain prefs
-  const { data: prefs } = await sb
-    .from("vehicle_staff_prefs")
-    .select("staff_id, priority, is_lead_eligible")
-    .eq("vehicle_id", j.vehicle_id)
-    .eq("operator_id", j.operator_id);
-
-  let pool: Array<{ staff_id: UUID; priority: number }> =
-    (prefs ?? [])
-      .filter((p: any) => p.is_lead_eligible !== false)
-      .map((p: any) => ({ staff_id: p.staff_id as UUID, priority: Number(p.priority ?? 3) })) || [];
-
-  if (!pool.length) {
-    // fallback: any active operator captain-ish
-    const { data: caps } = await sb
-      .from("operator_staff")
-      .select("id, jobrole, active")
-      .eq("operator_id", j.operator_id)
-      .eq("active", true);
-    pool =
-      (caps ?? [])
-        .filter((c: any) => String(c.jobrole || "").toLowerCase().includes("capt"))
-        .map((c: any) => ({ staff_id: c.id as UUID, priority: 3 })) || [];
-  }
-  if (!pool.length) return;
-
-  // fair use counts
-  const { data: ledger } = await sb.from("captain_fairuse_ledger").select("staff_id").eq("operator_id", j.operator_id);
-  const counts = new Map<string, number>();
-  (ledger ?? []).forEach((r: any) => counts.set(r.staff_id as string, (counts.get(r.staff_id as string) ?? 0) + 1));
-
-  pool.sort(
-    (a, b) => a.priority - b.priority || (counts.get(a.staff_id as string) ?? 0) - (counts.get(b.staff_id as string) ?? 0)
-  );
-
-  const winner = pool[0];
-  if (!winner) return;
-
-  await sb.from("journey_crew_assignments").insert({
-    journey_id: journeyId,
-    vehicle_id: j.vehicle_id,
-    staff_id: winner.staff_id,
-    role_code: "CAPTAIN",
-    status: "assigned",
-  });
-
-  await sb.from("captain_fairuse_ledger").insert({
-    operator_id: j.operator_id,
-    vehicle_id: j.vehicle_id,
-    journey_id: journeyId,
-    staff_id: winner.staff_id,
-    confirmed: false,
-  });
+    .filter(p => p.size > 0);
 }
 
 /* ---------- One-journey finalizer ---------- */
@@ -354,67 +283,28 @@ async function runFinalizeForJourney(
 ): Promise<{ journey_id: UUID; locked: boolean; written: number; reason?: string }> {
   const horizon = horizonFor(j.departure_ts);
 
-  /* ---------- T-24 and past: lock + ensure min seats satisfied, try to downsize if needed ---------- */
+  // If T-24 or past → do not rebalance/write
   if (horizon === "T24" || horizon === "past") {
-    const demand = await getBookedSeats(sb, j.id);
-
-    // Ensure a vehicle exists
-    if (!j.vehicle_id) {
-      const boatsAll = await loadBoatsForRoute(sb, j.route_id, operatorFilter);
-      const candidate = pickBestBoatThatFits(boatsAll, demand);
-      if (candidate) {
-        await sb
-          .from("journeys")
-          .update({ vehicle_id: candidate.vehicle_id, operator_id: candidate.operator_id })
-          .eq("id", j.id);
-        await ensureLeadCaptain(sb, j.id);
-      } else {
-        await sb.from("operator_journey_notices").insert({
-          journey_id: j.id,
-          kind: "no_vehicle_at_t24",
-          operator_id: j.operator_id ?? null,
-        });
-      }
-    } else {
-      // Check min for current vehicle; if too high, attempt downsize to a viable boat (min<=demand<=cap)
-      const { data: v } = await sb.from("vehicles").select("minseats,maxseats,operator_id").eq("id", j.vehicle_id).single();
-      const minSeats = Number(v?.minseats ?? 0);
-      if (demand < minSeats) {
-        const boatsAll = await loadBoatsForRoute(sb, j.route_id, operatorFilter);
-        const viable = boatsAll
-          .filter((b) => demand >= b.min && demand <= b.cap)
-          .sort((a, b) => a.cap - b.cap || (a.preferred === b.preferred ? 0 : a.preferred ? -1 : 1));
-        if (viable.length) {
-          await sb
-            .from("journeys")
-            .update({ vehicle_id: viable[0].vehicle_id, operator_id: viable[0].operator_id })
-            .eq("id", j.id);
-        } else {
-          await sb.from("operator_journey_notices").insert({
-            journey_id: j.id,
-            kind: "minseats_exception",
-            operator_id: j.operator_id ?? null,
-          });
-        }
-      }
-    }
-
-    // Lock the journey hard
-    await sb.from("journeys").update({ lock_mode: "locked", locked_at: new Date().toISOString() }).eq("id", j.id);
-
-    return { journey_id: j.id, locked: true, written: 0, reason: "T-24 lock enforced" };
+    return { journey_id: j.id, locked: true, written: 0, reason: "T-24 locked — no rebalance" };
   }
 
-  /* ---------- >72h and T-72: build allocations ---------- */
-  const [parties, allBoats] = await Promise.all([loadPartiesForJourney(sb, j), loadBoatsForRoute(sb, j.route_id, operatorFilter)]);
+  // Parties & boats
+  const [parties, allBoats] = await Promise.all([
+    loadPartiesForJourney(sb, j),
+    loadBoatsForRoute(sb, j.route_id, operatorFilter),
+  ]);
 
   const totalDemand = parties.reduce((s, p) => s + p.size, 0);
   if (totalDemand <= 0) {
     // Clear any existing rows in-scope and exit
     if (operatorFilter) {
-      const inScopeVehIds = allBoats.map((b) => b.vehicle_id);
+      const inScopeVehIds = allBoats.map(b => b.vehicle_id);
       if (inScopeVehIds.length) {
-        await sb.from("journey_vehicle_allocations").delete().eq("journey_id", j.id).in("vehicle_id", inScopeVehIds);
+        await sb
+          .from("journey_vehicle_allocations")
+          .delete()
+          .eq("journey_id", j.id)
+          .in("vehicle_id", inScopeVehIds);
       }
     } else {
       await sb.from("journey_vehicle_allocations").delete().eq("journey_id", j.id);
@@ -437,7 +327,8 @@ async function runFinalizeForJourney(
   // >72h: allocate round-robin by operator (min-first)
   let allocByBoat: AllocMap = allocateRoundRobinByOperator(parties, allBoats);
 
-  // T-72: gate by in-play + min rules + drop empties
+  // T-72: gate by in-play + min rules + drop empties.
+  // If there are *no* in-play rows yet, skip the in-play gating (first lock window).
   if (horizon === "T72") {
     allocByBoat = enforceT72Gates(allocByBoat, allBoats, inPlay);
   }
@@ -449,9 +340,16 @@ async function runFinalizeForJourney(
 
   // Replace rows for this journey (scoped if operatorFilter provided)
   if (operatorFilter) {
-    const inScopeVehIds = horizon === "T72" ? [...inPlay] : allBoats.map((b) => b.vehicle_id);
+    const inScopeVehIds =
+      horizon === "T72" && inPlay.size > 0
+        ? [...inPlay] // at T-72 only touch in-play vehicles if we already had some
+        : allBoats.map(b => b.vehicle_id);
     if (inScopeVehIds.length) {
-      await sb.from("journey_vehicle_allocations").delete().eq("journey_id", j.id).in("vehicle_id", inScopeVehIds);
+      await sb
+        .from("journey_vehicle_allocations")
+        .delete()
+        .eq("journey_id", j.id)
+        .in("vehicle_id", inScopeVehIds);
     }
   } else {
     await sb.from("journey_vehicle_allocations").delete().eq("journey_id", j.id);
@@ -475,36 +373,6 @@ async function runFinalizeForJourney(
     if (insErr) throw insErr;
   }
 
-  // At T-72 ensure the journey has a concrete vehicle set and a captain assigned.
-  if (horizon === "T72") {
-    const chosenVehId =
-      j.vehicle_id && nonEmptyVehIds.includes(j.vehicle_id) ? j.vehicle_id : nonEmptyVehIds[0] ?? null;
-
-    if (chosenVehId && chosenVehId !== j.vehicle_id) {
-      // Update journey vehicle/operator
-      const vRow = allBoats.find((b) => b.vehicle_id === chosenVehId);
-      await sb
-        .from("journeys")
-        .update({ vehicle_id: chosenVehId, operator_id: vRow?.operator_id ?? j.operator_id })
-        .eq("id", j.id);
-    }
-
-    // Ensure captain if we now have a vehicle
-    const jAfter = chosenVehId ? { vehicle_id: chosenVehId } : { vehicle_id: j.vehicle_id };
-    if (jAfter.vehicle_id) {
-      await ensureLeadCaptain(sb, j.id);
-    }
-
-    // If no non-empty boats survived, raise a notice to ops
-    if (!nonEmptyVehIds.length) {
-      await sb.from("operator_journey_notices").insert({
-        journey_id: j.id,
-        kind: "no_active_boat_at_t72",
-        operator_id: j.operator_id ?? null,
-      });
-    }
-  }
-
   return { journey_id: j.id, locked: false, written: rowsToInsert.length };
 }
 
@@ -526,7 +394,12 @@ export async function POST(req: NextRequest) {
     });
 
     if (!journeys.length) {
-      return NextResponse.json({ ok: true, changed: 0, details: [], note: "No journeys in scope" });
+      return NextResponse.json({
+        ok: true,
+        changed: 0,
+        details: [],
+        note: "No journeys in scope",
+      });
     }
 
     const results: Array<{ journey_id: UUID; locked: boolean; written: number; reason?: string }> = [];
@@ -539,6 +412,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, changed, details: results });
   } catch (e: any) {
     console.error("finalize-allocations error:", e);
-    return NextResponse.json({ ok: false, error: e?.message ?? "Finalize failed" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? "Finalize failed" },
+      { status: 500 }
+    );
   }
 }
