@@ -62,7 +62,7 @@ export async function GET(req: Request) {
     let errPreferred: string | null = null;
     try {
       let q1 = sb
-        .from("v_crew_assignments_min")
+        .from("v_crew_assignments_min_v2")
         .select(
           "assignment_id:assignment_id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
         )
@@ -93,7 +93,7 @@ export async function GET(req: Request) {
     let dataFallback: RowFallback[] | null = null;
     try {
       let q2 = sb
-        .from("v_crew_assignments_min")
+        .from("v_crew_assignments_min_v2")
         .select(
           "id, journey_id, vehicle_id, staff_id, status_simple, first_name, last_name, role_label"
         )
