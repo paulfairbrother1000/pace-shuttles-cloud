@@ -1100,5 +1100,5 @@ export default function OperatorAdminPage() {
         </div>
       )}
     </div>
-  );
+  ); 
 }
