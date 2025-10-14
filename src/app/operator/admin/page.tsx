@@ -854,7 +854,7 @@ export default function AdminPage() {
                                   className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
                                   style={{ backgroundColor: "#2563eb" }}
                                   onClick={() =>
-                                    (window.location.href = `/operator/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
+                                    (window.location.href = `/admin/manifest?journey=${row.journey.id}&vehicle=${b.vehicle_id}`)
                                   }
                                 >
                                   Manifest
