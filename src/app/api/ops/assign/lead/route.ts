@@ -2,43 +2,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const sb = createClient(url, key);
-
-function horizonFor(tsISO: string): "T24"|"T72"|">72h"|"past" {
-  const now = new Date(); const dep = new Date(tsISO);
-  if (dep <= now) return "past";
-  const h = (dep.getTime()-now.getTime())/36e5;
-  if (h <= 24) return "T24"; if (h <= 72) return "T72"; return ">72h";
-}
+const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
 
 export async function POST(req: NextRequest) {
   try {
-    const { journey_id, vehicle_id, staff_id } = await req.json();
+    const { journeyId, staffId } = await req.json();
+    if (!journeyId || !staffId) return NextResponse.json({ error: "journeyId & staffId required" }, { status: 400 });
 
-    if (!journey_id || !vehicle_id || !staff_id) {
-      return NextResponse.json({ error: "journey_id, vehicle_id, staff_id required" }, { status: 400 });
-    }
+    const { data: j } = await sb.from("journeys").select("id, vehicle_id, operator_id, departure_ts").eq("id", journeyId).single();
+    if (!j?.vehicle_id || !j?.operator_id) throw new Error("Journey missing vehicle/operator");
 
-    const { data: j } = await sb.from("journeys").select("id,departure_ts").eq("id", journey_id).maybeSingle();
-    if (!j) return NextResponse.json({ error: "Journey not found" }, { status: 404 });
+    // T-window: allow manual override at any time (your rule), but keep log
+    // Remove existing lead
+    await sb.from("journey_crew_assignments").delete().eq("journey_id", journeyId).eq("role_code", "CAPTAIN");
 
-    const horizon = horizonFor(j.departure_ts);
-    if (horizon === "T24" || horizon === "past") {
-      return NextResponse.json({ error: "Crew changes are locked at T-24." }, { status: 409 });
-    }
-
-    const { error } = await sb.rpc("assign_lead", {
-      p_journey_id: journey_id,
-      p_vehicle_id: vehicle_id,
-      p_staff_id:   staff_id,
-      p_mode:       "manual",
+    // Assign new
+    const { error: insErr } = await sb.from("journey_crew_assignments").insert({
+      journey_id: journeyId,
+      vehicle_id: j.vehicle_id,
+      staff_id: staffId,
+      role_code: "CAPTAIN",
+      status: "assigned",
     });
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (insErr) throw insErr;
+
+    // ledger
+    await sb.from("captain_fairuse_ledger").insert({
+      operator_id: j.operator_id,
+      vehicle_id: j.vehicle_id,
+      journey_id: journeyId,
+      staff_id: staffId,
+      confirmed: false,
+    });
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Assign failed" }, { status: 500 });
+    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }
