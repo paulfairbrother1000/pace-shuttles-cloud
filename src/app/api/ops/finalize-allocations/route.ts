@@ -35,34 +35,27 @@ type OrderRow = {
 
 type LockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-/** Strict admin client that only accepts the HTTPS REST URL (not a Postgres DSN). */
+/* ---------- Supabase admin client (auto-pick HTTPS REST URL) ---------- */
+function pickSupabaseRestUrl(): string {
+  const u1 = process.env.SUPABASE_URL || "";
+  const u2 = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const looksHttp = (u: string) => /^https?:\/\//i.test(u);
+  if (looksHttp(u1)) return u1;
+  if (looksHttp(u2)) return u2;
+  return "";
+}
 function sbAdmin() {
-  const url =
-    process.env.SUPABASE_URL ??
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? // fallback to public if server var isn’t set
-    "";
-
+  const url = pickSupabaseRestUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-
   if (!url || !key) {
     throw new Error(
-      "Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
+      "Supabase admin client misconfigured: need HTTPS REST URL in SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY."
     );
   }
-
-  // Guard: must be https://<project>.supabase.co (REST), not postgresql://...
-  if (!/^https:\/\/.+\.supabase\.co\/?$/i.test(url)) {
-    throw new Error(
-      `SUPABASE_URL must be the HTTPS REST URL (https://<ref>.supabase.co), got: ${url.slice(
-        0,
-        60
-      )}…`
-    );
-  }
-
   return createClient(url, key);
 }
 
+/* ---------- helpers ---------- */
 function toDateISO(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -106,21 +99,30 @@ function sortBoatsForFill(a: Boat, b: Boat) {
 }
 
 /**
- * Choose a minimal subset of boats to cover total demand (by capacity),
- * preferring preferred boats and smaller caps (consolidation).
- * This naturally drops empties at T-72 when we persist only non-empty.
+ * Choose a minimal subset of boats to cover demand, while also enforcing:
+ *   Σ(min) ≤ demand + 1
+ * (allows exactly one boat to be short by 1 if demand is tight).
  */
 function chooseMinimalBoatSet(parties: Party[], boats: Boat[]): Boat[] {
   const demand = parties.reduce((s, p) => s + p.size, 0);
   if (demand <= 0) return [];
   const sorted = boats.slice().sort(sortBoatsForFill);
+
   const out: Boat[] = [];
   let cap = 0;
+  let sumMin = 0;
+
   for (const b of sorted) {
     out.push(b);
     cap += b.cap;
-    if (cap >= demand) break;
+    sumMin += b.min;
+
+    // Must have enough capacity *and* min constraint satisfied
+    const minOk = sumMin <= demand + 1;
+    if (cap >= demand && minOk) break;
   }
+  // If we still violate the min rule (e.g. all mins are huge), we keep what we have;
+  // allocator will rebalance and allow one boat to be min-1 when tight.
   return out;
 }
 
@@ -433,7 +435,7 @@ async function runFinalizeForJourney(
     return { journey_id: j.id, locked: false, written: 0, reason: "No boats in scope" };
   }
 
-  // Minimal set then allocate with min-awareness
+  // Minimal set then allocate with min-awareness (Σ(min) ≤ demand+1)
   const boatSet = chooseMinimalBoatSet(parties, allBoats);
   const alloc = allocateBalanced(parties, boatSet, horizon);
 
@@ -515,8 +517,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, changed, details: results });
   } catch (e: any) {
     console.error("finalize-allocations error:", e);
+    // Surface a friendlier message when the URL is wrong
+    const msg =
+      String(e?.message || "")
+        .includes("misconfigured")
+        ? e.message
+        : e?.message ?? "Finalize failed";
     return NextResponse.json(
-      { ok: false, error: e?.message ?? "Finalize failed" },
+      { ok: false, error: msg },
       { status: 500 }
     );
   }
