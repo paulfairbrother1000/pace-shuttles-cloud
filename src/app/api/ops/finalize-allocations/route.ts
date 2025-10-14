@@ -2,9 +2,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 type UUID = string;
 
 type Journey = {
@@ -15,7 +12,6 @@ type Journey = {
 };
 
 type RVA = { route_id: UUID; vehicle_id: UUID; is_active: boolean; preferred: boolean | null };
-
 type Vehicle = {
   id: UUID;
   name: string | null;
@@ -23,6 +19,7 @@ type Vehicle = {
   minseats: number | string | null;
   maxseats: number | string | null;
   operator_id: UUID | null;
+  preferred?: boolean | null; // joined from RVA
 };
 
 type OrderRow = {
@@ -35,27 +32,16 @@ type OrderRow = {
 
 type LockRow = { journey_id: UUID; vehicle_id: UUID; order_id: UUID; seats: number };
 
-/* ---------- Supabase admin client (auto-pick HTTPS REST URL) ---------- */
-function pickSupabaseRestUrl(): string {
-  const u1 = process.env.SUPABASE_URL || "";
-  const u2 = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const looksHttp = (u: string) => /^https?:\/\//i.test(u);
-  if (looksHttp(u1)) return u1;
-  if (looksHttp(u2)) return u2;
-  return "";
-}
 function sbAdmin() {
-  const url = pickSupabaseRestUrl();
+  const url =
+    process.env.SUPABASE_URL ??
+    process.env.NEXT_PUBLIC_SUPABASE_URL ??
+    "";
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  if (!url || !key) {
-    throw new Error(
-      "Supabase admin client misconfigured: need HTTPS REST URL in SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL, and SUPABASE_SERVICE_ROLE_KEY."
-    );
-  }
+  if (!url || !key) throw new Error("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   return createClient(url, key);
 }
 
-/* ---------- helpers ---------- */
 function toDateISO(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -80,234 +66,112 @@ type Boat = {
   vehicle_id: UUID;
   cap: number;        // max
   min: number;        // min
+  operator_id: UUID | null;
   preferred: boolean;
 };
-
 type AllocMap = Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>;
 
-type DetailedAlloc = {
-  byBoat: AllocMap;
-  unassigned: Party[];
-};
-
-/* ---------- Core allocator: seed→fill→T-72 rebalance ---------- */
-/** Boats sort: preferred first, then smaller capacity, then id */
-function sortBoatsForFill(a: Boat, b: Boat) {
+function sortBoats(a: Boat, b: Boat) {
+  // preferred first, then smaller cap
   if (!!a.preferred !== !!b.preferred) return a.preferred ? -1 : 1;
   if (a.cap !== b.cap) return a.cap - b.cap;
   return a.vehicle_id.localeCompare(b.vehicle_id);
 }
 
 /**
- * Choose a minimal subset of boats to cover demand, while also enforcing:
- *   Σ(min) ≤ demand + 1
- * (allows exactly one boat to be short by 1 if demand is tight).
+ * >72h multi-operator feed:
+ * - Fill a single boat per operator to its MIN before feeding the next operator.
+ * - After all operators have one boat at MIN (or demand ends), continue round-robin.
  */
-function chooseMinimalBoatSet(parties: Party[], boats: Boat[]): Boat[] {
-  const demand = parties.reduce((s, p) => s + p.size, 0);
-  if (demand <= 0) return [];
-  const sorted = boats.slice().sort(sortBoatsForFill);
-
-  const out: Boat[] = [];
-  let cap = 0;
-  let sumMin = 0;
-
-  for (const b of sorted) {
-    out.push(b);
-    cap += b.cap;
-    sumMin += b.min;
-
-    // Must have enough capacity *and* min constraint satisfied
-    const minOk = sumMin <= demand + 1;
-    if (cap >= demand && minOk) break;
+function allocateRoundRobinByOperator(parties: Party[], boats: Boat[]): AllocMap {
+  const byOp = new Map<string, Boat[]>();
+  for (const b of boats.slice().sort(sortBoats)) {
+    const key = b.operator_id ?? "none";
+    byOp.set(key, [...(byOp.get(key) ?? []), b]);
   }
-  // If we still violate the min rule (e.g. all mins are huge), we keep what we have;
-  // allocator will rebalance and allow one boat to be min-1 when tight.
-  return out;
-}
-
-/**
- * Allocate with min constraints:
- * 1) Seed vehicles up to min where possible (preferred→smallest cap)
- * 2) Fill remaining groups up to cap
- * 3) If horizon==T72, rebalance:
- *    - Raise under-min boats using donors (>min) when possible
- *    - Merge away extra under-min boats (leave at most one)
- *    - Allow last under-min to be min-1 if total demand tight
- */
-function allocateBalanced(
-  parties: Party[],
-  boats: Boat[],
-  horizon: Horizon
-): DetailedAlloc {
-  // working state
-  type W = { def: Boat; used: number; groups: { order_id: UUID; size: number }[] };
-  const boatsSorted = boats.slice().sort(sortBoatsForFill);
-  const work = new Map<UUID, W>();
-  for (const b of boatsSorted) work.set(b.vehicle_id, { def: b, used: 0, groups: [] });
-
+  const opKeys = [...byOp.keys()].sort(); // stable rotation
   const byBoat: AllocMap = new Map();
-  const bump = (id: UUID, order_id: UUID, size: number) => {
-    const w = work.get(id)!;
-    w.used += size;
-    w.groups.push({ order_id, size });
+  const used = new Map<UUID, number>();
+
+  function bump(id: UUID, order_id: UUID, size: number) {
+    used.set(id, (used.get(id) ?? 0) + size);
     const cur = byBoat.get(id) ?? { seats: 0, groups: [] as { order_id: UUID; size: number }[] };
     cur.seats += size;
     cur.groups.push({ order_id, size });
     byBoat.set(id, cur);
+  }
+
+  const remaining = parties.slice().sort((a, b) => b.size - a.size); // big→small
+  const iter = () => {
+    for (const op of opKeys) {
+      const stack = byOp.get(op)!; // boats for this operator
+      // pick the first boat that is not full; prefer ones below min
+      let target: Boat | null = null;
+      for (const b of stack) {
+        const u = used.get(b.vehicle_id) ?? 0;
+        if (u < b.cap) {
+          target = b;
+          // if still below min, break immediately (we must top to min first)
+          if (u < b.min) break;
+        }
+      }
+      if (!target) continue;
+
+      // feed the largest party that fits
+      const idx = remaining.findIndex((g) => g.size <= (target!.cap - (used.get(target!.vehicle_id) ?? 0)));
+      if (idx === -1) continue;
+      const [g] = remaining.splice(idx, 1);
+      bump(target.vehicle_id, g.order_id, g.size);
+      return true; // made progress
+    }
+    return false;
   };
 
-  const remaining = parties
-    .filter(p => p.size > 0)
-    .sort((a, b) => b.size - a.size); // big → small
+  let progress = true;
+  while (remaining.length && progress) progress = iter();
 
-  // Phase A: seed to min
-  {
-    const next: Party[] = [];
-    for (const g of remaining) {
-      const cand = boatsSorted.find(b => {
-        const w = work.get(b.vehicle_id)!;
-        const free = b.cap - w.used;
-        return w.used < b.min && free >= g.size;
-      });
-      if (cand) bump(cand.vehicle_id, g.order_id, g.size);
-      else next.push(g);
-    }
-    remaining.length = 0;
-    remaining.push(...next);
+  return byBoat;
+}
+
+/** T-72 gating: keep only in-play vehicles (already had rows), drop empties, require MIN except single-boat MIN-1 */
+function enforceT72Gates(byBoat: AllocMap, boats: Boat[], inPlay: Set<UUID>): AllocMap {
+  // 1) Keep only in-play vehicles
+  const gated = new Map<UUID, { seats: number; groups: { order_id: UUID; size: number }[] }>();
+  for (const [vid, rec] of byBoat.entries()) {
+    if (inPlay.has(vid)) gated.set(vid, rec);
   }
 
-  // Phase B: fill to cap
-  {
-    const next: Party[] = [];
-    for (const g of remaining) {
-      const cand = boatsSorted.find(b => {
-        const w = work.get(b.vehicle_id)!;
-        const free = b.cap - w.used;
-        return free >= g.size;
-      });
-      if (cand) bump(cand.vehicle_id, g.order_id, g.size);
-      else next.push(g);
-    }
-    remaining.length = 0;
-    remaining.push(...next);
+  // 2) Drop empties
+  for (const [vid, rec] of [...gated.entries()]) {
+    if ((rec?.seats ?? 0) <= 0) gated.delete(vid);
   }
 
-  // Phase C: T-72 rebalance to satisfy mins (allow at most one min-1)
-  if (horizon === "T72") {
-    const ws = [...work.values()];
-    const active = () => ws.filter(w => w.used > 0);
-    const underMin = () => active().filter(w => w.used < w.def.min);
-    const overMin = () => active().filter(w => w.used > w.def.min);
+  // 3) Require MIN except single-boat MIN-1
+  const survivors = [...gated.entries()];
+  if (!survivors.length) return gated;
 
-    // try to move a smallest helpful group from donor to receiver
-    const tryMove = (don: W, rec: W) => {
-      const free = rec.def.cap - rec.used;
-      if (free <= 0) return false;
-      const pick = [...don.groups]
-        .sort((a, b) => a.size - b.size)
-        .find(g => g.size <= free && don.used - g.size >= don.def.min);
-      if (!pick) return false;
-
-      // move pick
-      don.used -= pick.size;
-      rec.used += pick.size;
-      don.groups.splice(
-        don.groups.findIndex(x => x.order_id === pick.order_id && x.size === pick.size),
-        1
-      );
-      rec.groups.push(pick);
-
-      const dMap = byBoat.get(don.def.vehicle_id)!;
-      const rMap =
-        byBoat.get(rec.def.vehicle_id) ?? { seats: 0, groups: [] as { order_id: UUID; size: number }[] };
-      dMap.seats -= pick.size;
-      const idx = dMap.groups.findIndex(x => x.order_id === pick.order_id && x.size === pick.size);
-      if (idx >= 0) dMap.groups.splice(idx, 1);
-      rMap.seats += pick.size;
-      rMap.groups.push(pick);
-      byBoat.set(rec.def.vehicle_id, rMap);
-
-      return true;
-    };
-
-    // 1) raise receivers to min where possible
-    let changed = true;
-    while (changed) {
-      changed = false;
-      // receivers with largest deficit first
-      const receivers = underMin().sort(
-        (a, b) => (b.def.min - b.used) - (a.def.min - a.used)
-      );
-      if (!receivers.length) break;
-
-      for (const rec of receivers) {
-        const donors = overMin().sort(
-          (a, b) => (b.used - b.def.min) - (a.used - a.def.min)
-        );
-        for (const don of donors) {
-          if (tryMove(don, rec)) {
-            changed = true;
-            break;
-          }
-        }
-      }
+  if (survivors.length === 1) {
+    const [vid, rec] = survivors[0];
+    const def = boats.find((b) => b.vehicle_id === vid);
+    if (!def) return gated;
+    if (rec.seats >= def.min - 1) {
+      // allowed (single-boat min-1)
+      return gated;
+    } else {
+      // below threshold → drop
+      gated.delete(vid);
+      return gated;
     }
-
-    // 2) leave at most one under-min (merge others away)
-    let under = underMin().sort((a, b) => a.used - b.used); // smallest first
-    while (under.length > 1) {
-      const src = under[0];
-      let moved = false;
-
-      // targets with most free capacity first; prefer ones already >= min
-      const targets = active()
-        .filter(w => w.def.vehicle_id !== src.def.vehicle_id)
-        .sort((a, b) => {
-          const aPref = a.used >= a.def.min ? 0 : 1;
-          const bPref = b.used >= b.def.min ? 0 : 1;
-          if (aPref !== bPref) return aPref - bPref;
-          return (b.def.cap - b.used) - (a.def.cap - a.used);
-        });
-
-      for (const g of [...src.groups].sort((a, b) => a.size - b.size)) {
-        for (const t of targets) {
-          if (t.def.cap - t.used >= g.size) {
-            // move g
-            src.used -= g.size;
-            t.used += g.size;
-            src.groups.splice(
-              src.groups.findIndex(x => x.order_id === g.order_id && x.size === g.size),
-              1
-            );
-            t.groups.push(g);
-
-            const sMap = byBoat.get(src.def.vehicle_id)!;
-            const tMap =
-              byBoat.get(t.def.vehicle_id) ??
-              ({ seats: 0, groups: [] } as { seats: number; groups: { order_id: UUID; size: number }[] });
-            sMap.seats -= g.size;
-            const sIdx = sMap.groups.findIndex(x => x.order_id === g.order_id && x.size === g.size);
-            if (sIdx >= 0) sMap.groups.splice(sIdx, 1);
-            tMap.seats += g.size;
-            tMap.groups.push(g);
-            byBoat.set(t.def.vehicle_id, tMap);
-
-            moved = true;
-            break;
-          }
-        }
-        if (moved) break;
-      }
-
-      if (!moved) break; // cannot merge further
-      under = underMin().sort((a, b) => a.used - b.used);
-    }
-
-    // We allow the last under-min boat to sit at min-1 implicitly when total demand is tight.
   }
 
-  return { byBoat, unassigned: remaining };
+  // >1 boats: all must meet MIN
+  for (const [vid, rec] of [...gated.entries()]) {
+    const def = boats.find((b) => b.vehicle_id === vid);
+    if (!def) continue;
+    if (rec.seats < def.min) gated.delete(vid);
+  }
+
+  return gated;
 }
 
 /* ---------- Data loaders ---------- */
@@ -322,7 +186,7 @@ async function loadJourneysScoped(
     .gte(
       "departure_ts",
       new Date(new Date().getTime() - 12 * 60 * 60 * 1000).toISOString()
-    ) // small drift to catch edge cases
+    )
     .eq("is_active", true);
 
   if (scope.journey_id) q = q.eq("id", scope.journey_id);
@@ -337,6 +201,7 @@ async function loadBoatsForRoute(
   route_id: UUID,
   operatorFilter: UUID | null
 ): Promise<Boat[]> {
+  // RVAs + Vehicles (active)
   const [{ data: rvas, error: rvaErr }, { data: vrows, error: vErr }] = await Promise.all([
     sb
       .from("route_vehicle_assignments")
@@ -363,7 +228,8 @@ async function loadBoatsForRoute(
         vehicle_id: v.id as UUID,
         cap,
         min,
-        preferred: !!r.preferred,
+        operator_id: v.operator_id,
+        preferred: !!(r as any).preferred,
       };
     })
     .filter(Boolean) as Boat[];
@@ -435,18 +301,32 @@ async function runFinalizeForJourney(
     return { journey_id: j.id, locked: false, written: 0, reason: "No boats in scope" };
   }
 
-  // Minimal set then allocate with min-awareness (Σ(min) ≤ demand+1)
-  const boatSet = chooseMinimalBoatSet(parties, allBoats);
-  const alloc = allocateBalanced(parties, boatSet, horizon);
+  // Existing in-play vehicles (from current allocations)
+  const { data: existing } = await sb
+    .from("journey_vehicle_allocations")
+    .select("vehicle_id,seats")
+    .eq("journey_id", j.id);
 
-  // Persist non-empty boats only (dropping empties at T-72)
-  const nonEmptyVehIds = Array.from(alloc.byBoat.entries())
+  const inPlay = new Set<UUID>((existing ?? []).map((r: any) => r.vehicle_id as UUID));
+
+  // >72h: allocate round-robin by operator (min-first)
+  let allocByBoat: AllocMap = allocateRoundRobinByOperator(parties, allBoats);
+
+  // T-72: gate by in-play + min rules + drop empties
+  if (horizon === "T72") {
+    allocByBoat = enforceT72Gates(allocByBoat, allBoats, inPlay);
+  }
+
+  // Persist non-empty boats only
+  const nonEmptyVehIds = Array.from(allocByBoat.entries())
     .filter(([_, rec]) => (rec?.seats || 0) > 0)
-    .map(([vehId]) => vehId);
+    .map(([vid]) => vid);
 
   // Replace rows for this journey (scoped if operatorFilter provided)
   if (operatorFilter) {
-    const inScopeVehIds = boatSet.map(b => b.vehicle_id);
+    const inScopeVehIds = (horizon === "T72")
+      ? [...inPlay] // at T-72 only touch in-play vehicles
+      : allBoats.map(b => b.vehicle_id);
     if (inScopeVehIds.length) {
       await sb
         .from("journey_vehicle_allocations")
@@ -459,7 +339,7 @@ async function runFinalizeForJourney(
   }
 
   const rowsToInsert: LockRow[] = [];
-  for (const [vehId, info] of alloc.byBoat.entries()) {
+  for (const [vehId, info] of allocByBoat.entries()) {
     if (!nonEmptyVehIds.includes(vehId)) continue;
     for (const g of info.groups) {
       rowsToInsert.push({
@@ -480,7 +360,6 @@ async function runFinalizeForJourney(
 }
 
 /* ---------- API Route ---------- */
-// POST /api/ops/finalize-allocations
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as {
@@ -506,8 +385,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const results: Array<{ journey_id: UUID; locked: boolean; written: number; reason?: string }> =
-      [];
+    const results: Array<{ journey_id: UUID; locked: boolean; written: number; reason?: string }> = [];
     for (const j of journeys) {
       const res = await runFinalizeForJourney(sb, j, body.all ? null : body.operator_id ?? null);
       results.push(res);
@@ -517,14 +395,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, changed, details: results });
   } catch (e: any) {
     console.error("finalize-allocations error:", e);
-    // Surface a friendlier message when the URL is wrong
-    const msg =
-      String(e?.message || "")
-        .includes("misconfigured")
-        ? e.message
-        : e?.message ?? "Finalize failed";
     return NextResponse.json(
-      { ok: false, error: msg },
+      { ok: false, error: e?.message ?? "Finalize failed" },
       { status: 500 }
     );
   }
