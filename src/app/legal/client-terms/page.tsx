@@ -40,7 +40,8 @@ export default function ClientTermsPage() {
   return (
     <main className="ps-theme min-h-screen bg-app text-app">
       {/* --- Pace Shuttles brand theme (scoped) --- */}
-      <style jsx global>{`
+      {/* NOTE: using plain <style> (NOT styled-jsx) so this Server Component compiles */}
+      <style>{`
         .ps-theme{
           --bg:#0f1a2a;            /* page background */
           --card:#1a2a45;          /* tiles / insets */
