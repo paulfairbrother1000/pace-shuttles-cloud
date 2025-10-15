@@ -1,3 +1,4 @@
+// src/app/destinations/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -269,9 +270,12 @@ export default function DestinationEditPage({ params }: { params: { id: string }
       const wd = (row.wet_or_dry ?? "").toString().toLowerCase();
       const wet_or_dry: "wet" | "dry" | null = wd === "wet" ? "wet" : wd === "dry" ? "dry" : null;
 
-      // payload (omit email key if null/blank)
+      // ----- FIX: build payload WITHOUT id so we never send id: "" on create -----
+      // Destructure id out of the row so it doesn't get sent.
+      const { id: _omit, ...rest } = row;
+
       const payload: any = {
-        ...row,
+        ...rest, // no id here
         name: String(row.name || "").trim(),
         season_from: row.season_from ? toYMD(row.season_from) : null,
         season_to: row.season_to ? toYMD(row.season_to) : null,
@@ -288,8 +292,12 @@ export default function DestinationEditPage({ params }: { params: { id: string }
         description: norm(row.description),
         picture_url,
         arrival_notes: norm(row.arrival_notes),
+        country_id: row.country_id ?? null, // ensure null (not "")
       };
+
+      // Only include email if present (leave column untouched when null)
       if (normalizedEmail) payload.email = normalizedEmail;
+      else payload.email = null;
 
       // quick client validation
       if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
@@ -298,9 +306,11 @@ export default function DestinationEditPage({ params }: { params: { id: string }
       }
 
       if (isCreate) {
+        // INSERT without id key prevents 22P02 on uuid columns
         const { error } = await client.from("destinations").insert(payload);
         if (error) throw error;
       } else {
+        // UPDATE by id is fine; still don't send id in body
         const { error } = await client.from("destinations").update(payload).eq("id", params.id);
         if (error) throw error;
       }
