@@ -1,8 +1,55 @@
+// src/app/pickups/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+
+/* =========================================================================================
+   Pace Shuttles Theme (scoped to this page only)
+   - Uses the same variables as the home/admin work so tiles/fonts match across pages.
+   - No functionality removed; this is purely presentational + additive CSS.
+   ========================================================================================= */
+function Theme({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="ps-theme min-h-screen bg-app text-app">
+      <style jsx global>{`
+        .ps-theme {
+          --bg:             #0f1a2a;
+          --card:           #15243a;
+          --border:         #20334d;
+          --text:           #eaf2ff;
+          --muted:          #a3b3cc;
+          --accent:         #2a6cd6;
+          --accent-contrast:#ffffff;
+          --radius:         14px;
+          --shadow:         0 6px 20px rgba(0,0,0,.25);
+
+          color: var(--text);
+          background: var(--bg);
+          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        }
+
+        /* helpers reused across the app */
+        .bg-app   { background: var(--bg); }
+        .bg-card  { background: var(--card); }
+        .text-app { color: var(--text); }
+        .text-muted { color: var(--muted); }
+        .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+        .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
+        .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
+
+        .pill { border-radius: 9999px; padding: .4rem .75rem; font-size: .875rem; border: 1px solid var(--border); background: transparent; color: var(--text); }
+        .pill:hover { background: rgba(255,255,255,.06); }
+        .btn { border-radius: var(--radius); padding: .6rem .9rem; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+        .btn:hover { filter: brightness(1.05); }
+        a { color: var(--text); text-decoration: none; }
+        a:hover { color: var(--accent); }
+      `}</style>
+      {children}
+    </div>
+  );
+}
 
 // Simple public image normalizer (same behaviour as other screens)
 function publicImage(input?: string | null): string {
@@ -162,113 +209,126 @@ export default function PickupDetailPage() {
     ? `https://www.google.com/maps/search/?api=1&query=${mapsQuery}`
     : null;
 
+  /* ---------------------------------------------------------------------------------------
+     RENDER (same sections as before; swapped classes to match ps-theme, but functionality,
+     structure, state, and conditional logic are unchanged).
+     --------------------------------------------------------------------------------------- */
   return (
-    <div className="px-4 py-6 mx-auto max-w-3xl space-y-5">
-      <header className="flex items-center gap-3">
-        <button
-          className="px-3 py-1 rounded-lg border hover:bg-neutral-50"
-          onClick={() => router.back()}
-        >
-          ← Back
-        </button>
-        <h1 className="text-2xl font-semibold">Pick-up</h1>
-      </header>
+    <Theme>
+      <div className="px-4 py-6 mx-auto max-w-3xl space-y-5">
+        <header className="flex items-center gap-3">
+          {/* Back button: keep behaviour, restyle to pill (dark theme) */}
+          <button
+            className="pill"
+            onClick={() => router.back()}
+          >
+            ← Back
+          </button>
+          <h1 className="text-2xl font-semibold">Pick-up</h1>
+        </header>
 
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>
-      )}
-
-      {loading ? (
-        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-      ) : !row ? (
-        <div className="p-4 border rounded-xl bg-white shadow">Not found.</div>
-      ) : (
-        <div className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden">
-          {/* Photo */}
-          <div className="relative w-full overflow-hidden border-b">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={imgSrc}
-              alt={row.name}
-              className="w-full h-64 object-cover"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = "/placeholder.png";
-              }}
-            />
+        {err && (
+          // Same error content, themed container (keeps copy and logic intact)
+          <div
+            className="p-3 rounded-lg tile-border text-sm"
+            style={{ background: "rgba(244,63,94,.15)", color: "#ffb4c1" }}
+          >
+            {err}
           </div>
+        )}
 
-          <div className="p-4 space-y-4">
-            {/* Title & Type */}
-            <div>
-              <div className="text-xl font-semibold">{row.name}</div>
-              <div className="text-sm text-neutral-600">
-                <span className="font-medium">Type:</span>{" "}
-                {tPlace?.name || tType?.name || "—"}
-              </div>
+        {loading ? (
+          <div className="tile tile-border p-4">Loading…</div>
+        ) : !row ? (
+          <div className="tile tile-border p-4">Not found.</div>
+        ) : (
+          <div className="tile tile-border overflow-hidden">
+            {/* Photo */}
+            <div className="relative w-full overflow-hidden" style={{ borderBottom: "1px solid var(--border)" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={imgSrc}
+                alt={row.name}
+                className="w-full h-64 object-cover"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = "/placeholder.png";
+                }}
+              />
             </div>
 
-            {/* Address */}
-            <div className="text-sm">
-              <div className="font-medium">Address</div>
-              <div className="text-neutral-700">
-                {[row.address1, row.address2].filter(Boolean).map((l, i) => (
-                  <div key={i}>{l}</div>
-                ))}
-                <div>
-                  {[row.town, row.region, row.postal_code].filter(Boolean).join(", ")}
+            <div className="p-4 space-y-4">
+              {/* Title & Type */}
+              <div>
+                <div className="text-xl font-semibold">{row.name}</div>
+                <div className="text-sm text-muted">
+                  <span className="font-medium">Type:</span>{" "}
+                  {tPlace?.name || tType?.name || "—"}
                 </div>
-                {country?.name && <div>{country.name}</div>}
               </div>
+
+              {/* Address */}
+              <div className="text-sm">
+                <div className="font-medium">Address</div>
+                <div className="text-muted">
+                  {[row.address1, row.address2].filter(Boolean).map((l, i) => (
+                    <div key={i}>{l}</div>
+                  ))}
+                  <div>
+                    {[row.town, row.region, row.postal_code].filter(Boolean).join(", ")}
+                  </div>
+                  {country?.name && <div>{country.name}</div>}
+                </div>
+              </div>
+
+              {/* Description */}
+              {row.description && (
+                <div className="text-sm">
+                  <div className="font-medium">Description</div>
+                  <div className="whitespace-pre-wrap text-muted">
+                    {row.description}
+                  </div>
+                </div>
+              )}
+
+              {/* Arrival notes */}
+              {row.arrival_notes && (
+                <div className="text-sm">
+                  <div className="font-medium">Arrival notes</div>
+                  <div className="whitespace-pre-wrap text-muted">
+                    {row.arrival_notes}
+                  </div>
+                </div>
+              )}
+
+              {/* Map */}
+              {mapsEmbedSrc && (
+                <div className="space-y-2">
+                  <div className="font-medium text-sm">Location</div>
+                  <div className="w-full overflow-hidden rounded-lg subtle-border">
+                    <iframe
+                      title="map"
+                      src={mapsEmbedSrc}
+                      style={{ border: 0, width: "100%", height: 320 }}
+                      loading="lazy"
+                      referrerPolicy="no-referrer-when-downgrade"
+                    />
+                  </div>
+                  {mapsOpenHref && (
+                    <a
+                      href={mapsOpenHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-sm underline"
+                    >
+                      Open in Google Maps
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
-
-            {/* Description */}
-            {row.description && (
-              <div className="text-sm">
-                <div className="font-medium">Description</div>
-                <div className="text-neutral-700 whitespace-pre-wrap">
-                  {row.description}
-                </div>
-              </div>
-            )}
-
-            {/* Arrival notes */}
-            {row.arrival_notes && (
-              <div className="text-sm">
-                <div className="font-medium">Arrival notes</div>
-                <div className="text-neutral-700 whitespace-pre-wrap">
-                  {row.arrival_notes}
-                </div>
-              </div>
-            )}
-
-            {/* Map */}
-            {mapsEmbedSrc && (
-              <div className="space-y-2">
-                <div className="font-medium text-sm">Location</div>
-                <div className="w-full overflow-hidden rounded-lg border">
-                  <iframe
-                    title="map"
-                    src={mapsEmbedSrc}
-                    style={{ border: 0, width: "100%", height: 320 }}
-                    loading="lazy"
-                    referrerPolicy="no-referrer-when-downgrade"
-                  />
-                </div>
-                {mapsOpenHref && (
-                  <a
-                    href={mapsOpenHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-block text-sm underline"
-                  >
-                    Open in Google Maps
-                  </a>
-                )}
-              </div>
-            )}
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </Theme>
   );
 }
