@@ -288,76 +288,91 @@ export default function Page() {
   return (
     <div className="ps-theme min-h-screen bg-app text-app">
       <style jsx global>{`
-        /* Scope to .ps-theme so we can roll out gradually */
-        .ps-theme {
-          --bg:             #0f1a2a;  /* page background */
-          --card:           #15243a;  /* tiles/tables */
-          --border:         #20334d;  /* subtle borders */
-          --text:           #eaf2ff;  /* primary text */
-          --muted:          #a3b3cc;  /* secondary text */
-          --accent:         #2a6cd6;  /* links/pills/buttons */
-          --accent-contrast:#ffffff;  /* text on accent */
-          --radius:         14px;     /* radii for tiles/buttons */
-          --shadow:         0 6px 20px rgba(0,0,0,0.25);
+  /* Scope to .ps-theme so we can roll out gradually */
+  .ps-theme {
+    --bg:               #0f1a2a;  /* page background */
+    --tile:             #1a2a45;  /* card/tile background (slightly lighter than bg) */
+    --card:             var(--tile);
+    --border:           #233754;  /* subtle borders */
+    --text:             #eaf2ff;  /* primary text */
+    --muted:            #a9b6cc;  /* secondary text */
+    --accent:           #2a6cd6;  /* links/pills/buttons */
+    --accent-contrast:  #ffffff;  /* text on accent */
+    --radius:           14px;     /* radii for tiles/buttons */
+    --shadow:           0 6px 20px rgba(0,0,0,0.25);
 
-          color: var(--text);
-          background: var(--bg);
-          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
-        }
-        .bg-app   { background: var(--bg); }
-        .bg-card  { background: var(--card); }
-        .text-app { color: var(--text); }
-        .text-muted { color: var(--muted); }
-        .ring-app { box-shadow: 0 0 0 1px var(--border) inset; }
-        .shadow-app { box-shadow: var(--shadow); }
-        .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
-        .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
-        .pill { border-radius: 9999px; padding: .375rem .75rem; font-size: .85rem; border: 1px solid var(--border); background: transparent; color: var(--text); }
-        .pill-active { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
-        .pill-idle:hover { background: rgba(255,255,255,.06); }
-        .btn { border-radius: var(--radius); padding: .625rem .9rem; border: 1px solid var(--border); background: var(--card); color: var(--text); }
-        .btn:hover { filter: brightness(1.05); }
-        .btn-primary { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
-        a { color: var(--text); text-decoration: none; }
-        a:hover { color: var(--accent); }
-        .heading { font-weight: 700; letter-spacing: .2px; }
-        .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
-        .no-scrollbar::-webkit-scrollbar{display:none;} .no-scrollbar{ -ms-overflow-style:none; scrollbar-width:none; }
+    color: var(--text);
+    background: var(--bg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  }
+  .bg-app   { background: var(--bg); }
+  .bg-card  { background: var(--card); }
+  .text-app { color: var(--text); }
+  .text-muted { color: var(--muted); }
+  .ring-app { box-shadow: 0 0 0 1px var(--border) inset; }
+  .shadow-app { box-shadow: var(--shadow); }
 
-        /* Tables */
-        table.ps { width: 100%; border-collapse: separate; border-spacing: 0; }
-        table.ps thead { background: rgba(255,255,255,0.04); }
-        table.ps th, table.ps td { padding: .75rem; border-bottom: 1px solid var(--border); }
+  /* Unified tile skin */
+  .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
 
-        /* ------------------------------ */
-        /* TilePicker SKIN (no component changes required) */
-        /* Wrap each <TilePicker/> with .tilepicker-skin in JSX below */
-        /* ------------------------------ */
-        .tilepicker-skin .tp-grid > * button,
-        .tilepicker-skin button[role="tab"],
-        .tilepicker-skin button {
-          background: var(--card) !important;
-          color: var(--text) !important;
-          border-radius: var(--radius) !important;
-          box-shadow: 0 0 0 1px var(--border) inset !important;
-          transition: transform .08s ease, box-shadow .15s ease;
-        }
-        .tilepicker-skin button:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--border) inset, var(--shadow); }
-        .tilepicker-skin .tp-title,
-        .tilepicker-skin h3 { color: var(--text) !important; font-weight: 700; }
-        .tilepicker-skin .tp-desc,
-        .tilepicker-skin p, .tilepicker-skin .muted { color: var(--muted) !important; }
-        .tilepicker-skin .img-wrap { background: var(--card); border-radius: calc(var(--radius) - 4px); overflow: hidden; }
-        .tilepicker-skin img { object-fit: cover; }
-        /* If TilePicker uses generic .rounded-2xl + border + bg-white, force them to our theme */
-        .tilepicker-skin .rounded-2xl { border-radius: var(--radius) !important; }
-        .tilepicker-skin .border { border-color: var(--border) !important; }
-        .tilepicker-skin .bg-white, .tilepicker-skin .bg-neutral-50 { background: var(--card) !important; }
-        .tilepicker-skin .text-neutral-600 { color: var(--muted) !important; }
+  /* Pills & buttons */
+  .pill { border-radius: 9999px; padding: .375rem .75rem; font-size: .85rem; border: 1px solid var(--border); background: transparent; color: var(--text); }
+  .pill-active { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
+  .pill-idle:hover { background: rgba(255,255,255,.06); }
+  .btn { border-radius: var(--radius); padding: .625rem .9rem; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  .btn:hover { filter: brightness(1.05); }
+  .btn-primary { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
 
-        /* JourneyCard subtle text normalisation (if it renders inside this page) */
-        .ps-theme .journey-subtle, .ps-theme .journey-muted { color: var(--muted); }
-      `}</style>
+  /* Links */
+  a { color: var(--text); text-decoration: none; }
+  a:hover { color: var(--accent); }
+
+  /* Headings (ensures TilePicker titles are bold & white) */
+  .heading { font-weight: 700; letter-spacing: .2px; }
+  .ps-theme h1, .ps-theme h2, .ps-theme h3, .ps-theme h4 { color: var(--text); }
+  .ps-theme h3 { font-weight: 700; }
+
+  .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
+  .no-scrollbar::-webkit-scrollbar{display:none;} .no-scrollbar{ -ms-overflow-style:none; scrollbar-width:none; }
+
+  /* Tables */
+  table.ps { width: 100%; border-collapse: separate; border-spacing: 0; }
+  table.ps thead { background: rgba(255,255,255,0.04); }
+  table.ps th, table.ps td { padding: .75rem; border-bottom: 1px solid var(--border); }
+
+  /* ------------------------------------------------------- */
+  /* Compatibility layer: harmonise legacy white/neutral skins
+     inside third-party/internal components (e.g. JourneyCard,
+     TilePicker internals) without touching those components. */
+  /* ------------------------------------------------------- */
+  .ps-theme .bg-white { background-color: var(--card) !important; }
+  .ps-theme .border,
+  .ps-theme .border-neutral-200,
+  .ps-theme .border-gray-200 { border-color: var(--border) !important; }
+
+  .ps-theme .text-neutral-600,
+  .ps-theme .text-neutral-700,
+  .ps-theme .text-slate-600,
+  .ps-theme .text-gray-600 { color: var(--muted) !important; }
+
+  .ps-theme .text-neutral-800,
+  .ps-theme .text-gray-800,
+  .ps-theme .text-slate-800 { color: var(--text) !important; }
+
+  /* Card body areas sometimes rendered as separate panels */
+  .ps-theme .bg-slate-50,
+  .ps-theme .bg-neutral-50,
+  .ps-theme .bg-gray-50 { background-color: var(--card) !important; }
+
+  /* Make image bands and captions blend with the tile skin */
+  .ps-theme .tile :where(.caption, .card-caption) { color: var(--muted); }
+
+  /* Stronger section headings above filter tiles */
+  .ps-theme .filters header h3,
+  .ps-theme .filters .title { color: var(--text) !important; font-weight: 700; }
+`}</style>
+
 
       {/* ===== SECTION 1: State + hydrate loader ===== */}
       {(() => {
