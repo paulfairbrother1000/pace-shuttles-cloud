@@ -1,9 +1,46 @@
-// src/app/partners/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+/* ---------------- Theme (scoped to this page) ---------------- */
+function Theme({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="ps-theme min-h-screen bg-app text-app">
+      <style jsx global>{`
+        .ps-theme {
+          --bg: #0f1a2a;
+          --card: #15243a;
+          --border: #20334d;
+          --text: #eaf2ff;
+          --muted: #a3b3cc;
+          --accent: #2a6cd6;
+          --accent-contrast: #ffffff;
+          --radius: 14px;
+          --shadow: 0 6px 20px rgba(0,0,0,.25);
+          color: var(--text);
+          background: var(--bg);
+          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        }
+        .tile{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow)}
+        .tile-border{box-shadow:0 0 0 1px var(--border) inset}
+        .subtle-border{box-shadow:0 0 0 1px var(--border) inset}
+        .pill{border-radius:9999px;padding:.4rem .75rem;font-size:.875rem;border:1px solid var(--border);background:transparent;color:var(--text)}
+        .pill-active{background:var(--accent);color:var(--accent-contrast);border-color:transparent}
+        .btn{border-radius:var(--radius);padding:.6rem .9rem;border:1px solid var(--border);background:var(--card);color:var(--text)}
+        .btn-primary{background:var(--accent);color:var(--accent-contrast);border-color:transparent}
+        .input{width:100%;border-radius:10px;padding:.6rem .75rem;background:var(--card);color:var(--text);box-shadow:0 0 0 1px var(--border) inset}
+        .input::placeholder{color:var(--muted)}
+        .label{margin-bottom:.25rem;display:block;font-size:.9rem;color:var(--muted)}
+        .muted{color:var(--muted)}
+        a{color:var(--text)} a:hover{color:var(--accent)}
+      `}</style>
+      {children}
+    </div>
+  );
+}
+
+/* ---------------- Supabase ---------------- */
 const supabase =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -173,7 +210,7 @@ export default function PartnersApplyPage() {
     if (applicationType === "operator") {
       payload.transport_type_id = transportTypeId;
       payload.fleet_size = fleetSize === "" ? null : Number(fleetSize);
-      payload.place_ids = selectedPlaceIds; // arrival places for that transport type
+      payload.place_ids = selectedPlaceIds;
     } else {
       payload.destination_type_id = destinationTypeId;
     }
@@ -201,267 +238,265 @@ export default function PartnersApplyPage() {
 
   if (submittedId) {
     return (
-      <div className="mx-auto max-w-3xl p-6">
-        <div className="rounded-2xl border bg-white p-6 shadow-sm">
-          <h1 className="text-2xl font-semibold mb-2">Thanks — we’ve got your application!</h1>
-          <p className="text-neutral-700">
-            Your reference is <span className="font-mono">{submittedId.slice(0, 8)}</span>. Our team will review and be in touch.
-          </p>
-          <div className="mt-6">
-            <a href="/" className="inline-block rounded-lg border px-4 py-2 hover:bg-neutral-50">Back to home</a>
+      <Theme>
+        <div className="mx-auto max-w-3xl p-6">
+          <div className="tile tile-border p-6">
+            <h1 className="text-2xl font-semibold mb-2">Thanks — we’ve got your application!</h1>
+            <p className="muted">
+              Your reference is <span className="font-mono">{submittedId.slice(0, 8)}</span>. Our team will review and be in touch.
+            </p>
+            <div className="mt-6">
+              <a href="/" className="btn">Back to home</a>
+            </div>
           </div>
         </div>
-      </div>
+      </Theme>
     );
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <header className="mb-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Partner with Pace Shuttles</h1>
-        
-<p className="text-neutral-600">Pace Shuttles is always on the lookout for extraordinary, world class destinations and exceptional providers of luxury travel.</p>
-<p className="text-neutral-600">If you represent a licensed operator or destination, please get in touch using the form below and tell us more about your operation.</p>
-<p className="text-neutral-600">If your operation is in a territory that’s not currently supported by Pace Shuttles, that’s no problem – you can be the first! We are keen to bring the Pace Shuttles benefits and experience to a wider audience.</p>
-      </header>
+    <Theme>
+      <div className="mx-auto max-w-3xl p-6 space-y-4">
+        <header className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">Partner with Pace Shuttles</h1>
+          <p className="muted">Pace Shuttles is always on the lookout for extraordinary, world class destinations and exceptional providers of luxury travel.</p>
+          <p className="muted">If you represent a licensed operator or destination, please get in touch using the form below and tell us more about your operation.</p>
+          <p className="muted">If your operation is in a territory that’s not currently supported by Pace Shuttles, that’s no problem – you can be the first! We are keen to bring the Pace Shuttles benefits and experience to a wider audience.</p>
+        </header>
 
-      {msg && (
-        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-          {msg}
-        </div>
-      )}
+        {msg && (
+          <div className="rounded-md tile-border bg-[rgba(255,193,7,.12)] p-3 text-sm" style={{color:"#ffd88a"}}>
+            {msg}
+          </div>
+        )}
 
-      {loading ? (
-        <div className="rounded-xl border p-4">Loading…</div>
-      ) : (
-        <form onSubmit={onSubmit} className="rounded-2xl border bg-white p-5 shadow-sm space-y-5">
-          {/* Type */}
-          <div>
-            <label className="mb-2 block text-sm font-medium">I am a…</label>
-            <div className="flex gap-3">
-              {(["operator","destination"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setApplicationType(t)}
-                  className={
-                    "rounded-xl border px-3 py-1.5 text-sm " +
-                    (applicationType === t ? "bg-neutral-900 text-white border-neutral-900" : "bg-white hover:bg-neutral-50")
-                  }
-                >
-                  {t === "operator" ? "Operator" : "Destination"}
-                </button>
-              ))}
+        {loading ? (
+          <div className="tile tile-border p-4">Loading…</div>
+        ) : (
+          <form onSubmit={onSubmit} className="tile tile-border p-5 space-y-5">
+            {/* Type */}
+            <div>
+              <label className="label">I am a…</label>
+              <div className="flex gap-3">
+                {(["operator","destination"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setApplicationType(t)}
+                    className={`pill ${applicationType === t ? "pill-active" : ""}`}
+                  >
+                    {t === "operator" ? "Operator" : "Destination"}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {/* Country */}
-          <div>
-            <label className="mb-1 block text-sm font-medium">Country of operation</label>
-            <select
-              className="w-full rounded-lg border px-3 py-2"
-              value={countryId}
-              onChange={(e) => setCountryId(e.target.value)}
-              required
-            >
-              <option value="">Select country…</option>
-              {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
+            {/* Country */}
+            <div>
+              <label className="label">Country of operation</label>
+              <select
+                className="input"
+                value={countryId}
+                onChange={(e) => setCountryId(e.target.value)}
+                required
+              >
+                <option value="">Select country…</option>
+                {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
 
-          {/* Operator-specific */}
-          {applicationType === "operator" && (
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium">Vehicle Type</label>
-                <select
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={transportTypeId}
-                  onChange={(e) => { setTransportTypeId(e.target.value); setSelectedPlaceIds([]); }}
-                  required
-                >
-                  <option value="">Select vehicle type…</option>
-                  {transportTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
+            {/* Operator-specific */}
+            {applicationType === "operator" && (
+              <div className="space-y-4">
+                <div>
+                  <label className="label">Vehicle Type</label>
+                  <select
+                    className="input"
+                    value={transportTypeId}
+                    onChange={(e) => { setTransportTypeId(e.target.value); setSelectedPlaceIds([]); }}
+                    required
+                  >
+                    <option value="">Select vehicle type…</option>
+                    {transportTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium">Arrival places supported (select any that apply)</label>
-                {transportTypeId ? (
-                  filteredPlaces.length ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {filteredPlaces.map((p) => (
-                        <label key={p.id} className="flex items-center gap-2 rounded-lg border px-3 py-2">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
-                            checked={selectedPlaceIds.includes(p.id)}
-                            onChange={() => togglePlace(p.id)}
-                          />
-                          <span className="text-sm">{p.name}</span>
-                        </label>
-                      ))}
-                    </div>
+                <div>
+                  <label className="label">Arrival places supported (select any that apply)</label>
+                  {transportTypeId ? (
+                    filteredPlaces.length ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {filteredPlaces.map((p) => (
+                          <label key={p.id} className="flex items-center gap-2 tile-border rounded-lg px-3 py-2">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4"
+                              checked={selectedPlaceIds.includes(p.id)}
+                              onChange={() => togglePlace(p.id)}
+                            />
+                            <span className="text-sm">{p.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-sm muted">No places defined for this vehicle type (optional).</div>
+                    )
                   ) : (
-                    <div className="text-sm text-neutral-600">No places defined for this vehicle type (optional).</div>
-                  )
-                ) : (
-                  <div className="text-sm text-neutral-600">Choose a vehicle type to see place options.</div>
-                )}
+                    <div className="text-sm muted">Choose a vehicle type to see place options.</div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="label">Number of vehicles in fleet</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={fleetSize}
+                    onChange={(e) => setFleetSize(e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value || "0", 10)))}
+                    className="input"
+                    placeholder="e.g., 3"
+                  />
+                </div>
+
+                <div>
+                  <label className="label">Pick-up suggestions (optional)</label>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    value={pickupSuggestions}
+                    onChange={(e) => setPickupSuggestions(e.target.value)}
+                    placeholder="If in the same country, you can choose known pick-ups from our list; add more ideas here."
+                  />
+                </div>
+
+                <div>
+                  <label className="label">Destination suggestions (optional)</label>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    value={destinationSuggestions}
+                    onChange={(e) => setDestinationSuggestions(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Destination-specific */}
+            {applicationType === "destination" && (
+              <div className="space-y-4">
+                <div>
+                  <label className="label">Destination Type</label>
+                  <select
+                    className="input"
+                    value={destinationTypeId}
+                    onChange={(e) => setDestinationTypeId(e.target.value)}
+                    required
+                  >
+                    <option value="">Select destination type…</option>
+                    {destinationTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="label">Pick-up suggestions (optional)</label>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    value={pickupSuggestions}
+                    onChange={(e) => setPickupSuggestions(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Org & contact */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="label">Organisation Name</label>
+                <input className="input" value={orgName} onChange={(e) => setOrgName(e.target.value)} required />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="label">Organisation Address</label>
+                <textarea className="input" rows={2} value={orgAddress} onChange={(e) => setOrgAddress(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Telephone</label>
+                <input className="input" value={telephone} onChange={(e) => setTelephone(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Mobile</label>
+                <input className="input" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Email</label>
+                <input type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Website</label>
+                <input className="input" value={website} onChange={(e) => setWebsite(e.target.value)} />
               </div>
 
               <div>
-                <label className="mb-1 block text-sm font-medium">Number of vehicles in fleet</label>
+                <label className="label">Instagram</label>
+                <input className="input" value={socialIG} onChange={(e) => setSocialIG(e.target.value)} placeholder="https://instagram.com/…" />
+              </div>
+              <div>
+                <label className="label">YouTube</label>
+                <input className="input" value={socialYT} onChange={(e) => setSocialYT(e.target.value)} placeholder="https://youtube.com/…" />
+              </div>
+              <div>
+                <label className="label">X (Twitter)</label>
+                <input className="input" value={socialX} onChange={(e) => setSocialX(e.target.value)} placeholder="https://x.com/…" />
+              </div>
+              <div>
+                <label className="label">Facebook</label>
+                <input className="input" value={socialFB} onChange={(e) => setSocialFB(e.target.value)} placeholder="https://facebook.com/…" />
+              </div>
+
+              <div>
+                <label className="label">Contact Name</label>
+                <input className="input" value={contactName} onChange={(e) => setContactName(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Role in Organisation</label>
+                <input className="input" value={contactRole} onChange={(e) => setContactRole(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Years of operation</label>
                 <input
                   type="number"
                   min={0}
-                  value={fleetSize}
-                  onChange={(e) => setFleetSize(e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value || "0", 10)))}
-                  className="w-full rounded-lg border px-3 py-2"
-                  placeholder="e.g., 3"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">Pick-up suggestions (optional)</label>
-                <textarea
-                  className="w-full rounded-lg border px-3 py-2"
-                  rows={3}
-                  value={pickupSuggestions}
-                  onChange={(e) => setPickupSuggestions(e.target.value)}
-                  placeholder="If in the same country, you can choose known pick-ups from our list; add more ideas here."
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">Destination suggestions (optional)</label>
-                <textarea
-                  className="w-full rounded-lg border px-3 py-2"
-                  rows={3}
-                  value={destinationSuggestions}
-                  onChange={(e) => setDestinationSuggestions(e.target.value)}
+                  className="input"
+                  value={yearsOperation}
+                  onChange={(e) => setYearsOperation(e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value || "0", 10)))}
                 />
               </div>
             </div>
-          )}
-
-          {/* Destination-specific */}
-          {applicationType === "destination" && (
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium">Destination Type</label>
-                <select
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={destinationTypeId}
-                  onChange={(e) => setDestinationTypeId(e.target.value)}
-                  required
-                >
-                  <option value="">Select destination type…</option>
-                  {destinationTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium">Pick-up suggestions (optional)</label>
-                <textarea
-                  className="w-full rounded-lg border px-3 py-2"
-                  rows={3}
-                  value={pickupSuggestions}
-                  onChange={(e) => setPickupSuggestions(e.target.value)}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Org & contact */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <label className="mb-1 block text-sm font-medium">Organisation Name</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={orgName} onChange={(e) => setOrgName(e.target.value)} required />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="mb-1 block text-sm font-medium">Organisation Address</label>
-              <textarea className="w-full rounded-lg border px-3 py-2" rows={2} value={orgAddress} onChange={(e) => setOrgAddress(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Telephone</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={telephone} onChange={(e) => setTelephone(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Mobile</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={mobile} onChange={(e) => setMobile(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Email</label>
-              <input type="email" className="w-full rounded-lg border px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Website</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={website} onChange={(e) => setWebsite(e.target.value)} />
-            </div>
 
             <div>
-              <label className="mb-1 block text-sm font-medium">Instagram</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={socialIG} onChange={(e) => setSocialIG(e.target.value)} placeholder="https://instagram.com/…" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">YouTube</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={socialYT} onChange={(e) => setSocialYT(e.target.value)} placeholder="https://youtube.com/…" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">X (Twitter)</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={socialX} onChange={(e) => setSocialX(e.target.value)} placeholder="https://x.com/…" />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Facebook</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={socialFB} onChange={(e) => setSocialFB(e.target.value)} placeholder="https://facebook.com/…" />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium">Contact Name</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={contactName} onChange={(e) => setContactName(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Role in Organisation</label>
-              <input className="w-full rounded-lg border px-3 py-2" value={contactRole} onChange={(e) => setContactRole(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-sm font-medium">Years of operation</label>
-              <input
-                type="number"
-                min={0}
-                className="w-full rounded-lg border px-3 py-2"
-                value={yearsOperation}
-                onChange={(e) => setYearsOperation(e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value || "0", 10)))}
+              <label className="label">Description</label>
+              <textarea
+                className="input"
+                rows={5}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Tell us about your offering, experience, and price points."
               />
             </div>
-          </div>
 
-          <div>
-            <label className="mb-1 block text-sm font-medium">Description</label>
-            <textarea
-              className="w-full rounded-lg border px-3 py-2"
-              rows={5}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Tell us about your offering, experience, and price points."
-            />
-          </div>
-
-          <div className="pt-2">
-            <button
-              type="submit"
-              disabled={submitting}
-              className={
-                "rounded-lg px-4 py-2 text-white " +
-                (submitting ? "bg-neutral-500" : "bg-blue-600 hover:bg-blue-700")
-              }
-            >
-              {submitting ? "Submitting…" : "Submit application"}
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={submitting}
+                className={`btn-primary ${submitting ? "opacity-70 cursor-not-allowed" : ""}`}
+                style={{ display: "inline-block" }}
+              >
+                {submitting ? "Submitting…" : "Submit application"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </Theme>
   );
 }
