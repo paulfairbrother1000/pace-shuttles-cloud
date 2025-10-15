@@ -1,4 +1,3 @@
-// src/app/book/pay/page.tsx
 "use client";
 
 import * as React from "react";
@@ -334,129 +333,177 @@ export default function PayPage(): JSX.Element {
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6 space-y-6">
-      <h1 className="text-3xl font-extrabold">Review &amp; Pay</h1>
+    <div className="ps-theme min-h-screen bg-app text-app">
+      {/* --- Theme & shims (scoped) --- */}
+      <style jsx global>{`
+        .ps-theme{
+          --bg:#0f1a2a;
+          --card:#1a2a45;
+          --border:#233754;
+          --text:#eaf2ff;
+          --muted:#a9b6cc;
+          --accent:#2a6cd6;
+          --accent-contrast:#ffffff;
+          --radius:14px;
+          --shadow:0 6px 20px rgba(0,0,0,.25);
+        }
+        .bg-app{background:var(--bg);}
+        .text-app{color:var(--text);}
+        .tile{background:var(--card); border-radius:var(--radius); box-shadow:var(--shadow);}
+        .tile-border{box-shadow:0 0 0 1px var(--border) inset;}
+        .heading{font-weight:800;}
 
-      {/* Trip summary */}
-      <div className="rounded-2xl border p-4">
-        <div className="text-sm text-gray-600 mb-2">Trip details</div>
-        <dl className="grid grid-cols-2 gap-y-2 text-sm">
-          <dt className="text-gray-500">Route ID</dt>
-          <dd className="font-mono break-all">{routeId || "—"}</dd>
+        /* Re-skin existing neutral classes to dark theme */
+        .ps-theme .border{border-color:var(--border)!important;}
+        .ps-theme .bg-white{background-color:var(--card)!important;}
+        .ps-theme .text-gray-600,
+        .ps-theme .text-gray-500,
+        .ps-theme .text-neutral-600{ color:var(--muted)!important; }
+        .ps-theme .text-gray-500 strong{ color:var(--text); }
 
-          <dt className="text-gray-500">Date</dt>
-          <dd>{dateISO || "—"}</dd>
+        /* Inputs & buttons use brand variables but keep original class names */
+        .ps-theme .input{
+          background:transparent; color:var(--text);
+          border:1px solid var(--border); border-radius:.75rem; padding:.6rem .9rem; width:100%;
+        }
+        .ps-theme .input::placeholder{ color:rgba(234,242,255,.55); }
+        .ps-theme .btn-primary{
+          border-radius:.75rem; background:var(--accent); color:var(--accent-contrast);
+          padding:.6rem 1rem; font-size:.95rem; border:0;
+        }
+        .ps-theme .btn-secondary{
+          border-radius:.75rem; border:1px solid var(--border); padding:.6rem 1rem; font-size:.95rem;
+          background:transparent; color:var(--text);
+        }
+        .ps-theme .rounded-2xl.border.p-4{ background:var(--card); }
+        .ps-theme .rounded-2xl.border.p-4 .text-gray-600{ color:var(--muted); }
+      `}</style>
 
-          <dt className="text-gray-500">Seats</dt>
-          <dd>{qty}</dd>
+      <div className="mx-auto max-w-2xl p-6 space-y-6">
+        <h1 className="text-3xl heading">Review &amp; Pay</h1>
 
-          <dt className="text-gray-500">Per seat</dt>
-          <dd>{Number.isFinite(allInC) ? gbp(allInC) : "—"}</dd>
+        {/* Trip summary */}
+        <div className="rounded-2xl border p-4 tile tile-border">
+          <div className="text-sm text-gray-600 mb-2">Trip details</div>
+          <dl className="grid grid-cols-2 gap-y-2 text-sm">
+            <dt className="text-gray-500">Route ID</dt>
+            <dd className="font-mono break-all">{routeId || "—"}</dd>
 
-          <dt className="text-gray-500">Total</dt>
-          <dd className="font-semibold">{Number.isFinite(total) ? gbp(total) : "—"}</dd>
+            <dt className="text-gray-500">Date</dt>
+            <dd>{dateISO || "—"}</dd>
 
-          <dt className="text-gray-500">Quote token</dt>
-          <dd className="truncate">{token ? "present" : "missing"}</dd>
-        </dl>
-      </div>
+            <dt className="text-gray-500">Seats</dt>
+            <dd>{qty}</dd>
 
-      {/* Lead + guests */}
-      <div className="rounded-2xl border p-4 space-y-4">
-        <div className="text-sm font-medium">Lead passenger *</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input className="input" placeholder="First name *" value={leadFirst} onChange={(e) => setLeadFirst(e.target.value)} required />
-          <input className="input" placeholder="Last name *" value={leadLast} onChange={(e) => setLeadLast(e.target.value)} required />
+            <dt className="text-gray-500">Per seat</dt>
+            <dd>{Number.isFinite(allInC) ? gbp(allInC) : "—"}</dd>
+
+            <dt className="text-gray-500">Total</dt>
+            <dd className="font-semibold">{Number.isFinite(total) ? gbp(total) : "—"}</dd>
+
+            <dt className="text-gray-500">Quote token</dt>
+            <dd className="truncate">{token ? "present" : "missing"}</dd>
+          </dl>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input className="input" type="email" placeholder="Email *" value={leadEmail} onChange={(e) => setLeadEmail(e.target.value)} required />
-          <input className="input" placeholder="Phone *" value={leadPhone} onChange={(e) => setLeadPhone(e.target.value)} required />
-        </div>
 
-        {guests.length > 0 && (
-          <div className="space-y-3">
-            <div className="text-sm font-medium">Additional passengers</div>
-            {guests.map((g, i) => (
-              <div key={i} className="grid grid-cols-[1rem_1fr_1fr] gap-3 items-center">
-                <input type="radio" name="leadPick" aria-label="Mark as lead" checked={leadChoice === i} onChange={() => setLeadChoice(i)} />
-                <input className="input" placeholder={`Guest ${i + 1} – first name`} value={g.first_name} onChange={(e) => updateGuest(i, { first_name: e.target.value })} />
-                <input className="input" placeholder={`Guest ${i + 1} – last name`} value={g.last_name} onChange={(e) => updateGuest(i, { last_name: e.target.value })} />
-              </div>
-            ))}
+        {/* Lead + guests */}
+        <div className="rounded-2xl border p-4 space-y-4 tile tile-border">
+          <div className="text-sm font-medium">Lead passenger *</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input className="input" placeholder="First name *" value={leadFirst} onChange={(e) => setLeadFirst(e.target.value)} required />
+            <input className="input" placeholder="Last name *" value={leadLast} onChange={(e) => setLeadLast(e.target.value)} required />
           </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input className="input" type="email" placeholder="Email *" value={leadEmail} onChange={(e) => setLeadEmail(e.target.value)} required />
+            <input className="input" placeholder="Phone *" value={leadPhone} onChange={(e) => setLeadPhone(e.target.value)} required />
+          </div>
+
+          {guests.length > 0 && (
+            <div className="space-y-3">
+              <div className="text-sm font-medium">Additional passengers</div>
+              {guests.map((g, i) => (
+                <div key={i} className="grid grid-cols-[1rem_1fr_1fr] gap-3 items-center">
+                  <input type="radio" name="leadPick" aria-label="Mark as lead" checked={leadChoice === i} onChange={() => setLeadChoice(i)} />
+                  <input className="input" placeholder={`Guest ${i + 1} – first name`} value={g.first_name} onChange={(e) => updateGuest(i, { first_name: e.target.value })} />
+                  <input className="input" placeholder={`Guest ${i + 1} – last name`} value={g.last_name} onChange={(e) => updateGuest(i, { last_name: e.target.value })} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 pt-1">
+            <input type="radio" name="leadPick" checked={leadChoice === "lead"} onChange={() => setLeadChoice("lead")} />
+            <span className="text-sm">Set the above person as lead</span>
+          </div>
+
+          <p className="text-xs text-gray-500">
+            We’ll use these names for the manifest. Exactly one person is marked as the lead for comms.
+          </p>
+        </div>
+
+        {/* ---- Client Terms & Conditions consent (required) ---- */}
+        <div id="client-tnc-consent" className="rounded-2xl border p-4 tile tile-border">
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-1 h-5 w-5"
+              checked={consentChecked}
+              onChange={(e) => setConsentChecked(e.target.checked)}
+              aria-describedby="tnc-help"
+            />
+            <span className="text-sm leading-6">
+              I confirm I’ve <strong>read and understood</strong>{" "}
+              <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
+                the Client Terms &amp; Conditions
+              </a>{" "}
+              and agree to be bound by them.
+              <div id="tnc-help" className="text-xs text-neutral-600 mt-1">
+                No cancellations. Reschedule up to <strong>T-72</strong> (subject to availability) within <strong>12 months</strong>.
+              </div>
+            </span>
+          </label>
+
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={saveConsent}
+              disabled={!consentChecked || savingConsent || !token}
+              className={`px-4 py-2 rounded-xl border text-sm ${!consentChecked || savingConsent || !token ? "opacity-50 cursor-not-allowed" : ""}`}
+              aria-disabled={!consentChecked || savingConsent || !token}
+            >
+              {savingConsent ? "Saving…" : consented ? "✔ Accepted" : "I agree"}
+            </button>
+          </div>
+        </div>
+
+        {err && (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700 text-sm">{err}</div>
         )}
 
-        <div className="flex items-center gap-2 pt-1">
-          <input type="radio" name="leadPick" checked={leadChoice === "lead"} onChange={() => setLeadChoice("lead")} />
-          <span className="text-sm">Set the above person as lead</span>
+        <div className="flex items-center gap-3">
+          <button onClick={handlePayNow} disabled={!consented || submitting} className="btn-primary" type="button">
+            {submitting ? "Processing…" : "Proceed to payment"}
+          </button>
+          <button onClick={() => router.back()} disabled={submitting} className="btn-secondary" type="button">
+            Back
+          </button>
         </div>
 
         <p className="text-xs text-gray-500">
-          We’ll use these names for the manifest. Exactly one person is marked as the lead for comms.
+          By continuing, you agree to our terms. You can{" "}
+          <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
+            read the Client Terms &amp; Conditions here
+          </a>.
         </p>
+
+        {/* Keep the original helper CSS (unchanged) */}
+        <style jsx global>{`
+          .input { border:1px solid #e5e7eb; border-radius:.75rem; padding:.6rem .9rem; width:100%; }
+          .btn-primary { border-radius: .75rem; background:#000; color:#fff; padding:.5rem 1rem; font-size:.9rem; }
+          .btn-primary[disabled] { opacity:.5; cursor:not-allowed; }
+          .btn-secondary { border-radius: .75rem; border:1px solid #e5e7eb; padding:.5rem 1rem; font-size:.9rem; }
+        `}</style>
       </div>
-
-      {/* ---- Client Terms & Conditions consent (required) ---- */}
-      <div id="client-tnc-consent" className="rounded-2xl border p-4">
-        <label className="flex items-start gap-3">
-          <input
-            type="checkbox"
-            className="mt-1 h-5 w-5"
-            checked={consentChecked}
-            onChange={(e) => setConsentChecked(e.target.checked)}
-            aria-describedby="tnc-help"
-          />
-          <span className="text-sm leading-6">
-            I confirm I’ve <strong>read and understood</strong>{" "}
-            <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
-              the Client Terms &amp; Conditions
-            </a>{" "}
-            and agree to be bound by them.
-            <div id="tnc-help" className="text-xs text-neutral-600 mt-1">
-              No cancellations. Reschedule up to <strong>T-72</strong> (subject to availability) within <strong>12 months</strong>.
-            </div>
-          </span>
-        </label>
-
-        <div className="mt-3 flex justify-end">
-          <button
-            type="button"
-            onClick={saveConsent}
-            disabled={!consentChecked || savingConsent || !token}
-            className={`px-4 py-2 rounded-xl border text-sm ${!consentChecked || savingConsent || !token ? "opacity-50 cursor-not-allowed" : ""}`}
-            aria-disabled={!consentChecked || savingConsent || !token}
-          >
-            {savingConsent ? "Saving…" : consented ? "✔ Accepted" : "I agree"}
-          </button>
-        </div>
-      </div>
-
-      {err && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700 text-sm">{err}</div>
-      )}
-
-      <div className="flex items-center gap-3">
-        <button onClick={handlePayNow} disabled={!consented || submitting} className="btn-primary" type="button">
-          {submitting ? "Processing…" : "Proceed to payment"}
-        </button>
-        <button onClick={() => router.back()} disabled={submitting} className="btn-secondary" type="button">
-          Back
-        </button>
-      </div>
-
-      <p className="text-xs text-gray-500">
-        By continuing, you agree to our terms. You can{" "}
-        <a href="/legal/client-terms" target="_blank" rel="noopener noreferrer" className="underline">
-          read the Client Terms &amp; Conditions here
-        </a>.
-      </p>
-
-      <style jsx global>{`
-        .input { border:1px solid #e5e7eb; border-radius:.75rem; padding:.6rem .9rem; width:100%; }
-        .btn-primary { border-radius: .75rem; background:#000; color:#fff; padding:.5rem 1rem; font-size:.9rem; }
-        .btn-primary[disabled] { opacity:.5; cursor:not-allowed; }
-        .btn-secondary { border-radius: .75rem; border:1px solid #e5e7eb; padding:.5rem 1rem; font-size:.9rem; }
-      `}</style>
     </div>
   );
 }

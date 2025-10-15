@@ -1,4 +1,3 @@
-// src/app/checkout/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -221,64 +220,113 @@ export default function CheckoutPage() {
   }
 
   return (
-    <div className="max-w-[920px] mx-auto px-4 py-8 space-y-6">
-      <h1 className="text-3xl font-semibold">Order confirmation</h1>
+    <div className="ps-theme min-h-screen bg-app text-app">
+      {/* --- Pace Shuttles theme (scoped) --- */}
+      <style jsx global>{`
+        .ps-theme {
+          --bg:               #0f1a2a;   /* page background */
+          --card:             #1a2a45;   /* tile/card background */
+          --border:           #233754;   /* borders */
+          --text:             #eaf2ff;   /* main text */
+          --muted:            #a9b6cc;   /* secondary text */
+          --accent:           #2a6cd6;   /* primary button/link */
+          --accent-contrast:  #ffffff;
+          --radius:           14px;
+          --shadow:           0 6px 20px rgba(0,0,0,.25);
+        }
+        .bg-app{ background: var(--bg); }
+        .text-app{ color: var(--text); }
+        .tile{ background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+        .tile-border{ box-shadow: 0 0 0 1px var(--border) inset; }
+        .heading{ font-weight: 800; }
 
-      {loading ? (
-        <div className="rounded-2xl border bg-white p-4">Loading…</div>
-      ) : err ? (
-        <div className="rounded-2xl border bg-white p-4 text-red-600">{err}</div>
-      ) : !qi || !route ? (
-        <div className="rounded-2xl border bg-white p-4">Missing quote.</div>
-      ) : (
-        <>
-          <section className="rounded-2xl border bg-white p-6 shadow">
-            <div className="text-2xl font-medium">
-              {(pickup?.name ?? "Journey")} <span className="opacity-60">→</span> {(dest?.name ?? "")}
-            </div>
-            <div className="mt-2 text-neutral-700">
-              {dateText} {route?.pickup_time ? `• ${fmtTime(route?.pickup_time)}` : ""}
-            </div>
-            <div className="mt-2 text-neutral-700">
-              {(pickup?.name ?? "—")} <span className="opacity-60">→</span> {(dest?.name ?? "—")}
-            </div>
-          </section>
+        /* Map legacy neutral/white surfaces to brand card */
+        .ps-theme .bg-white{ background-color: var(--card) !important; }
+        .ps-theme .border{ border-color: var(--border) !important; }
+        .ps-theme .shadow{ box-shadow: var(--shadow) !important; }
 
-          <section className="rounded-2xl border bg-white p-6 shadow flex flex-wrap items-center justify-between gap-6">
-            <div>
-              <div className="text-xl">
-                Tickets: <span className="font-semibold">{qi?.seats ?? "—"}</span>
+        /* Text colors remapped */
+        .ps-theme .text-neutral-700,
+        .ps-theme .text-gray-700,
+        .ps-theme .text-slate-700 { color: var(--muted) !important; }
+        .ps-theme .text-red-600 { color:#ff8b8b !important; } /* keep error readable on dark */
+
+        /* Buttons */
+        .ps-theme .btn-main{
+          background: var(--accent);
+          color: var(--accent-contrast);
+          border: none;
+          border-radius: var(--radius);
+          padding: .75rem 1.1rem;
+        }
+        .ps-theme .btn-ghost{
+          border: 1px solid var(--border);
+          background: transparent;
+          color: var(--text);
+          border-radius: var(--radius);
+          padding: .6rem 1rem;
+        }
+      `}</style>
+
+      <div className="max-w-[920px] mx-auto px-4 py-8 space-y-6">
+        <h1 className="text-3xl heading">Order confirmation</h1>
+
+        {loading ? (
+          <div className="rounded-2xl border bg-white p-4 tile tile-border">Loading…</div>
+        ) : err ? (
+          <div className="rounded-2xl border bg-white p-4 tile tile-border text-red-600">{err}</div>
+        ) : !qi || !route ? (
+          <div className="rounded-2xl border bg-white p-4 tile tile-border">Missing quote.</div>
+        ) : (
+          <>
+            <section className="rounded-2xl border bg-white p-6 shadow tile tile-border">
+              <div className="text-2xl font-medium">
+                {(pickup?.name ?? "Journey")} <span className="opacity-60">→</span> {(dest?.name ?? "")}
               </div>
-              <div className="text-neutral-700 mt-2">
-                Per ticket (incl. tax & fees): <span className="font-semibold">{fmtPounds(qi?.per_seat_all_in)}</span>
+              <div className="mt-2 text-neutral-700">
+                {dateText} {route?.pickup_time ? `• ${fmtTime(route?.pickup_time)}` : ""}
               </div>
-              {!verified && (
-                <button
-                  onClick={retryPrice}
-                  className="mt-3 px-3 py-2 rounded-lg border hover:bg-neutral-50"
-                  disabled={retrying}
-                >
-                  {retrying ? "Fetching price…" : "Retry live price"}
-                </button>
-              )}
-            </div>
-            <div className="text-2xl">
-              Total: <span className="font-bold">{fmtPounds(total)}</span>
-            </div>
-          </section>
+              <div className="mt-2 text-neutral-700">
+                {(pickup?.name ?? "—")} <span className="opacity-60">→</span> {(dest?.name ?? "—")}
+              </div>
+            </section>
 
-          <div className="flex gap-3">
-            <a href="/" className="px-5 py-3 rounded-2xl border hover:bg-neutral-50">Back</a>
-            <button
-              className="px-6 py-3 rounded-2xl bg-black text-white hover:bg-neutral-900 disabled:opacity-40"
-              disabled={navigating}
-              onClick={proceedToPayment}
-            >
-              {navigating ? "Opening payment…" : "Proceed to payment"}
-            </button>
-          </div>
-        </>
-      )}
+            <section className="rounded-2xl border bg-white p-6 shadow flex flex-wrap items-center justify-between gap-6 tile tile-border">
+              <div>
+                <div className="text-xl">
+                  Tickets: <span className="font-semibold">{qi?.seats ?? "—"}</span>
+                </div>
+                <div className="text-neutral-700 mt-2">
+                  Per ticket (incl. tax & fees): <span className="font-semibold">{fmtPounds(qi?.per_seat_all_in)}</span>
+                </div>
+                {!verified && (
+                  <button
+                    onClick={retryPrice}
+                    className="mt-3 btn-ghost"
+                    disabled={retrying}
+                  >
+                    {retrying ? "Fetching price…" : "Retry live price"}
+                  </button>
+                )}
+              </div>
+              <div className="text-2xl">
+                Total: <span className="font-bold">{fmtPounds(total)}</span>
+              </div>
+            </section>
+
+            <div className="flex gap-3">
+              <a href="/" className="btn-ghost">Back</a>
+              <button
+                className="btn-main disabled:opacity-40"
+                disabled={navigating}
+                onClick={proceedToPayment}
+              >
+                {navigating ? "Opening payment…" : "Proceed to payment"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
