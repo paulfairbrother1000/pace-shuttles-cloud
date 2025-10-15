@@ -14,9 +14,6 @@ type PsUser = {
   email?: string | null;
 };
 
-/* ------------------------------------------------------------------ */
-/* Safe client factory: only create a Supabase client if envs exist.   */
-/* ------------------------------------------------------------------ */
 function getSupabase(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -24,21 +21,12 @@ function getSupabase(): SupabaseClient | null {
   return createBrowserClient(url, key);
 }
 
-/* ---------- tiny localStorage cache for profile ---------- */
 function readCache(): PsUser | null {
-  try {
-    const raw = localStorage.getItem("ps_user");
-    return raw ? (JSON.parse(raw) as PsUser) : null;
-  } catch {
-    return null;
-  }
+  try { const raw = localStorage.getItem("ps_user"); return raw ? (JSON.parse(raw) as PsUser) : null; }
+  catch { return null; }
 }
 function writeCache(u: PsUser) {
-  try {
-    localStorage.setItem("ps_user", JSON.stringify(u || {}));
-  } catch {
-    /* ignore */
-  }
+  try { localStorage.setItem("ps_user", JSON.stringify(u || {})); } catch {}
 }
 
 export default function SiteHeader(): JSX.Element {
@@ -49,36 +37,20 @@ export default function SiteHeader(): JSX.Element {
   const [profile, setProfile] = React.useState<PsUser | null>(null);
   const [loading, setLoading] = React.useState(true);
 
-  // Keep one instance per render (don't recreate on every effect tick)
   const supabase = React.useMemo(() => getSupabase(), []);
 
-  // --- recompute profile from a session (no-ops if sb is null)
   const recomputeFromSession = React.useCallback(
     async (
       session:
         | Awaited<ReturnType<NonNullable<typeof supabase>["auth"]["getSession"]>>["data"]["session"]
         | null
     ) => {
-      if (!supabase) {
-        // No env vars → render without auth state
-        setAuthEmail(null);
-        setProfile(null);
-        setLoading(false);
-        return;
-      }
-
-      if (!session) {
-        localStorage.removeItem("ps_user");
-        setAuthEmail(null);
-        setProfile(null);
-        setLoading(false);
-        return;
-      }
+      if (!supabase) { setAuthEmail(null); setProfile(null); setLoading(false); return; }
+      if (!session) { localStorage.removeItem("ps_user"); setAuthEmail(null); setProfile(null); setLoading(false); return; }
 
       const email = session.user.email ?? null;
       setAuthEmail(email);
 
-      // Only trust cache if it belongs to the same user and has role flags
       let cached = readCache();
       const cacheLooksWrong =
         !cached ||
@@ -87,33 +59,18 @@ export default function SiteHeader(): JSX.Element {
         cached.operator_admin == null;
 
       if (cacheLooksWrong) {
-        // fetch from DB (by id, fallback by email)
         let row: PsUser | null = null;
-
-        const byId = await supabase
-          .from("users")
-          .select("first_name, site_admin, operator_admin, operator_id, email")
-          .eq("id", session.user.id)
-          .maybeSingle();
-
+        const byId = await supabase.from("users").select("first_name, site_admin, operator_admin, operator_id, email").eq("id", session.user.id).maybeSingle();
         if (!byId.error && byId.data) {
           row = byId.data as PsUser;
         } else if (email) {
-          const byEmail = await supabase
-            .from("users")
-            .select("first_name, site_admin, operator_admin, operator_id, email")
-            .eq("email", email)
-            .maybeSingle();
+          const byEmail = await supabase.from("users").select("first_name, site_admin, operator_admin, operator_id, email").eq("email", email).maybeSingle();
           if (!byEmail.error && byEmail.data) row = byEmail.data as PsUser;
         }
 
         const meta = session.user.user_metadata || {};
         const firstName =
-          row?.first_name ||
-          meta.first_name ||
-          meta.given_name ||
-          (email ? email.split("@")[0] : "") ||
-          null;
+          row?.first_name || meta.first_name || meta.given_name || (email ? email.split("@")[0] : "") || null;
 
         const payload: PsUser = {
           email,
@@ -135,33 +92,20 @@ export default function SiteHeader(): JSX.Element {
 
   React.useEffect(() => {
     let alive = true;
-
     (async () => {
       setLoading(true);
-
-      if (!supabase) {
-        // No envs: just show basic nav
-        setAuthEmail(null);
-        setProfile(null);
-        setLoading(false);
-        return;
-      }
-
+      if (!supabase) { setAuthEmail(null); setProfile(null); setLoading(false); return; }
       const { data } = await supabase.auth.getSession();
       if (!alive) return;
       await recomputeFromSession(data?.session ?? null);
     })();
 
-    if (!supabase) return; // nothing else to listen to
-
+    if (!supabase) return;
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       await recomputeFromSession(session);
     });
 
-    return () => {
-      alive = false;
-      sub.subscription.unsubscribe();
-    };
+    return () => { alive = false; sub.subscription.unsubscribe(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, supabase, recomputeFromSession]);
 
@@ -172,38 +116,41 @@ export default function SiteHeader(): JSX.Element {
 
   /* ======================= UI (visual-only changes) ======================= */
   return (
-    <header className="ps-header border-b">
-      {/* Header-only theme shim (uses global tokens if present, else safe fallbacks) */}
+    <header className="ps-header">
+      {/* Header theme — full-bleed solid background, no grey/white edges */}
       <style jsx global>{`
         .ps-header {
-          --bg:             var(--bg, #0f1a2a);
-          --card:           var(--card, #15243a);
-          --border:         var(--border, #20334d);
-          --text:           var(--text, #eaf2ff);
-          --muted:          var(--muted, #a3b3cc);
-          --accent:         var(--accent, #2a6cd6);
-          --accent-contrast:var(--accent-contrast, #ffffff);
-          --radius:         var(--radius, 14px);
+          --bg:              var(--bg, #0f1a2a);
+          --border:          var(--border, #20334d);
+          --text:            var(--text, #eaf2ff);
+          --muted:           var(--muted, #a3b3cc);
+          --accent:          var(--accent, #2a6cd6);
+          --accent-contrast: var(--accent-contrast, #ffffff);
+          --radius:          var(--radius, 14px);
+          --nav-bg:          color-mix(in oklab, var(--bg) 88%, white); /* ~one shade lighter than bg */
+
+          width: 100%;
+          background: var(--nav-bg);
           color: var(--text);
-          border-color: var(--border);
-          background: transparent;
+          border-bottom: 1px solid color-mix(in oklab, var(--bg) 70%, white 0%);
         }
-        .ps-header .bar {
-          background: rgba(15,26,42,0.65); /* translucent over dark hero */
-          backdrop-filter: blur(6px);
-        }
+
+        /* Center content; header background stays full width */
+        .ps-header .bar { max-width: 72rem; margin: 0 auto; padding: 0.75rem 1.5rem; }
+
+        /* Brand + pills */
         .ps-header a.brand { color: var(--text); text-decoration: none; }
         .ps-header .pill {
           border-radius: 9999px;
           padding: .375rem .75rem;
           font-size: .85rem;
           line-height: 1.2;
-          border: 1px solid var(--border);
+          border: 1px solid color-mix(in oklab, var(--bg) 60%, white 0%);
           color: var(--text);
           background: transparent;
           transition: background-color .15s ease, opacity .15s ease;
         }
-        .ps-header .pill:hover { background: rgba(255,255,255,.06); }
+        .ps-header .pill:hover { background: color-mix(in oklab, var(--bg) 80%, white 0%); }
         .ps-header .pill.active {
           background: var(--accent);
           color: var(--accent-contrast);
@@ -211,45 +158,32 @@ export default function SiteHeader(): JSX.Element {
         }
       `}</style>
 
-      <div className="bar mx-auto max-w-6xl px-6 py-3 flex items-center justify-between">
+      <div className="bar flex items-center justify-between">
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
-          <Link href="/" className="brand font-semibold">
-            Pace Shuttles
-          </Link>
+          <Link href="/" className="brand font-semibold">Pace Shuttles</Link>
         </div>
 
         {/* Right: Pills */}
-        <div className="flex items-center gap-2">
-          <Link href="/" className="pill active text-sm">
-            Home
-          </Link>
+        <nav className="flex items-center gap-2">
+          <Link href="/" className="pill active text-sm">Home</Link>
 
-          {/* Operator Admin — show for operator_admin OR site_admin */}
           {(profile?.operator_admin || profile?.site_admin) ? (
-            <Link href="/operator/admin" className="pill text-sm">
-              Operator Admin
-            </Link>
+            <Link href="/operator/admin" className="pill text-sm">Operator Admin</Link>
           ) : null}
 
-          {/* Site Admin */}
           {profile?.site_admin ? (
-            <Link href="/admin" className="pill text-sm">
-              Admin
-            </Link>
+            <Link href="/admin" className="pill text-sm">Admin</Link>
           ) : null}
 
-          {/* Account/Login */}
           {authEmail ? (
             <Link href="/account" className="pill active text-sm" title={authEmail}>
               {firstName || "Account"}
             </Link>
           ) : (
-            <Link href="/login" className="pill active text-sm">
-              Login
-            </Link>
+            <Link href="/login" className="pill active text-sm">Login</Link>
           )}
-        </div>
+        </nav>
       </div>
     </header>
   );
