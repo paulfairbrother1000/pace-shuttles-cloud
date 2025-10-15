@@ -1064,7 +1064,7 @@ export default function Page() {
 
               <section className="space-y-4">
                 <p className="text-lg">
-                  <strong>Pace Shuttle</strong> offers fractional luxury charter and shuttle services to world-class,
+                  <strong>Pace Shuttles</strong> offers fractional luxury charter and shuttle services to world-class,
                   often inaccessible, luxury destinations.
                 </p>
               </section>
