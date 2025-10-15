@@ -496,8 +496,8 @@ export default function PayPage(): JSX.Element {
           </a>.
         </p>
 
-        {/* Keep the original helper CSS (unchanged) */}
-        <style jsx global>{`
+        {/* Keep the original helper CSS (unchanged) — switched to plain <style> to avoid nested styled-jsx */}
+        <style>{`
           .input { border:1px solid #e5e7eb; border-radius:.75rem; padding:.6rem .9rem; width:100%; }
           .btn-primary { border-radius: .75rem; background:#000; color:#fff; padding:.5rem 1rem; font-size:.9rem; }
           .btn-primary[disabled] { opacity:.5; cursor:not-allowed; }

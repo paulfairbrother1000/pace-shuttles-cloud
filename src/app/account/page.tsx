@@ -236,11 +236,39 @@ export default function AccountPage() {
     })();
   }, []);
 
-  if (loading) return <div className="p-6">Loading…</div>;
-  if (err) return <div className="p-6 text-red-600">{err}</div>;
+  if (loading) return <div className="p-6 text-white ps-screen">Loading…</div>;
+  if (err) return <div className="p-6 text-[var(--ps-danger)] ps-screen">{err}</div>;
 
   const showCrew = crewOpsEnabled() && !!ident?.isCrew;
-  return showCrew ? <CrewDashboard /> : <BookingHistory />;
+  return (
+    <div className="ps-screen min-h-[100dvh]">
+      {showCrew ? <CrewDashboard /> : <BookingHistory />}
+      <style jsx global>{`
+        :root {
+          --ps-bg: #0b1629;
+          --ps-card: #121f35;
+          --ps-border: #24314e;
+          --ps-text: #f7fafc;
+          --ps-text-muted: #c6d1ea;
+          --ps-accent: #9ec2ff;
+          --ps-accent-strong: #c7daff;
+          --ps-danger: #fda4af;
+          --ps-table-head: #1a2945;
+          --ps-table-row: #0f1b31;
+        }
+        .ps-screen { background: var(--ps-bg); color: var(--ps-text); }
+        .ps-card { background: var(--ps-card); border: 1px solid var(--ps-border); border-radius: 1rem; }
+        .ps-chip { background:#223258; color:#cfe0ff; border-radius:.5rem; padding:.2rem .5rem; }
+        .ps-btn { border-radius:.5rem; border:1px solid var(--ps-border); padding:.45rem .8rem; }
+        .ps-btn-primary { background:#2d5cf6; color:#fff; border:0; }
+        .ps-link { color: var(--ps-accent); }
+        table.ps-table { width:100%; font-size:.9rem; }
+        table.ps-table thead { background: var(--ps-table-head); color: var(--ps-text); }
+        table.ps-table th, table.ps-table td { padding:.75rem; }
+        table.ps-table tbody tr { background: var(--ps-card); border-top: 1px solid var(--ps-border); }
+      `}</style>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -379,8 +407,8 @@ function CrewDashboard() {
     location.reload();
   }
 
-  if (loading) return <div className="p-6">Loading…</div>;
-  if (err) return <div className="p-6" style={{ color: "#dc2626" }}>{err}</div>;
+  if (loading) return <div className="p-6 text-white">Loading…</div>;
+  if (err) return <div className="p-6" style={{ color: "var(--ps-danger)" }}>{err}</div>;
 
   const displayName = profile ? `${profile.first} ${profile.last}`.trim() : "Crew Member";
   const role = profile?.role ?? "Crew";
@@ -389,37 +417,37 @@ function CrewDashboard() {
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-8">
       {/* Header */}
-      <div className="flex items-center gap-4">
-        <img src={avatar} alt="Crew photo" className="w-16 h-16 rounded-full object-cover border" />
-        <div>
+      <div className="flex items-center gap-4 ps-card">
+        <img src={avatar} alt="Crew photo" className="w-16 h-16 rounded-full object-cover border border-[var(--ps-border)]" />
+        <div className="py-4">
           <div className="text-xl font-semibold">{displayName}</div>
-          <div className="text-sm opacity-70">{role}</div>
+          <div className="text-sm text-[var(--ps-text-muted)]">{role}</div>
         </div>
       </div>
 
       {/* Upcoming */}
-      <section>
-        <h2 className="text-xl font-medium mb-2">Upcoming</h2>
-        <div className="rounded border overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50">
+      <section className="ps-card p-0 overflow-hidden">
+        <h2 className="text-xl font-medium mb-2 px-4 pt-4">Upcoming</h2>
+        <div className="overflow-x-auto">
+          <table className="ps-table">
+            <thead>
               <tr>
-                <th className="text-left p-3">Pick up</th>
-                <th className="text-left p-3">Destination</th>
-                <th className="text-left p-3">Date</th>
-                <th className="text-left p-3">Time</th>
-                <th className="text-left p-3">Vehicle</th>
-                <th className="text-left p-3">Passengers</th>
-                <th className="text-left p-3">Lock</th>
-                <th className="text-left p-3">Assignment</th>
-                <th className="text-right p-3">Actions</th>
+                <th className="text-left">Pick up</th>
+                <th className="text-left">Destination</th>
+                <th className="text-left">Date</th>
+                <th className="text-left">Time</th>
+                <th className="text-left">Vehicle</th>
+                <th className="text-left">Passengers</th>
+                <th className="text-left">Lock</th>
+                <th className="text-left">Assignment</th>
+                <th className="text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {upcoming.length === 0 && (
                 <tr>
                   <td className="p-4" colSpan={9}>
-                    No upcoming assignments.
+                    <span className="text-[var(--ps-text-muted)]">No upcoming assignments.</span>
                   </td>
                 </tr>
               )}
@@ -428,31 +456,28 @@ function CrewDashboard() {
                 const k = `${r.journey_id}_${r.vehicle_id}`;
                 const pax = Number.isFinite(paxByKey[k]) ? paxByKey[k] : "—";
                 return (
-                  <tr key={r.assignment_id} className="border-t">
-                    <td className="p-3">{r.pickup_name ?? "—"}</td>
-                    <td className="p-3">{r.destination_name ?? "—"}</td>
-                    <td className="p-3">{date}</td>
-                    <td className="p-3">{time}</td>
-                    <td className="p-3">
-                      {r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}
-                    </td>
-                    <td className="p-3">{pax}</td>
-                    <td className="p-3">{t24Badge(r.departure_ts)}</td>
-                    <td className="p-3">{statusLabel(r.status_simple)}</td>
-                    <td className="p-3 text-right">
+                  <tr key={r.assignment_id}>
+                    <td>{r.pickup_name ?? "—"}</td>
+                    <td>{r.destination_name ?? "—"}</td>
+                    <td>{date}</td>
+                    <td>{time}</td>
+                    <td>{r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}</td>
+                    <td>{pax}</td>
+                    <td>{t24Badge(r.departure_ts)}</td>
+                    <td>{statusLabel(r.status_simple)}</td>
+                    <td className="text-right">
                       <div className="flex gap-2 justify-end">
                         {r.status_simple !== "confirmed" ? (
                           <>
                             <button
                               onClick={() => act("confirm", r.assignment_id)}
-                              className="px-3 py-1 rounded"
-                              style={{ background: "black", color: "white" }}
+                              className="ps-btn ps-btn-primary"
                             >
                               Accept
                             </button>
                             <button
                               onClick={() => act("decline", r.assignment_id)}
-                              className="px-3 py-1 rounded border"
+                              className="ps-btn"
                             >
                               Decline
                             </button>
@@ -460,7 +485,7 @@ function CrewDashboard() {
                         ) : (
                           <a
                             href={`/crew/manifest/${r.assignment_id}`}
-                            className="px-3 py-1 rounded border"
+                            className="ps-btn"
                             title="View manifest"
                           >
                             Manifest
@@ -477,30 +502,30 @@ function CrewDashboard() {
       </section>
 
       {/* History */}
-      <section>
+      <section className="ps-card p-4">
         <h2 className="text-xl font-medium mb-2">History</h2>
-        <div className="border rounded divide-y">
+        <div className="border border-[var(--ps-border)] rounded overflow-hidden divide-y divide-[var(--ps-border)]">
           {history.length === 0 && (
-            <div className="p-4 text-sm">No completed journeys yet.</div>
+            <div className="p-4 text-sm text-[var(--ps-text-muted)]">No completed journeys yet.</div>
           )}
           {history.map((r) => (
             <div
               key={r.assignment_id}
-              className="p-4 grid grid-cols-1 md:grid-cols-5 gap-3 items-center"
+              className="p-4 grid grid-cols-1 md:grid-cols-5 gap-3 items-center bg-[var(--ps-card)]"
             >
               <div className="md:col-span-3">
                 <div className="font-medium">
                   {r.pickup_name ?? "—"} → {r.destination_name ?? "—"}
                 </div>
-                <div className="text-xs opacity-70">
+                <div className="text-xs text-[var(--ps-text-muted)]">
                   {r.departure_ts ? new Date(r.departure_ts).toLocaleString() : "—"} •{" "}
                   {r.vehicle_name ?? `vehicle #${r.vehicle_id.slice(0, 8)}`}
                 </div>
               </div>
               <div>
-                <span className="text-xs px-2 py-1 rounded bg-gray-100">complete</span>
+                <span className="ps-chip">complete</span>
               </div>
-              <div className="text-xs opacity-70">Tips/Ratings: —</div>
+              <div className="text-xs text-[var(--ps-text-muted)]">Tips/Ratings: —</div>
             </div>
           ))}
         </div>
@@ -641,7 +666,7 @@ function BookingHistory() {
     return (
       <>
         <div className="font-medium">{r.route_name || "Journey"}</div>
-        {legs ? <div className="text-neutral-600">{legs}</div> : null}
+        {legs ? <div className="text-[var(--ps-text-muted)]">{legs}</div> : null}
       </>
     );
   }
@@ -656,11 +681,11 @@ function BookingHistory() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <h1 className="text-xl font-semibold">Your account</h1>
 
       {/* Header */}
-      <section className="rounded border p-4">
+      <section className="ps-card p-4">
         <p>
           <strong>Name:</strong> {header.name || "—"}
         </p>
@@ -679,60 +704,58 @@ function BookingHistory() {
       </section>
 
       <div className="flex gap-3">
-        <button onClick={refreshHeaderCache} className="rounded px-3 py-2 border">
+        <button onClick={refreshHeaderCache} className="ps-btn">
           Refresh header cache
         </button>
-        <button onClick={signOut} className="rounded px-3 py-2 border">
+        <button onClick={signOut} className="ps-btn">
           Sign out
         </button>
       </div>
 
       {/* Transaction history */}
-      <section className="rounded border p-4">
+      <section className="ps-card p-4">
         <h2 className="text-lg font-semibold mb-3">Transaction History</h2>
 
-        {historyMsg && <p className="text-sm text-red-600 mb-2">{historyMsg}</p>}
+        {historyMsg && <p className="text-sm text-[var(--ps-danger)] mb-2">{historyMsg}</p>}
         {loadingHistory ? (
-          <div className="text-sm text-neutral-600">Loading…</div>
+          <div className="text-sm text-[var(--ps-text-muted)]">Loading…</div>
         ) : history.length === 0 ? (
-          <div className="text-sm text-neutral-600">No bookings yet.</div>
+          <div className="text-sm text-[var(--ps-text-muted)]">No bookings yet.</div>
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-neutral-50">
+              <table className="ps-table">
+                <thead>
                   <tr>
-                    <th className="text-left p-3">Booking date</th>
-                    <th className="text-left p-3">Journey</th>
-                    <th className="text-left p-3">Type</th>
-                    <th className="text-left p-3">Date</th>
-                    <th className="text-left p-3">Seats</th>
-                    <th className="text-left p-3">Amount</th>
-                    <th className="text-left p-3">Status</th>
+                    <th className="text-left">Booking date</th>
+                    <th className="text-left">Journey</th>
+                    <th className="text-left">Type</th>
+                    <th className="text-left">Date</th>
+                    <th className="text-left">Seats</th>
+                    <th className="text-left">Amount</th>
+                    <th className="text-left">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {paged.map((r, i) => (
-                    <tr key={`${r.order_id}-${i}`} className="border-t">
-                      <td className="p-3">
-                        {new Date(r.booked_at).toLocaleDateString("en-GB")}
-                      </td>
-                      <td className="p-3">{renderJourney(r)}</td>
-                      <td className="p-3">
+                    <tr key={`${r.order_id}-${i}`}>
+                      <td>{new Date(r.booked_at).toLocaleDateString("en-GB")}</td>
+                      <td>{renderJourney(r)}</td>
+                      <td>
                         {r.transport_type
                           ? r.transport_type
                               .replace(/_/g, " ")
                               .replace(/\b\w/g, (s) => s.toUpperCase())
                           : "—"}
                       </td>
-                      <td className="p-3">
+                      <td>
                         {r.departure_date
                           ? new Date(`${r.departure_date}T12:00:00`).toLocaleDateString("en-GB")
                           : "—"}
                       </td>
-                      <td className="p-3">{r.qty ?? "—"}</td>
-                      <td className="p-3">{renderAmount(r)}</td>
-                      <td className="p-3">{renderStatus(r)}</td>
+                      <td>{r.qty ?? "—"}</td>
+                      <td>{renderAmount(r)}</td>
+                      <td>{renderStatus(r)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -743,7 +766,7 @@ function BookingHistory() {
             {history.length > pageSize && (
               <div className="flex items-center gap-3 mt-3">
                 <button
-                  className="px-3 py-1 border rounded disabled:opacity-50"
+                  className="ps-btn disabled:opacity-50"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={page === 1}
                 >
@@ -753,7 +776,7 @@ function BookingHistory() {
                   Page {page} of {Math.ceil(history.length / pageSize)}
                 </div>
                 <button
-                  className="px-3 py-1 border rounded disabled:opacity-50"
+                  className="ps-btn disabled:opacity-50"
                   onClick={() =>
                     setPage((p) => Math.min(Math.ceil(history.length / pageSize), p + 1))
                   }

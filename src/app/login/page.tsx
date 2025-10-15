@@ -1,3 +1,4 @@
+// src/app/login/page.tsx
 "use client";
 
 import * as React from "react";
@@ -176,147 +177,201 @@ export default function LoginPage(): JSX.Element {
 }
 
   return (
-    <div className="mx-auto max-w-md px-4 py-10">
-      <h1 className="text-2xl font-semibold">
-        {mode === "login" ? "Log in" : "Create an account"}
-      </h1>
+    <main className="ps-theme min-h-screen bg-app text-app">
+      {/* Scoped brand theme */}
+      <style jsx global>{`
+        .ps-theme{
+          --bg:#0f1a2a;            /* page background */
+          --card:#1a2a45;          /* form blocks */
+          --border:#233754;        /* borders */
+          --text:#eaf2ff;          /* main text */
+          --muted:#a9b6cc;         /* secondary text */
+          --link:#9fd2ff;          /* bright links for contrast */
+          --primary:#2d6cff;       /* buttons */
+          --primary-press:#2559d1;
+          --radius:14px;
+          --shadow:0 8px 24px rgba(0,0,0,.35);
+        }
+        .bg-app{ background:var(--bg); }
+        .text-app{ color:var(--text); }
 
-      <div className="mt-3 text-sm">
-        {mode === "login" ? (
-          <>
-            Don’t have an account?{" "}
-            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("signup"); setMsg(null); }}>
-              Create one
+        /* Make existing neutrals readable on dark */
+        .ps-theme .text-neutral-700,
+        .ps-theme .text-neutral-600,
+        .ps-theme .text-gray-600,
+        .ps-theme .text-gray-500 { color: var(--muted) !important; }
+
+        .ps-theme .rounded-lg, .ps-theme .rounded-2xl { border-radius: var(--radius); }
+        .ps-theme .border { border-color: var(--border) !important; }
+        .ps-theme .bg-white, .ps-theme .bg-neutral-50 { background: var(--card) !important; }
+
+        /* Inputs */
+        .ps-theme input {
+          background: #0f1a2a;
+          color: var(--text);
+          border-color: var(--border);
+        }
+        .ps-theme input::placeholder { color: #7e8daa; }
+
+        /* Buttons */
+        .ps-theme .bg-neutral-900 { background: var(--primary) !important; }
+        .ps-theme .bg-neutral-900:hover { background: var(--primary-press) !important; }
+
+        /* Message colors */
+        .ps-theme .text-red-600 { color:#ffb4b4 !important; }
+
+        /* Links — ensure bright, not default blue */
+        .ps-theme .text-blue-600,
+        .ps-theme a { color: var(--link) !important; }
+        .ps-theme .text-blue-600:hover,
+        .ps-theme a:hover { opacity:.9; }
+
+        /* Headings */
+        .ps-theme h1 { color: var(--text); }
+      `}</style>
+
+      <div className="mx-auto max-w-md px-4 py-10">
+        <h1 className="text-2xl font-semibold">
+          {mode === "login" ? "Log in" : "Create an account"}
+        </h1>
+
+        <div className="mt-3 text-sm">
+          {mode === "login" ? (
+            <>
+              Don’t have an account?{" "}
+              <button type="button" className="text-blue-600 underline" onClick={() => { setMode("signup"); setMsg(null); }}>
+                Create one
+              </button>
+            </>
+          ) : (
+            <>
+              Already have an account?{" "}
+              <button type="button" className="text-blue-600 underline" onClick={() => { setMode("login"); setMsg(null); }}>
+                Log in
+              </button>
+            </>
+          )}
+        </div>
+
+        {loading ? (
+          <p className="mt-4 text-neutral-700">Checking session…</p>
+        ) : mode === "login" ? (
+          <form className="mt-6 space-y-4" onSubmit={onLogin}>
+            <label className="block">
+              <span className="text-sm text-neutral-700">Email</span>
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm text-neutral-700">Password</span>
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            {msg && <p className="text-sm text-red-600">{msg}</p>}
+            <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
+              {working ? "Signing in…" : "Log in"}
             </button>
-          </>
+          </form>
         ) : (
-          <>
-            Already have an account?{" "}
-            <button type="button" className="text-blue-600 underline" onClick={() => { setMode("login"); setMsg(null); }}>
-              Log in
+          <form className="mt-6 space-y-4" onSubmit={onSignup}>
+            <div className="grid md:grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-neutral-700">First name</span>
+                <input
+                  className="mt-1 w-full rounded-lg border px-3 py-2"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm text-neutral-700">Last name</span>
+                <input
+                  className="mt-1 w-full rounded-lg border px-3 py-2"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  required
+                />
+              </label>
+            </div>
+
+            <label className="block">
+              <span className="text-sm text-neutral-700">Email</span>
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </label>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-sm text-neutral-700">Mobile</span>
+                <input
+                  className="mt-1 w-full rounded-lg border px-3 py-2"
+                  value={mobile}
+                  onChange={(e) => setMobile(e.target.value)}
+                  inputMode="numeric"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm text-neutral-700">Country code</span>
+                <input
+                  className="mt-1 w-full rounded-lg border px-3 py-2"
+                  value={countryCode}
+                  onChange={(e) => setCountryCode(e.target.value)}
+                  inputMode="numeric"
+                />
+              </label>
+            </div>
+
+            <label className="block">
+              <span className="text-sm text-neutral-700">Password</span>
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-sm text-neutral-700">Confirm password</span>
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                type="password"
+                required
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+
+            {msg && <p className="text-sm text-red-600">{msg}</p>}
+
+            <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
+              {working ? "Creating…" : "Create account"}
             </button>
-          </>
+          </form>
         )}
       </div>
-
-      {loading ? (
-        <p className="mt-4 text-neutral-700">Checking session…</p>
-      ) : mode === "login" ? (
-        <form className="mt-6 space-y-4" onSubmit={onLogin}>
-          <label className="block">
-            <span className="text-sm text-neutral-700">Email</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm text-neutral-700">Password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          {msg && <p className="text-sm text-red-600">{msg}</p>}
-          <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
-            {working ? "Signing in…" : "Log in"}
-          </button>
-        </form>
-      ) : (
-        <form className="mt-6 space-y-4" onSubmit={onSignup}>
-          <div className="grid md:grid-cols-2 gap-4">
-            <label className="block">
-              <span className="text-sm text-neutral-700">First name</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                required
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm text-neutral-700">Last name</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                required
-              />
-            </label>
-          </div>
-
-          <label className="block">
-            <span className="text-sm text-neutral-700">Email</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
-          </label>
-
-          <div className="grid md:grid-cols-2 gap-4">
-            <label className="block">
-              <span className="text-sm text-neutral-700">Mobile</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={mobile}
-                onChange={(e) => setMobile(e.target.value)}
-                inputMode="numeric"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm text-neutral-700">Country code</span>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2"
-                value={countryCode}
-                onChange={(e) => setCountryCode(e.target.value)}
-                inputMode="numeric"
-              />
-            </label>
-          </div>
-
-          <label className="block">
-            <span className="text-sm text-neutral-700">Password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm text-neutral-700">Confirm password</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              type="password"
-              required
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
-
-          {msg && <p className="text-sm text-red-600">{msg}</p>}
-
-          <button className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-50" disabled={working}>
-            {working ? "Creating…" : "Create account"}
-          </button>
-        </form>
-      )}
-    </div>
+    </main>
   );
 }
