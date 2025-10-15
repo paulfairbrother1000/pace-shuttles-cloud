@@ -102,7 +102,7 @@ function Banner({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- Image URL normalizer (for Supabase public storage) ---------- */
+/* ---------- Image URL normalizer ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -112,34 +112,27 @@ function publicImage(input?: string | null): string | undefined {
   const bucket = (process.env.NEXT_PUBLIC_PUBLIC_BUCKET || "images").replace(/^\/+|\/+$/g, "");
   if (!supaHost) return undefined;
 
-  // If it's already an absolute URL...
   if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      const isLocal =
-        u.hostname === "localhost" ||
-        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(u.hostname);
-
-      // If it's already pointing at a public object path, normalize it to our host and add cache-busting
+      const isLocal = u.hostname === "localhost" || /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(u.hostname);
       const publicPrefix = "/storage/v1/object/public/";
       if (u.pathname.startsWith(publicPrefix)) {
-        const rest = u.pathname.slice(publicPrefix.length); // everything after the prefix
+        const rest = u.pathname.slice(publicPrefix.length);
         return (isLocal || u.hostname !== supaHost)
           ? `https://${supaHost}${publicPrefix}${rest}?v=5`
           : `${raw}?v=5`;
       }
-      return raw; // some other external URL
+      return raw;
     } catch {
       return undefined;
     }
   }
 
-  // If it's a public storage path (no origin)
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
   }
 
-  // Otherwise treat it as a bucket key like "images/foo.jpg" or "foo.jpg"
   const key = raw.replace(/^\/+/, "");
   const normalizedKey = key.startsWith(`${bucket}/`) ? key : `${bucket}/${key}`;
   return `https://${supaHost}/storage/v1/object/public/${normalizedKey}?v=5`;
@@ -209,7 +202,7 @@ function makeDepartureISO(dateISO: string, pickup_time: string | null | undefine
   try { return new Date(`${dateISO}T${pickup_time}:00`).toISOString(); } catch { return null; }
 }
 
-/* ---------- Types hydrated from the server ---------- */
+/* ---------- Types ---------- */
 type Country = { id: string; name: string; description?: string | null; picture_url?: string | null };
 type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
 type Destination = { id: string; name: string; country_id: string | null; picture_url?: string | null; description?: string | null; url?: string | null };
@@ -286,8 +279,8 @@ type HydrateCountry = {
   assignments: Assignment[];
   vehicles: Vehicle[];
   orders: Order[];
-  sold_out_keys: string[];                      // `${route_id}_${ymd}`
-  remaining_by_key_db: Record<string, number>;  // `${route_id}_${ymd}` -> remaining
+  sold_out_keys: string[];
+  remaining_by_key_db: Record<string, number>;
 };
 
 export default function Page() {
@@ -335,6 +328,35 @@ export default function Page() {
         table.ps { width: 100%; border-collapse: separate; border-spacing: 0; }
         table.ps thead { background: rgba(255,255,255,0.04); }
         table.ps th, table.ps td { padding: .75rem; border-bottom: 1px solid var(--border); }
+
+        /* ------------------------------ */
+        /* TilePicker SKIN (no component changes required) */
+        /* Wrap each <TilePicker/> with .tilepicker-skin in JSX below */
+        /* ------------------------------ */
+        .tilepicker-skin .tp-grid > * button,
+        .tilepicker-skin button[role="tab"],
+        .tilepicker-skin button {
+          background: var(--card) !important;
+          color: var(--text) !important;
+          border-radius: var(--radius) !important;
+          box-shadow: 0 0 0 1px var(--border) inset !important;
+          transition: transform .08s ease, box-shadow .15s ease;
+        }
+        .tilepicker-skin button:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--border) inset, var(--shadow); }
+        .tilepicker-skin .tp-title,
+        .tilepicker-skin h3 { color: var(--text) !important; font-weight: 700; }
+        .tilepicker-skin .tp-desc,
+        .tilepicker-skin p, .tilepicker-skin .muted { color: var(--muted) !important; }
+        .tilepicker-skin .img-wrap { background: var(--card); border-radius: calc(var(--radius) - 4px); overflow: hidden; }
+        .tilepicker-skin img { object-fit: cover; }
+        /* If TilePicker uses generic .rounded-2xl + border + bg-white, force them to our theme */
+        .tilepicker-skin .rounded-2xl { border-radius: var(--radius) !important; }
+        .tilepicker-skin .border { border-color: var(--border) !important; }
+        .tilepicker-skin .bg-white, .tilepicker-skin .bg-neutral-50 { background: var(--card) !important; }
+        .tilepicker-skin .text-neutral-600 { color: var(--muted) !important; }
+
+        /* JourneyCard subtle text normalisation (if it renders inside this page) */
+        .ps-theme .journey-subtle, .ps-theme .journey-muted { color: var(--muted); }
       `}</style>
 
       {/* ===== SECTION 1: State + hydrate loader ===== */}
@@ -1257,47 +1279,55 @@ export default function Page() {
                   </div>
                 )}
 
+                {/* DESTINATIONS */}
                 {activePane === "destination" && (
-                  <TilePicker
-                    title="Choose a destination"
-                    items={destinations
-                      .filter((d) => allowedDestIds.has(d.id) && facetDestIds.has(d.id))
-                      .map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
-                    onChoose={(id) => { setFilterDestinationId(id); setActivePane("none"); }}
-                    selectedId={filterDestinationId}
-                    includeAll={false}
-                  />
+                  <div className="tilepicker-skin">
+                    <TilePicker
+                      title="Choose a destination"
+                      items={destinations
+                        .filter((d) => allowedDestIds.has(d.id) && facetDestIds.has(d.id))
+                        .map((d) => ({ id: d.id, name: d.name, description: d.description ?? "", image: publicImage(d.picture_url) }))}
+                      onChoose={(id) => { setFilterDestinationId(id); setActivePane("none"); }}
+                      selectedId={filterDestinationId}
+                      includeAll={false}
+                    />
+                  </div>
                 )}
 
+                {/* PICKUPS */}
                 {activePane === "pickup" && showPickupFacet && (
-                  <TilePicker
-                    title="Choose a pick-up point"
-                    items={pickups
-                      .filter((p) => facetPickupIds.has(p.id))
-                      .map((p) => ({ id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url) }))}
-                    onChoose={(id) => { setFilterPickupId(id); setActivePane("none"); }}
-                    selectedId={filterPickupId}
-                    includeAll={false}
-                  />
+                  <div className="tilepicker-skin">
+                    <TilePicker
+                      title="Choose a pick-up point"
+                      items={pickups
+                        .filter((p) => facetPickupIds.has(p.id))
+                        .map((p) => ({ id: p.id, name: p.name, description: p.description ?? "", image: publicImage(p.picture_url) }))}
+                      onChoose={(id) => { setFilterPickupId(id); setActivePane("none"); }}
+                      selectedId={filterPickupId}
+                      includeAll={false}
+                    />
+                  </div>
                 )}
 
-                {/* TYPE: build from facetTypeNames with graceful fallback (now with fallback image) */}
+                {/* VEHICLE TYPE */}
                 {activePane === "type" && showTypeFacet && (
-                  <TilePicker
-                    title="Choose a vehicle type"
-                    items={Array.from(facetTypeNames).map((normId) => {
-                      const t = transportTypeByNormName[normId];
-                      return {
-                        id: normId,
-                        name: t?.name ?? titleCase(normId),
-                        description: t?.description ?? "",
-                        image: t ? typeImgSrc(t) : firstImageForType(normId),
-                      };
-                    })}
-                    onChoose={(normId) => { setFilterTypeName(normId); setActivePane("none"); }}
-                    selectedId={filterTypeName ?? undefined}
-                    includeAll={false}
-                  />
+                  <div className="tilepicker-skin">
+                    <TilePicker
+                      title="Choose a vehicle type"
+                      items={Array.from(facetTypeNames).map((normId) => {
+                        const t = transportTypeByNormName[normId];
+                        return {
+                          id: normId,
+                          name: t?.name ?? titleCase(normId),
+                          description: t?.description ?? "",
+                          image: t ? typeImgSrc(t) : firstImageForType(normId),
+                        };
+                      })}
+                      onChoose={(normId) => { setFilterTypeName(normId); setActivePane("none"); }}
+                      selectedId={filterTypeName ?? undefined}
+                      includeAll={false}
+                    />
+                  </div>
                 )}
               </section>
 
@@ -1346,7 +1376,6 @@ export default function Page() {
                           onSeatsChange={(n) => handleSeatChange(r.key, n)}
                           onContinue={() => handleContinue(r.key, r.route.id)}
                           continueDisabled={false}
-                          /* NEW: make images clickable */
                           onOpenPickup={() => openPickup(pu?.id)}
                           onOpenDestination={() => openDestination(de?.id)}
                         />
@@ -1356,7 +1385,7 @@ export default function Page() {
                 )}
               </section>
 
-              {/* Desktop/tablet table latest changes */}
+              {/* Desktop/tablet table */}
               <section className="tile tile-border overflow-hidden hidden md:block">
                 {loading ? (
                   <div className="p-4">Loading…</div>
