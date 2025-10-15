@@ -330,7 +330,7 @@ export default function Page() {
 
   /* Headings (ensures TilePicker titles are bold & white) */
   .heading { font-weight: 700; letter-spacing: .2px; }
-  .ps-theme h1, .ps-theme h2, .ps-theme h3, .ps-theme h4 { color: var(--text); }
+  .ps-theme h1, .ps-theme h2, .ps-theme h3, .ps-theme h4 { color: var(--text) !important; }
   .ps-theme h3 { font-weight: 700; }
 
   .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
@@ -853,8 +853,8 @@ export default function Page() {
 
                 const unitMinor =
                   (json.unit_cents ?? null) != null
-                    ? Number(json.unit_cents)
-                    : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
+                    ? Number(json.unit_cents)                                  // already cents
+                    : Number(json.perSeatAllInC ?? 0);                         // already cents (no *100)
 
                 if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
                   setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
@@ -906,7 +906,9 @@ export default function Page() {
               setQuoteErrByRow((p) => ({ ...p, [rowKey]: `${json.error_code}${extra}` }));
               return;
             }
-            const unitMinor = (json.unit_cents ?? null) != null ? Number(json.unit_cents) : Math.round(Number(json.perSeatAllInC ?? 0) * 100);
+            const unitMinor = (json.unit_cents ?? null) != null
+              ? Number(json.unit_cents)                                  // already cents
+              : Number(json.perSeatAllInC ?? 0);                         // already cents (no *100)
             if (json.max_qty_at_price != null && n > json.max_qty_at_price) {
               setQuoteErrByRow((p) => ({ ...p, [rowKey]: `Only ${json.max_qty_at_price} seats available at this price.` }));
             } else {
@@ -1372,6 +1374,10 @@ export default function Page() {
 
                     const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
 
+                    // HIDE rows that cannot be quoted or aren’t available
+                    if (err) return null;
+                    if (q && q.availability && q.availability !== "available") return null;
+
                     return (
                       <div key={r.key} className="space-y-2">
                         <JourneyCard
@@ -1439,6 +1445,10 @@ export default function Page() {
 
                         const overMaxAtPrice = q?.max_qty_at_price != null ? selected > q.max_qty_at_price : false;
                         const showLowSeats = remaining > 0 && remaining <= 5;
+
+                        // HIDE rows that cannot be quoted or aren’t available
+                        if (err) return null;
+                        if (q && q.availability && q.availability !== "available") return null;
 
                         return (
                           <tr key={r.key} className="align-top">
