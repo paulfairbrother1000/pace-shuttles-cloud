@@ -1,3 +1,4 @@
+// src/components/SiteHeader.tsx
 "use client";
 
 import * as React from "react";
@@ -15,7 +16,6 @@ type PsUser = {
 
 /* ------------------------------------------------------------------ */
 /* Safe client factory: only create a Supabase client if envs exist.   */
-/* If they don't, we render a basic header without auth state.         */
 /* ------------------------------------------------------------------ */
 function getSupabase(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -170,57 +170,82 @@ export default function SiteHeader(): JSX.Element {
     (authEmail ? authEmail.split("@")[0] : "") ||
     "";
 
-  /* ======================= UI (unchanged) ======================= */
+  /* ======================= UI (visual-only changes) ======================= */
   return (
-    <header className="border-b bg-white">
-      <div className="mx-auto max-w-6xl px-6 py-3 flex items-center justify-between">
+    <header className="ps-header border-b">
+      {/* Header-only theme shim (uses global tokens if present, else safe fallbacks) */}
+      <style jsx global>{`
+        .ps-header {
+          --bg:             var(--bg, #0f1a2a);
+          --card:           var(--card, #15243a);
+          --border:         var(--border, #20334d);
+          --text:           var(--text, #eaf2ff);
+          --muted:          var(--muted, #a3b3cc);
+          --accent:         var(--accent, #2a6cd6);
+          --accent-contrast:var(--accent-contrast, #ffffff);
+          --radius:         var(--radius, 14px);
+          color: var(--text);
+          border-color: var(--border);
+          background: transparent;
+        }
+        .ps-header .bar {
+          background: rgba(15,26,42,0.65); /* translucent over dark hero */
+          backdrop-filter: blur(6px);
+        }
+        .ps-header a.brand { color: var(--text); text-decoration: none; }
+        .ps-header .pill {
+          border-radius: 9999px;
+          padding: .375rem .75rem;
+          font-size: .85rem;
+          line-height: 1.2;
+          border: 1px solid var(--border);
+          color: var(--text);
+          background: transparent;
+          transition: background-color .15s ease, opacity .15s ease;
+        }
+        .ps-header .pill:hover { background: rgba(255,255,255,.06); }
+        .ps-header .pill.active {
+          background: var(--accent);
+          color: var(--accent-contrast);
+          border-color: transparent;
+        }
+      `}</style>
+
+      <div className="bar mx-auto max-w-6xl px-6 py-3 flex items-center justify-between">
         {/* Left: Brand */}
         <div className="flex items-center gap-3">
-          <Link href="/" className="font-semibold">
+          <Link href="/" className="brand font-semibold">
             Pace Shuttles
           </Link>
         </div>
 
         {/* Right: Pills */}
         <div className="flex items-center gap-2">
-          <Link href="/" className="px-3 py-1.5 rounded-full bg-black text-white text-sm">
+          <Link href="/" className="pill active text-sm">
             Home
           </Link>
 
           {/* Operator Admin — show for operator_admin OR site_admin */}
           {(profile?.operator_admin || profile?.site_admin) ? (
-            <Link
-              href="/operator/admin"
-              className="px-3 py-1.5 rounded-full bg-black text-white text-sm"
-            >
+            <Link href="/operator/admin" className="pill text-sm">
               Operator Admin
             </Link>
           ) : null}
 
           {/* Site Admin */}
           {profile?.site_admin ? (
-            <Link
-              href="/admin"
-              className="px-3 py-1.5 rounded-full bg-black text-white text-sm"
-            >
+            <Link href="/admin" className="pill text-sm">
               Admin
             </Link>
           ) : null}
 
           {/* Account/Login */}
           {authEmail ? (
-            <Link
-              href="/account"
-              className="px-3 py-1.5 rounded-full bg-black text-white text-sm"
-              title={authEmail}
-            >
+            <Link href="/account" className="pill active text-sm" title={authEmail}>
               {firstName || "Account"}
             </Link>
           ) : (
-            <Link
-              href="/login"
-              className="px-3 py-1.5 rounded-full bg-black text-white text-sm"
-            >
+            <Link href="/login" className="pill active text-sm">
               Login
             </Link>
           )}

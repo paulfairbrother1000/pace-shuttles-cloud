@@ -219,7 +219,7 @@ export default function PartnersApplyPage() {
     <div className="mx-auto max-w-3xl p-6">
       <header className="mb-4">
         <h1 className="text-2xl font-semibold tracking-tight">Partner with Pace Shuttles</h1>
-        <p className="text-neutral-600">Tell us about your operation or destination. We’ll review and reach out.</p>
+        
 <p className="text-neutral-600">Pace Shuttles is always on the lookout for extraordinary, world class destinations and exceptional providers of luxury travel.</p>
 <p className="text-neutral-600">If you represent a licensed operator or destination, please get in touch using the form below and tell us more about your operation.</p>
 <p className="text-neutral-600">If your operation is in a territory that’s not currently supported by Pace Shuttles, that’s no problem – you can be the first! We are keen to bring the Pace Shuttles benefits and experience to a wider audience.</p>
