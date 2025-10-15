@@ -1,8 +1,53 @@
+// src/app/destinations/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+
+/* =========================================================================================
+   Pace Shuttles Theme (scoped to this page only)
+   - Purely additive styling. No functionality removed.
+   ========================================================================================= */
+function Theme({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="ps-theme min-h-screen bg-app text-app">
+      <style jsx global>{`
+        .ps-theme {
+          --bg:             #0f1a2a;  /* page background */
+          --card:           #15243a;  /* tiles */
+          --border:         #20334d;  /* subtle borders */
+          --text:           #eaf2ff;  /* primary text */
+          --muted:          #a3b3cc;  /* secondary text */
+          --accent:         #2a6cd6;  /* links/buttons */
+          --accent-contrast:#ffffff;  /* text on accent */
+          --radius:         14px;
+          --shadow:         0 6px 20px rgba(0,0,0,.25);
+
+          color: var(--text);
+          background: var(--bg);
+          font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        }
+        .bg-app   { background: var(--bg); }
+        .bg-card  { background: var(--card); }
+        .text-app { color: var(--text); }
+        .text-muted { color: var(--muted); }
+        .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+        .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
+        .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
+
+        .pill { border-radius: 9999px; padding: .4rem .75rem; font-size: .875rem; border: 1px solid var(--border); background: transparent; color: var(--text); }
+        .pill:hover { background: rgba(255,255,255,.06); }
+        .btn { border-radius: var(--radius); padding: .6rem .9rem; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+        .btn:hover { filter: brightness(1.05); }
+
+        a { color: var(--text); text-decoration: none; }
+        a:hover { color: var(--accent); }
+      `}</style>
+      {children}
+    </div>
+  );
+}
 
 /* ---------- types ---------- */
 type UUID = string;
@@ -106,7 +151,11 @@ export default function DestinationDetailsPage({ params }: { params: { id: strin
         setRow(d as Destination);
 
         if (d.country_id) {
-          const { data: c, error: cErr } = await sb.from("countries").select("id,name").eq("id", d.country_id).maybeSingle();
+          const { data: c, error: cErr } = await sb
+            .from("countries")
+            .select("id,name")
+            .eq("id", d.country_id)
+            .maybeSingle();
           if (cErr) throw cErr;
           setCountry((c as any) || null);
         } else {
@@ -127,98 +176,111 @@ export default function DestinationDetailsPage({ params }: { params: { id: strin
   const seasonFrom = fmtLocal(row?.season_from ?? null);
   const seasonTo   = fmtLocal(row?.season_to ?? null);
 
+  /* --------------------------------- Render --------------------------------- */
   return (
-    <div className="px-4 py-6 mx-auto max-w-3xl space-y-5">
-      <button className="px-3 py-1 rounded-lg border hover:bg-neutral-50" onClick={() => router.back()}>← Back</button>
-      <h1 className="text-2xl font-semibold">Destination</h1>
+    <Theme>
+      <div className="px-4 py-6 mx-auto max-w-3xl space-y-5">
+        <div className="flex items-center gap-3">
+          <button className="pill" onClick={() => router.back()}>← Back</button>
+          <h1 className="text-2xl font-semibold">Destination</h1>
+        </div>
 
-      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
-      {loading || !row ? (
-        <div className="p-4 rounded-xl border bg-white">Loading…</div>
-      ) : (
-        <div className="rounded-2xl border bg-white shadow overflow-hidden">
-          {/* Photo */}
-          <div className="relative w-full aspect-[16/10] overflow-hidden border-b">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={photo} alt={row.name} className="w-full h-full object-cover" />
+        {err && (
+          <div
+            className="p-3 rounded-lg tile-border text-sm"
+            style={{ background: "rgba(244,63,94,.15)", color: "#ffb4c1" }}
+          >
+            {err}
           </div>
+        )}
 
-          {/* Body */}
-          <div className="p-4 space-y-4">
-            <div>
-              <div className="text-xl font-semibold">{row.name}</div>
-              {country?.name && <div className="text-sm text-neutral-600">{country.name}</div>}
+        {loading || !row ? (
+          <div className="tile tile-border p-4">Loading…</div>
+        ) : (
+          <div className="tile tile-border overflow-hidden">
+            {/* Photo */}
+            <div className="relative w-full aspect-[16/10] overflow-hidden" style={{ borderBottom: "1px solid var(--border)" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={photo} alt={row.name} className="w-full h-full object-cover" />
             </div>
 
-            {/* Address */}
-            {lines.length > 0 && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Address</div>
-                <div className="whitespace-pre-line leading-relaxed">{lines.join("\n")}</div>
+            {/* Body */}
+            <div className="p-4 space-y-4">
+              <div>
+                <div className="text-xl font-semibold">{row.name}</div>
+                {country?.name && <div className="text-sm text-muted">{country.name}</div>}
               </div>
-            )}
 
-            {/* Description */}
-            {row.description && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Description</div>
-                <div className="whitespace-pre-line">{row.description}</div>
-              </div>
-            )}
-
-            {/* Destination type */}
-            {row.destination_type && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Destination type</div>
-                <div>{row.destination_type}</div>
-              </div>
-            )}
-
-            {/* Contact */}
-            {(row.url || row.phone || row.email) && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Contact</div>
-                <div className="space-y-0.5">
-                  {row.url && (
-                    <div>
-                      Website:{" "}
-                      <a className="text-blue-600 underline break-all" href={row.url} target="_blank" rel="noreferrer">
-                        {row.url}
-                      </a>
-                    </div>
-                  )}
-                  {row.phone && <div>Phone: {row.phone}</div>}
-                  {row.email && <div>Email: {row.email}</div>}
+              {/* Address */}
+              {lines.length > 0 && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Address</div>
+                  <div className="whitespace-pre-line leading-relaxed text-muted">{lines.join("\n")}</div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Season */}
-            {(seasonFrom || seasonTo) && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Season</div>
-                <div>{seasonFrom ?? "—"} → {seasonTo ?? "—"}</div>
-              </div>
-            )}
+              {/* Description */}
+              {row.description && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Description</div>
+                  <div className="whitespace-pre-line text-muted">{row.description}</div>
+                </div>
+              )}
 
-            {/* Arrival notes */}
-            {row.arrival_notes && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Arrival notes</div>
-                <div className="whitespace-pre-line">{row.arrival_notes}</div>
-              </div>
-            )}
+              {/* Destination type */}
+              {row.destination_type && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Destination type</div>
+                  <div className="text-muted">{row.destination_type}</div>
+                </div>
+              )}
 
-            {/* Gift */}
-            {row.gift && (
-              <div className="text-sm">
-                <div className="font-medium mb-1">Gift for Pace Shuttles’ Guests</div>
-                <div className="whitespace-pre-line">{row.gift}</div>
-              </div>
-            )}
+              {/* Contact */}
+              {(row.url || row.phone || row.email) && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Contact</div>
+                  <div className="space-y-0.5 text-muted">
+                    {row.url && (
+                      <div>
+                        Website:{" "}
+                        <a className="underline break-all" href={row.url} target="_blank" rel="noreferrer">
+                          {row.url}
+                        </a>
+                      </div>
+                    )}
+                    {row.phone && <div>Phone: {row.phone}</div>}
+                    {row.email && <div>Email: {row.email}</div>}
+                  </div>
+                </div>
+              )}
+
+              {/* Season */}
+              {(seasonFrom || seasonTo) && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Season</div>
+                  <div className="text-muted">{seasonFrom ?? "—"} → {seasonTo ?? "—"}</div>
+                </div>
+              )}
+
+              {/* Arrival notes */}
+              {row.arrival_notes && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Arrival notes</div>
+                  <div className="whitespace-pre-line text-muted">{row.arrival_notes}</div>
+                </div>
+              )}
+
+              {/* Gift */}
+              {row.gift && (
+                <div className="text-sm">
+                  <div className="font-medium mb-1">Gift for Pace Shuttles’ Guests</div>
+                  <div className="whitespace-pre-line text-muted">{row.gift}</div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </Theme>
   );
 }
