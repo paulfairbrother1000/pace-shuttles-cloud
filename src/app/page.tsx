@@ -7,11 +7,15 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
-/*-------Changes to the menu-------*/
-import ClientTopNav from "@/components/ClientTopNav";
-
-
-
+/* ---------- Inline, dependency-free client top nav ---------- */
+function ClientTopNavBar({ userName }: { userName?: string | null }) {
+  return (
+    <header className="fixed top-0 left-0 right-0 z-50 flex justify-between items-center px-4 py-2 bg-black/40 backdrop-blur-md text-white">
+      <a href="/" className="text-sm font-medium">Home</a>
+      <a href="/login" className="text-sm font-medium">{userName ?? "Login"}</a>
+    </header>
+  );
+}
 
 /* ---------- Greedy allocator + live-quote fetch ---------- */
 type Party = { size: number };
@@ -290,22 +294,29 @@ type HydrateCountry = {
 };
 
 export default function Page() {
+  /* Read client display name from localStorage (non-breaking) */
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem("ps_user") : null;
+      if (raw) {
+        const u = JSON.parse(raw);
+        const name =
+          u?.operator_name ||
+          u?.name ||
+          [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
+          null;
+        if (name) setDisplayName(name);
+      }
+    } catch { /* ignore */ }
+  }, []);
 
-/*---new bit 16th oct 25 - menu header---*/
-  {
-  const psUser = readPsUserLocal(); // your existing auth check
-  return (
-    <>
-      <ClientTopNav userName={psUser?.name} />
-      {/* everything else unchanged */}
-    </>
-  );
-}
-/*---------------------------------*/
-
-  {/* === Pace Shuttles Theme Block v1 (scoped to this page) === */}
+  /* === Pace Shuttles Theme Block v1 (scoped to this page) === */
   return (
     <div className="ps-theme min-h-screen bg-app text-app">
+      {/* New: thin top nav (fixed). Everything else below remains unchanged */}
+      <ClientTopNavBar userName={displayName} />
+
       <style jsx global>{`
   /* Scope to .ps-theme so we can roll out gradually */
   .ps-theme {
@@ -360,11 +371,7 @@ export default function Page() {
   table.ps thead { background: rgba(255,255,255,0.04); }
   table.ps th, table.ps td { padding: .75rem; border-bottom: 1px solid var(--border); }
 
-  /* ------------------------------------------------------- */
-  /* Compatibility layer: harmonise legacy white/neutral skins
-     inside third-party/internal components (e.g. JourneyCard,
-     TilePicker internals) without touching those components. */
-  /* ------------------------------------------------------- */
+  /* Compatibility layer for legacy light skins inside tiles */
   .ps-theme .bg-white { background-color: var(--card) !important; }
   .ps-theme .border,
   .ps-theme .border-neutral-200,
@@ -379,19 +386,15 @@ export default function Page() {
   .ps-theme .text-gray-800,
   .ps-theme .text-slate-800 { color: var(--text) !important; }
 
-  /* Card body areas sometimes rendered as separate panels */
   .ps-theme .bg-slate-50,
   .ps-theme .bg-neutral-50,
   .ps-theme .bg-gray-50 { background-color: var(--card) !important; }
 
-  /* Make image bands and captions blend with the tile skin */
   .ps-theme .tile :where(.caption, .card-caption) { color: var(--muted); }
 
-  /* Stronger section headings above filter tiles */
   .ps-theme .filters header h3,
   .ps-theme .filters .title { color: var(--text) !important; font-weight: 700; }
 `}</style>
-
 
       {/* ===== SECTION 1: State + hydrate loader ===== */}
       {(() => {
@@ -1294,7 +1297,7 @@ const unitMinor =
                         return (
                           <button
                             key={d.iso + i}
-                            className="min-h-[112px] text-left p-2 rounded-xl subtle-border transition"
+                            className="min-h[112px] min-h-[112px] text-left p-2 rounded-xl subtle-border transition"
                             style={
                               selected
                                 ? { background: "var(--accent)", color: "var(--accent-contrast)", borderColor: "transparent" }
