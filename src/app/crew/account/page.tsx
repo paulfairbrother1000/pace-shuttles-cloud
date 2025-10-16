@@ -1,25 +1,13 @@
+// src/app/crew/account/page.tsx
 "use client";
 
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter, useSearchParams } from "next/navigation";
 
-
-export default function CrewAccountPage() {
-  return (
-    <Suspense fallback={<div className="p-4">Loading…</div>}>
-      <CrewAccountInner />
-    </Suspense>
-  );
-}
-
-function CrewAccountInner() {
-  const router = useRouter();
-  const sp = useSearchParams(); // safe now under Suspense
-  // ...rest of your existing logic/UI unchanged
-  return (/* your existing JSX */);
-}
-
+/* ──────────────────────────────────────────────────────────────────────────────
+   Shared setup / helpers
+   ──────────────────────────────────────────────────────────────────────────── */
 
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -53,36 +41,7 @@ type AssignRow = {
   vehicle_name: string | null;
 };
 
-// Near top: new type
 type PaxKey = string; // `${journey_id}_${vehicle_id}`
-
-// After you set rows (inside the big useEffect once rows are known), fetch pax totals:
-const [paxByKey, setPaxByKey] = useState<Record<PaxKey, number>>({});
-
-useEffect(() => {
-  (async () => {
-    if (!rows.length) { setPaxByKey({}); return; }
-    const keys = rows.map(r => ({ journey_id: r.journey_id, vehicle_id: r.vehicle_id }));
-    // dedupe keys
-    const uniq = Array.from(new Set(keys.map(k => `${k.journey_id}_${k.vehicle_id}`)))
-      .map(k => ({ journey_id: k.split("_")[0], vehicle_id: k.split("_")[1] }));
-
-    const { data, error } = await sb
-      .from("journey_vehicle_allocations")
-      .select("journey_id, vehicle_id, seats");
-    if (error) { console.warn(error.message); return; }
-
-    const map: Record<PaxKey, number> = {};
-    (data || []).forEach(r => {
-      const k = `${r.journey_id}_${r.vehicle_id}`;
-      map[k] = (map[k] || 0) + Number(r.seats || 0);
-    });
-    setPaxByKey(map);
-  })();
-}, [rows]);
-
-
-
 
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
 async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
@@ -94,7 +53,26 @@ async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | nul
   return data?.signedUrl ?? null;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────────
+   Page + Suspense wrapper
+   ──────────────────────────────────────────────────────────────────────────── */
+
 export default function CrewAccountPage() {
+  return (
+    <Suspense fallback={<div className="p-4">Loading…</div>}>
+      <CrewAccountInner />
+    </Suspense>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Inner component (safe to use useSearchParams)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+function CrewAccountInner() {
+  const router = useRouter();
+  const sp = useSearchParams(); // safe now under Suspense
+
   const [flag, setFlag] = useState(false);
   const [rows, setRows] = useState<AssignRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,7 +80,12 @@ export default function CrewAccountPage() {
 
   const [profile, setProfile] = useState<{ first: string; last: string; role: string; photo: string } | null>(null);
 
-  useEffect(() => { setFlag(enabled()); }, []);
+  // NEW: pax counts keyed by journey_id + vehicle_id
+  const [paxByKey, setPaxByKey] = useState<Record<PaxKey, number>>({});
+
+  useEffect(() => {
+    setFlag(enabled());
+  }, []);
 
   useEffect(() => {
     if (!flag) return;
@@ -110,8 +93,15 @@ export default function CrewAccountPage() {
       setLoading(true);
       setErr(null);
       try {
-        const { data: { user }, error: uerr } = await sb.auth.getUser();
-        if (uerr || !user) { setErr("Please sign in."); setLoading(false); return; }
+        const {
+          data: { user },
+          error: uerr,
+        } = await sb.auth.getUser();
+        if (uerr || !user) {
+          setErr("Please sign in.");
+          setLoading(false);
+          return;
+        }
 
         const { data, error } = await sb
           .from("v_crew_assignments_min")
@@ -162,8 +152,8 @@ export default function CrewAccountPage() {
         const photoResolved = await resolveStorageUrl(photoUrl || null);
         setProfile({
           first: f?.trim() || "Crew",
-          last : l?.trim() || "Member",
-          role : role ? role.charAt(0).toUpperCase() + role.slice(1) : "Crew",
+          last: l?.trim() || "Member",
+          role: role ? role.charAt(0).toUpperCase() + role.slice(1) : "Crew",
           photo: photoResolved || "https://via.placeholder.com/80?text=Crew",
         });
       } catch (e: any) {
@@ -174,39 +164,64 @@ export default function CrewAccountPage() {
     })();
   }, [flag]);
 
+  // Fetch pax totals whenever rows change
+  useEffect(() => {
+    (async () => {
+      if (!rows.length) {
+        setPaxByKey({});
+        return;
+      }
+      // Build unique keys (journey_id + vehicle_id)
+      const uniq = Array.from(
+        new Set(rows.map((r) => `${r.journey_id}_${r.vehicle_id}`))
+      ).map((k) => ({ journey_id: k.split("_")[0], vehicle_id: k.split("_")[1] }));
+
+      const { data, error } = await sb
+        .from("journey_vehicle_allocations")
+        .select("journey_id, vehicle_id, seats");
+      if (error) {
+        console.warn(error.message);
+        return;
+      }
+
+      const map: Record<PaxKey, number> = {};
+      (data || []).forEach((r: any) => {
+        const k = `${r.journey_id}_${r.vehicle_id}`;
+        map[k] = (map[k] || 0) + Number(r.seats || 0);
+      });
+      setPaxByKey(map);
+    })();
+  }, [rows]);
+
   const upcoming = useMemo(
-    () => rows.filter(r => r.status_simple === "allocated" || r.status_simple === "confirmed"),
+    () => rows.filter((r) => r.status_simple === "allocated" || r.status_simple === "confirmed"),
     [rows]
   );
-  const history = useMemo(
-    () => rows.filter(r => r.status_simple === "complete"),
-    [rows]
-  );
+  const history = useMemo(() => rows.filter((r) => r.status_simple === "complete"), [rows]);
 
-function t24Badge(ts?: string | null) {
-  if (!ts) return "—";
-  const dep = new Date(ts).getTime();
-  const now = Date.now();
-  const diffH = (dep - now) / (1000 * 60 * 60);
-  if (diffH <= 24) return "Locked";
-  const left = Math.floor(diffH - 24);
-  return `Locks in ${left}h`;
-}
-
+  function t24Badge(ts?: string | null) {
+    if (!ts) return "—";
+    const dep = new Date(ts).getTime();
+    const now = Date.now();
+    const diffH = (dep - now) / (1000 * 60 * 60);
+    if (diffH <= 24) return "Locked";
+    const left = Math.floor(diffH - 24);
+    return `Locks in ${left}h`;
+  }
 
   function formatDateTime(ts?: string | null) {
     if (!ts) return { date: "—", time: "—" };
     const d = new Date(ts);
     return {
       date: d.toLocaleDateString(),
-      time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
   }
 
   function tLabel(s: AssignRow["status_simple"]) {
     if (s === "confirmed") return "Confirmed (T-24)";
     if (s === "allocated") return "Assigned (T-72)";
-    if (s === "complete")  return "Complete";
+    if (s === "complete") return "Complete";
     return s;
   }
 
@@ -216,7 +231,10 @@ function t24Badge(ts?: string | null) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ assignmentId }),
     });
-    if (!res.ok) { alert(await res.text()); return; }
+    if (!res.ok) {
+      alert(await res.text());
+      return;
+    }
     location.reload();
   }
 
@@ -259,7 +277,11 @@ function t24Badge(ts?: string | null) {
             </thead>
             <tbody>
               {upcoming.length === 0 && (
-                <tr><td className="p-4" colSpan={9}>No upcoming assignments.</td></tr>
+                <tr>
+                  <td className="p-4" colSpan={9}>
+                    No upcoming assignments.
+                  </td>
+                </tr>
               )}
               {upcoming.map((r) => {
                 const { date, time } = formatDateTime(r.departure_ts);
@@ -270,12 +292,12 @@ function t24Badge(ts?: string | null) {
                     <td className="p-3">{date}</td>
                     <td className="p-3">{time}</td>
                     <td className="p-3">
-  {(() => {
-    const k = `${r.journey_id}_${r.vehicle_id}`;
-    const n = paxByKey[k];
-    return Number.isFinite(n) ? n : "—";
-  })()}
-</td>
+                      {(() => {
+                        const k = `${r.journey_id}_${r.vehicle_id}`;
+                        const n = paxByKey[k];
+                        return Number.isFinite(n) ? n : "—";
+                      })()}
+                    </td>
                     <td className="p-3">{r.vehicle_name ?? `#${r.vehicle_id.slice(0, 8)}`}</td>
                     <td className="p-3">{t24Badge(r.departure_ts)}</td>
                     <td className="p-3">{tLabel(r.status_simple)}</td>
@@ -283,10 +305,17 @@ function t24Badge(ts?: string | null) {
                       <div className="flex gap-2 justify-end">
                         {r.status_simple !== "confirmed" && (
                           <>
-                            <button onClick={() => act("confirm", r.assignment_id)} className="px-3 py-1 rounded" style={{ background: "black", color: "white" }}>
+                            <button
+                              onClick={() => act("confirm", r.assignment_id)}
+                              className="px-3 py-1 rounded"
+                              style={{ background: "black", color: "white" }}
+                            >
                               Accept
                             </button>
-                            <button onClick={() => act("decline", r.assignment_id)} className="px-3 py-1 rounded border">
+                            <button
+                              onClick={() => act("decline", r.assignment_id)}
+                              className="px-3 py-1 rounded border"
+                            >
                               Decline
                             </button>
                           </>
@@ -320,10 +349,13 @@ function t24Badge(ts?: string | null) {
               <div className="md:col-span-3">
                 <div className="font-medium">Journey #{r.journey_id.slice(0, 8)}</div>
                 <div className="text-xs opacity-70">
-                  {r.departure_ts ? new Date(r.departure_ts).toLocaleString() : "—"} • vehicle #{r.vehicle_id.slice(0, 8)}
+                  {r.departure_ts ? new Date(r.departure_ts).toLocaleString() : "—"} • vehicle #
+                  {r.vehicle_id.slice(0, 8)}
                 </div>
               </div>
-              <div><span className="text-xs px-2 py-1 rounded bg-gray-100">complete</span></div>
+              <div>
+                <span className="text-xs px-2 py-1 rounded bg-gray-100">complete</span>
+              </div>
               <div className="text-xs opacity-70">Tips/Ratings: —</div>
             </div>
           ))}
