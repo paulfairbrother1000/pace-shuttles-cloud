@@ -7,6 +7,20 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
+/*-------Changes to the menu-------*/
+import ClientTopNav from "@/components/ClientTopNav";
+
+export default function HomePage() {
+  const psUser = readPsUserLocal(); // your existing auth check
+  return (
+    <>
+      <ClientTopNav userName={psUser?.name} />
+      {/* everything else unchanged */}
+    </>
+  );
+}
+
+
 /* ---------- Greedy allocator + live-quote fetch ---------- */
 type Party = { size: number };
 
