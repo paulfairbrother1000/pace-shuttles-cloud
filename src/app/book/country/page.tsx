@@ -1,17 +1,16 @@
 // app/book/country/page.tsx
+"use client";
+
 import * as React from "react";
-import { Suspense } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import WizardHeader from "@/components/WizardHeader";
 
-/* =========================================================================================
-   Split to Server Page + Client Child to satisfy Next.js requirement:
-   - This file exports a Server Component page that wraps a Client Component in <Suspense/>.
-   - The Client Component contains all original logic/JSX (no functionality removed).
-   ========================================================================================= */
+const sb = createBrowserClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
-/* ---------- Types ---------- */
 type Country = {
   id: string;
   name: string;
@@ -30,7 +29,6 @@ type RouteRow = {
 type Assignment = { route_id: string; vehicle_id: string; is_active: boolean | null };
 type Vehicle = { id: string; active: boolean | null };
 
-/* ---------- Date helpers ---------- */
 function startOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(12, 0, 0, 0);
@@ -50,22 +48,8 @@ function withinSeason(day: Date, from?: string | null, to?: string | null): bool
   return true;
 }
 
-/* ---------- Client Component (all original logic) ---------- */
-function CountryClient(): JSX.Element {
-  "use client";
-
+export default function CountryPage(): JSX.Element {
   const router = useRouter();
-
-  // Supabase browser client
-  const sb = React.useMemo(
-    () =>
-      createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      ),
-    []
-  );
-
   const [countries, setCountries] = React.useState<Country[]>([]);
   const [liveCountryIds, setLiveCountryIds] = React.useState<Set<string>>(new Set());
   const [msg, setMsg] = React.useState<string | null>(null);
@@ -86,7 +70,7 @@ function CountryClient(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [sb]);
+  }, []);
 
   // Compute "participating" countries = verified journeys exist in-season + active
   React.useEffect(() => {
@@ -156,7 +140,7 @@ function CountryClient(): JSX.Element {
     return () => {
       off = true;
     };
-  }, [sb]);
+  }, []);
 
   const liveCountries = React.useMemo(
     () => countries.filter((c) => liveCountryIds.has(c.id)),
@@ -221,14 +205,5 @@ function CountryClient(): JSX.Element {
         <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
       )}
     </div>
-  );
-}
-
-/* ---------- Server Page: wraps client child in Suspense ---------- */
-export default function Page() {
-  return (
-    <Suspense fallback={<div />}>
-      <CountryClient />
-    </Suspense>
   );
 }
