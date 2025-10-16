@@ -1,3 +1,5 @@
+/*--- src/app/operator-admin/vehicles/page.tsx ---*/
+
 "use client";
 
 import Link from "next/link";

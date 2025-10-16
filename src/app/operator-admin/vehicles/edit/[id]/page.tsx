@@ -81,6 +81,7 @@ export default function EditVehiclePage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const vehicleId = params?.id;
+  const isNew = vehicleId === "new";
 
   /* ps_user (locks operator for operator admins) */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
@@ -156,7 +157,7 @@ export default function EditVehiclePage() {
       if (jts.data) setJourneyTypes(jts.data as JourneyType[]);
       if (rels.data) setOpTypeRels(rels.data as OperatorTypeRel[]);
 
-      if (vehicleId) {
+      if (!isNew && vehicleId) {
         const { data, error } = await sb
           .from("vehicles")
           .select("*")
@@ -180,6 +181,11 @@ export default function EditVehiclePage() {
           const resolved = await resolveImageUrl(v.picture_url);
           setStoredImageUrl(resolved);
         }
+      } else {
+        // New: pre-fill operator if locked
+        if (operatorLocked && psUser?.operator_id) {
+          setOperatorId(psUser.operator_id);
+        }
       }
 
       if (!off) setLoading(false);
@@ -189,7 +195,7 @@ export default function EditVehiclePage() {
       off = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicleId]);
+  }, [vehicleId, isNew, operatorLocked, psUser?.operator_id]);
 
   /* Upload image -> return storage path */
   async function uploadImageIfAny(id: string): Promise<string | null> {
@@ -212,7 +218,6 @@ export default function EditVehiclePage() {
 
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!vehicleId) return;
 
     try {
       setMsg(null);
@@ -231,7 +236,7 @@ export default function EditVehiclePage() {
 
       setSaving(true);
 
-      const payload: Record<string, any> = {
+      const basePayload: Record<string, any> = {
         operator_id: effectiveOperatorId,
         type_id: typeId,
         name: name.trim(),
@@ -243,8 +248,36 @@ export default function EditVehiclePage() {
         min_val_threshold: toFloat(minValThreshold),
       };
 
-      // If a new file selected, upload and patch the path
-      const uploadedPath = await uploadImageIfAny(vehicleId);
+      if (isNew) {
+        // Create
+        const createRes = await fetch(`/api/admin/vehicles`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ ...basePayload, picture_url: null }),
+        });
+        if (!createRes.ok) {
+          const body = await createRes.json().catch(() => ({}));
+          setSaving(false);
+          return setMsg(body?.error || `Create failed (${createRes.status})`);
+        }
+        const { id } = (await createRes.json()) as { id?: string };
+        if (id && pictureFile) {
+          const uploadedPath = await uploadImageIfAny(id);
+          if (uploadedPath) {
+            await fetch(`/api/admin/vehicles/${id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ picture_url: uploadedPath }),
+            }).catch(() => {});
+          }
+        }
+        router.push("/operator-admin/vehicles");
+        return;
+      }
+
+      // Update existing
+      const payload = { ...basePayload };
+      const uploadedPath = await uploadImageIfAny(vehicleId!);
       if (uploadedPath) payload.picture_url = uploadedPath;
 
       const res = await fetch(`/api/admin/vehicles/${vehicleId}`, {
@@ -278,7 +311,7 @@ export default function EditVehiclePage() {
   }
 
   async function onDelete() {
-    if (!vehicleId) return;
+    if (isNew || !vehicleId) return;
     if (!confirm("Delete this vehicle?")) return;
 
     try {
@@ -334,7 +367,7 @@ export default function EditVehiclePage() {
   }, [staff]);
 
   async function loadRelationships(opId: string, vId: string) {
-    if (!opId || !vId) {
+    if (!opId || !vId || isNew) {
       setAssignments([]);
       setStaff([]);
       return;
@@ -364,7 +397,7 @@ export default function EditVehiclePage() {
   }, [operatorId, vehicleId]);
 
   async function addCaptain() {
-    if (!operatorId || !vehicleId || !addingStaffId) return;
+    if (!operatorId || !vehicleId || !addingStaffId || isNew) return;
     setRelMsg(null);
     if (assignments.some((a) => a.staff_id === addingStaffId)) {
       setRelMsg("Already added.");
@@ -456,18 +489,20 @@ export default function EditVehiclePage() {
         >
           ← Back
         </Link>
-        <button
-          onClick={onDelete}
-          className="rounded-full border px-3 py-2 text-sm"
-          disabled={deleting}
-        >
-          {deleting ? "Deleting…" : "Delete"}
-        </button>
+        {!isNew && (
+          <button
+            onClick={onDelete}
+            className="rounded-full border px-3 py-2 text-sm"
+            disabled={deleting}
+          >
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+        )}
       </div>
 
       <header>
         <h1 className="text-2xl font-semibold">
-          {loading ? "Loading…" : "Edit Vehicle"}
+          {loading ? "Loading…" : isNew ? "New Vehicle" : "Edit Vehicle"}
         </h1>
       </header>
 
@@ -664,7 +699,7 @@ export default function EditVehiclePage() {
               }
               className="inline-flex rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
             >
-              {saving ? "Saving…" : "Update Vehicle"}
+              {saving ? "Saving…" : isNew ? "Create Vehicle" : "Update Vehicle"}
             </button>
             <Link
               href="/operator-admin/vehicles"
@@ -678,108 +713,110 @@ export default function EditVehiclePage() {
       </section>
 
       {/* NEW: Captains & Priority */}
-      <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
-        <div className="flex items-center gap-2">
-          <h2 className="text-lg font-semibold">Captains & Priority</h2>
-          {relMsg && <span className="text-sm text-red-600">{relMsg}</span>}
-        </div>
+      {!isNew && (
+        <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Captains & Priority</h2>
+            {relMsg && <span className="text-sm text-red-600">{relMsg}</span>}
+          </div>
 
-        {/* Add line */}
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            className="border rounded-lg px-3 py-2"
-            value={addingStaffId}
-            onChange={(e) => setAddingStaffId(e.target.value)}
-            disabled={!operatorId}
-          >
-            <option value="">Add captain…</option>
-            {staffOptions.map((s) => {
-              const name = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
-              return (
-                <option key={s.id} value={s.id}>{name}</option>
-              );
-            })}
-          </select>
+          {/* Add line */}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="border rounded-lg px-3 py-2"
+              value={addingStaffId}
+              onChange={(e) => setAddingStaffId(e.target.value)}
+              disabled={!operatorId}
+            >
+              <option value="">Add captain…</option>
+              {staffOptions.map((s) => {
+                const name = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
+                return (
+                  <option key={s.id} value={s.id}>{name}</option>
+                );
+              })}
+            </select>
 
-          <label className="text-sm">Priority</label>
-          <select
-            className="border rounded-lg px-2 py-1"
-            value={addingPriority}
-            onChange={(e) => setAddingPriority(Number(e.target.value))}
-          >
-            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
-          </select>
+            <label className="text-sm">Priority</label>
+            <select
+              className="border rounded-lg px-2 py-1"
+              value={addingPriority}
+              onChange={(e) => setAddingPriority(Number(e.target.value))}
+            >
+              {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+            </select>
 
-          <button
-            className="px-3 py-2 rounded border"
-            disabled={!addingStaffId || !vehicleId || !operatorId}
-            onClick={addCaptain}
-            type="button"
-          >
-            Add
-          </button>
-        </div>
+            <button
+              className="px-3 py-2 rounded border"
+              disabled={!addingStaffId || !vehicleId || !operatorId}
+              onClick={addCaptain}
+              type="button"
+            >
+              Add
+            </button>
+          </div>
 
-        {/* Current list */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-50">
-              <tr>
-                <th className="text-left p-3">Captain</th>
-                <th className="text-left p-3">Role</th>
-                <th className="text-left p-3">Priority</th>
-                <th className="text-left p-3">Lead-eligible</th>
-                <th className="text-right p-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedAssignments.length === 0 ? (
-                <tr><td className="p-3" colSpan={5}>No captains linked to this vehicle yet.</td></tr>
-              ) : (
-                sortedAssignments.map((r) => {
-                  const st = staffById.get(r.staff_id);
-                  const name = st
-                    ? `${st.last_name || ""} ${st.first_name || ""}`.trim() || "Unnamed"
-                    : `#${r.staff_id.slice(0,8)}`;
-                  return (
-                    <tr key={r.id} className="border-t">
-                      <td className="p-3">{name}</td>
-                      <td className="p-3">{st?.jobrole || "—"}</td>
-                      <td className="p-3">
-                        <select
-                          className="border rounded px-2 py-1"
-                          value={r.priority}
-                          onChange={(e) => updatePriority(r.id, Number(e.target.value))}
-                        >
-                          {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
-                        </select>
-                      </td>
-                      <td className="p-3">
-                        <label className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={r.is_lead_eligible}
-                            onChange={() => toggleEligible(r.id, r.is_lead_eligible)}
-                          />
-                          <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
-                        </label>
-                      </td>
-                      <td className="p-3 text-right">
-                        <button
-                          className="px-3 py-1 rounded border"
-                          onClick={() => removeRel(r.id)}
-                        >
-                          Remove
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+          {/* Current list */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr>
+                  <th className="text-left p-3">Captain</th>
+                  <th className="text-left p-3">Role</th>
+                  <th className="text-left p-3">Priority</th>
+                  <th className="text-left p-3">Lead-eligible</th>
+                  <th className="text-right p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedAssignments.length === 0 ? (
+                  <tr><td className="p-3" colSpan={5}>No captains linked to this vehicle yet.</td></tr>
+                ) : (
+                  sortedAssignments.map((r) => {
+                    const st = staffById.get(r.staff_id);
+                    const name = st
+                      ? `${st.last_name || ""} ${st.first_name || ""}`.trim() || "Unnamed"
+                      : `#${r.staff_id.slice(0,8)}`;
+                    return (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-3">{name}</td>
+                        <td className="p-3">{st?.jobrole || "—"}</td>
+                        <td className="p-3">
+                          <select
+                            className="border rounded px-2 py-1"
+                            value={r.priority}
+                            onChange={(e) => updatePriority(r.id, Number(e.target.value))}
+                          >
+                            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+                          </select>
+                        </td>
+                        <td className="p-3">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={r.is_lead_eligible}
+                              onChange={() => toggleEligible(r.id, r.is_lead_eligible)}
+                            />
+                            <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
+                          </label>
+                        </td>
+                        <td className="p-3 text-right">
+                          <button
+                            className="px-3 py-1 rounded border"
+                            onClick={() => removeRel(r.id)}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
