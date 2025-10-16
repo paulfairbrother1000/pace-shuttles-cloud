@@ -1,7 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { useRouter, useSearchParams } from "next/navigation";
+
+
+export default function CrewAccountPage() {
+  return (
+    <Suspense fallback={<div className="p-4">Loading…</div>}>
+      <CrewAccountInner />
+    </Suspense>
+  );
+}
+
+function CrewAccountInner() {
+  const router = useRouter();
+  const sp = useSearchParams(); // safe now under Suspense
+  // ...rest of your existing logic/UI unchanged
+  return (/* your existing JSX */);
+}
+
 
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
