@@ -857,6 +857,7 @@ const unitMinor =
     : Math.round(Number(json.total_cents ?? 0) / Math.max(1, Number(json.qty || 1)));
 
 
+
                 if (json.max_qty_at_price != null && qty > json.max_qty_at_price) {
                   setQuoteErrByRow((p) => ({ ...p, [r.key]: `Only ${json.max_qty_at_price} seats available at this price.` }));
                 } else {
@@ -907,9 +908,11 @@ const unitMinor =
               setQuoteErrByRow((p) => ({ ...p, [rowKey]: `${json.error_code}${extra}` }));
               return;
             }
-            const unitMinor = (json.unit_cents ?? null) != null
-  ? Number(json.unit_cents)
-  : Math.round(Number(json.total_cents ?? 0) / Math.max(1, Number(json.qty || 1)));
+            const unitMinor =
+  (json.unit_cents ?? null) != null
+    ? Number(json.unit_cents)
+    : Math.round(Number(json.total_cents ?? 0) / Math.max(1, Number(json.qty || 1)));
+
 
             if (json.max_qty_at_price != null && n > json.max_qty_at_price) {
               setQuoteErrByRow((p) => ({ ...p, [rowKey]: `Only ${json.max_qty_at_price} seats available at this price.` }));
