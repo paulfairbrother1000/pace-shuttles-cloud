@@ -58,11 +58,12 @@ function asFraction(x: unknown): number {
   return n;
 }
 
-/** Base seat price in **POUNDS** (not minor units) */
+// Base seat price in MINOR units (pence)
 function baseSeatPrice(minvalueRaw: number, minseatsRaw: number) {
   const ms = Math.max(1, Number(minseatsRaw));
-  const mv = Math.max(0, Number(minvalueRaw)); // stored as pounds in DB (e.g., 400 = £400)
-  return Math.ceil(mv / ms);                   // pounds per seat, whole-£ rounded up
+  let mv = Math.max(0, Number(minvalueRaw));
+  if (mv > 0 && mv < 1_000) mv = mv * 100; // treat “100” as £100 -> 10000p
+  return Math.ceil(mv / ms);
 }
 
 function splitAllInPounds(basePounds: number, taxRate: number, feesRate: number) {
