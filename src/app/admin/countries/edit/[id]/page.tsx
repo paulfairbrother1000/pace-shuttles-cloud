@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
+/* NEW: shared header */
+import TopBar from "@/components/Nav/TopBar";
+import RoleSwitch from "@/components/Nav/RoleSwitch";
+
 type UUID = string;
 
 type CountryRow = {
@@ -59,6 +63,27 @@ export default function CountryEditPage({
     description: "",
     picture_url: "",
   });
+
+  /* NEW: ps_user → header name + role switch visibility */
+  const [headerName, setHeaderName] = useState<string | null>(null);
+  const [hasBothRoles, setHasBothRoles] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("ps_user");
+      if (raw) {
+        const u = JSON.parse(raw);
+        const display =
+          u?.name ||
+          u?.operator_name ||
+          [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
+          null;
+        setHeaderName(display);
+        setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // preview uses the SAME normaliser as the tiles
   const previewSrc = useMemo(
@@ -141,116 +166,120 @@ export default function CountryEditPage({
   }
 
   return (
-    <div className="px-4 py-6 mx-auto max-w-3xl space-y-6">
-      <header className="flex items-center gap-3">
-        <button
-          className="px-3 py-1 rounded-lg border hover:bg-neutral-50"
-          onClick={() => router.back()}
-        >
-          ← Back
-        </button>
-        <h1 className="text-2xl font-semibold">
-          {isCreate ? "New Country" : "Edit Country"}
-        </h1>
-      </header>
+    <div className="min-h-screen">
+      {/* NEW: sticky header (non-breaking) */}
+      <TopBar userName={headerName} homeHref="/" accountHref="/login" />
+      <RoleSwitch active="site" show={hasBothRoles} />
 
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
-          {err}
-        </div>
-      )}
+      <div className="px-4 py-6 mx-auto max-w-3xl space-y-6">
+        <header className="flex items-center gap-3">
+          <button
+            className="px-3 py-1 rounded-lg border hover:bg-neutral-50"
+            onClick={() => router.back()}
+          >
+            ← Back
+          </button>
+          <h1 className="text-2xl font-semibold">
+            {isCreate ? "New Country" : "Edit Country"}
+          </h1>
+        </header>
 
-      {loading ? (
-        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-      ) : (
-        <div className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden">
-          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Left: text fields */}
-            <div className="space-y-3">
-              <label className="block text-sm">
-                <span className="text-neutral-700">Name</span>
-                <input
-                  className="w-full mt-1 border rounded-lg px-3 py-2"
-                  value={row.name}
-                  onChange={(e) => update("name", e.target.value)}
-                  placeholder="Antigua & Barbuda"
-                />
-              </label>
+        {err && (
+          <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+            {err}
+          </div>
+        )}
 
-              {/* We keep code read-only here (if present) */}
-              {row.code ? (
-                <div className="text-xs text-neutral-600">
-                  Code: <strong>{row.code}</strong>
-                </div>
-              ) : null}
-
-              <label className="block text-sm">
-                <span className="text-neutral-700">Description</span>
-                <textarea
-                  className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[120px]"
-                  value={row.description ?? ""}
-                  onChange={(e) => update("description", e.target.value)}
-                  placeholder="Optional description"
-                />
-              </label>
-            </div>
-
-            {/* Right: image field + preview */}
-            <div className="space-y-3">
-              <label className="block text-sm">
-                <span className="text-neutral-700">Picture URL or storage key</span>
-                <input
-                  className="w-full mt-1 border rounded-lg px-3 py-2"
-                  value={row.picture_url ?? ""}
-                  onChange={(e) => update("picture_url", e.target.value)}
-                  placeholder="images/countries/antigua-and-barbuda.jpg or full https URL"
-                />
-              </label>
-
-              <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                {previewSrc ? (
-                  <img
-                    src={previewSrc}
-                    alt={row.name || "Country image"}
-                    className="w-full h-48 object-cover"
-                    onError={(e) => {
-                      // fade the image if it fails so it doesn’t look broken
-                      (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
-                    }}
+        {loading ? (
+          <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
+        ) : (
+          <div className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden">
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Left: text fields */}
+              <div className="space-y-3">
+                <label className="block text-sm">
+                  <span className="text-neutral-700">Name</span>
+                  <input
+                    className="w-full mt-1 border rounded-lg px-3 py-2"
+                    value={row.name}
+                    onChange={(e) => update("name", e.target.value)}
+                    placeholder="Antigua & Barbuda"
                   />
-                ) : (
-                  <div className="h-48 w-full grid place-items-center text-xs text-neutral-500">
-                    No image
+                </label>
+
+                {/* We keep code read-only here (if present) */}
+                {row.code ? (
+                  <div className="text-xs text-neutral-600">
+                    Code: <strong>{row.code}</strong>
                   </div>
-                )}
+                ) : null}
+
+                <label className="block text-sm">
+                  <span className="text-neutral-700">Description</span>
+                  <textarea
+                    className="w-full mt-1 border rounded-lg px-3 py-2 min-h-[120px]"
+                    value={row.description ?? ""}
+                    onChange={(e) => update("description", e.target.value)}
+                    placeholder="Optional description"
+                  />
+                </label>
               </div>
-              <div className="text-xs text-neutral-600">
-                Tip: for Supabase Storage keys, use
-                {" "}
-                <code>images/countries/&lt;file&gt;</code>
-                {" "}— we’ll turn it into a full public URL automatically.
+
+              {/* Right: image field + preview */}
+              <div className="space-y-3">
+                <label className="block text-sm">
+                  <span className="text-neutral-700">Picture URL or storage key</span>
+                  <input
+                    className="w-full mt-1 border rounded-lg px-3 py-2"
+                    value={row.picture_url ?? ""}
+                    onChange={(e) => update("picture_url", e.target.value)}
+                    placeholder="images/countries/antigua-and-barbuda.jpg or full https URL"
+                  />
+                </label>
+
+                <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {previewSrc ? (
+                    <img
+                      src={previewSrc}
+                      alt={row.name || "Country image"}
+                      className="w-full h-48 object-cover"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.opacity = "0.3";
+                      }}
+                    />
+                  ) : (
+                    <div className="h-48 w-full grid place-items-center text-xs text-neutral-500">
+                      No image
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs text-neutral-600">
+                  Tip: for Supabase Storage keys, use{" "}
+                  <code>images/countries/&lt;file&gt;</code>
+                  {" "}— we’ll turn it into a full public URL automatically.
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="p-4 border-t flex items-center gap-2 justify-end">
-            <button
-              className="px-4 py-2 rounded-lg border hover:bg-neutral-50"
-              onClick={() => router.back()}
-            >
-              Cancel
-            </button>
-            <button
-              className="px-4 py-2 rounded-lg text-white"
-              style={{ backgroundColor: "#2563eb" }}
-              onClick={handleSave}
-            >
-              {isCreate ? "Create Country" : "Save Changes"}
-            </button>
+            <div className="p-4 border-t flex items-center gap-2 justify-end">
+              <button
+                className="px-4 py-2 rounded-lg border hover:bg-neutral-50"
+                onClick={() => router.back()}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 rounded-lg text-white"
+                style={{ backgroundColor: "#2563eb" }}
+                onClick={handleSave}
+              >
+                {isCreate ? "Create Country" : "Save Changes"}
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
