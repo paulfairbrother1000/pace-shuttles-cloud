@@ -4,52 +4,6 @@ import { useRouter, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { sb } from "@/lib/supabaseClient";
 
-
-// example: src/app/operator/admin/page.tsx (or your operator layout)
-
-import TopBar from "@/components/Nav/TopBar";
-import RoleSwitch from "@/components/Nav/RoleSwitch";
-import { useEffect, useState } from "react";
-
-export default function OperatorAdminPage() {
-  const [name, setName] = useState<string | null>(null);
-  const [hasBothRoles, setHasBothRoles] = useState(false);
-
-  useEffect(() => {
-    // Reuse whatever you already store (kept non-breaking)
-    try {
-      const raw = localStorage.getItem("ps_user");
-      if (raw) {
-        const u = JSON.parse(raw);
-        const display =
-          u?.operator_name || u?.name || [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null;
-        setName(display);
-        setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
-      }
-    } catch {}
-  }, []);
-
-  return (
-    <div className="min-h-screen">
-      {/* New sticky bar */}
-      <TopBar userName={name} homeHref="/" accountHref="/login" />
-
-      {/* Role switch (shows only if both roles) */}
-      <RoleSwitch active="operator" show={hasBothRoles} />
-
-      {/* ↓ your existing operator admin UI remains unchanged */}
-      <div className="pt-20 px-4">
-        {/* ... operator dashboards, mimic controls, etc. */}
-      </div>
-    </div>
-  );
-}
-
-
-
-
-
-
 /* ---------- Types ---------- */
 type PsUser = {
   id: string;

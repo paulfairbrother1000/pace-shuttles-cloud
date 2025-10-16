@@ -4,51 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
-
-// example: src/app/operator/admin/page.tsx (or your operator layout)
-"use client";
-
-import TopBar from "@/components/Nav/TopBar";
-import RoleSwitch from "@/components/Nav/RoleSwitch";
-import { useEffect, useState } from "react";
-
-export default function OperatorAdminPage() {
-  const [name, setName] = useState<string | null>(null);
-  const [hasBothRoles, setHasBothRoles] = useState(false);
-
-  useEffect(() => {
-    // Reuse whatever you already store (kept non-breaking)
-    try {
-      const raw = localStorage.getItem("ps_user");
-      if (raw) {
-        const u = JSON.parse(raw);
-        const display =
-          u?.operator_name || u?.name || [u?.first_name, u?.last_name].filter(Boolean).join(" ") || null;
-        setName(display);
-        setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
-      }
-    } catch {}
-  }, []);
-
-  return (
-    <div className="min-h-screen">
-      {/* New sticky bar */}
-      <TopBar userName={name} homeHref="/" accountHref="/login" />
-
-      {/* Role switch (shows only if both roles) */}
-      <RoleSwitch active="operator" show={hasBothRoles} />
-
-      {/* ↓ your existing operator admin UI remains unchanged */}
-      <div className="pt-20 px-4">
-        {/* ... operator dashboards, mimic controls, etc. */}
-      </div>
-    </div>
-  );
-}
-
-
-
-
+/* ---------- Small helper to render staff tile images ---------- */
 function StaffTileImage({ src, alt }: { src: string; alt: string }) {
   const [objPos, setObjPos] = useState<"50% 50%" | "50% 20%" | "50% 8%">("50% 50%");
 
@@ -70,7 +26,6 @@ function StaffTileImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-
 /* ---------- Supabase (browser) ---------- */
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -89,7 +44,6 @@ type PsUser = {
 
 type Operator = { id: string; name: string };
 type JourneyType = { id: string; name: string };
-type OperatorTypeRel = { operator_id: string; journey_type_id: string };
 
 type StaffRow = {
   id: string;
@@ -305,17 +259,15 @@ export default function OperatorStaffTilesPage() {
             >
               <div className="h-40 w-full bg-neutral-100 overflow-hidden grid place-items-center">
                 {thumbs[r.id] ? (
-<StaffTileImage
-  src={thumbs[r.id] ?? ""}
-  alt={`${r.first_name} ${r.last_name}`}
-/>
-
+                  <StaffTileImage src={thumbs[r.id] ?? ""} alt={`${r.first_name} ${r.last_name}`} />
                 ) : (
                   <span className="text-neutral-400 text-sm">No image</span>
                 )}
               </div>
               <div className="p-3">
-                <div className="font-medium">{r.first_name} {r.last_name}</div>
+                <div className="font-medium">
+                  {r.first_name} {r.last_name}
+                </div>
                 <div className="text-xs text-neutral-600">
                   {operatorName(r.operator_id)} • {typesList(r) || "—"}
                 </div>
