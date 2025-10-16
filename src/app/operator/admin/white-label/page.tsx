@@ -381,7 +381,8 @@ export default function OperatorWhiteLabelPage() {
                   disabled={creating || !date || blockedDays.has(date) || !allAgreed}
                   onClick={createBooking}
                 >
-                  {creating ? "Creating…" : "Create booking (pending)"}
+                  {creating ? "Creating…" : "Create booking (pending)"
+}
                 </button>
 
                 <button
