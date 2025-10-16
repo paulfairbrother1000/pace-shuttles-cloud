@@ -1,16 +1,17 @@
 // app/book/country/page.tsx
-"use client";
-
 import * as React from "react";
+import { Suspense } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import WizardHeader from "@/components/WizardHeader";
 
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+/* =========================================================================================
+   Split to Server Page + Client Child to satisfy Next.js requirement:
+   - This file exports a Server Component page that wraps a Client Component in <Suspense/>.
+   - The Client Component contains all original logic/JSX (no functionality removed).
+   ========================================================================================= */
 
+/* ---------- Types ---------- */
 type Country = {
   id: string;
   name: string;
@@ -29,6 +30,7 @@ type RouteRow = {
 type Assignment = { route_id: string; vehicle_id: string; is_active: boolean | null };
 type Vehicle = { id: string; active: boolean | null };
 
+/* ---------- Date helpers ---------- */
 function startOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(12, 0, 0, 0);
@@ -48,8 +50,22 @@ function withinSeason(day: Date, from?: string | null, to?: string | null): bool
   return true;
 }
 
-export default function CountryPage(): JSX.Element {
+/* ---------- Client Component (all original logic) ---------- */
+function CountryClient(): JSX.Element {
+  "use client";
+
   const router = useRouter();
+
+  // Supabase browser client
+  const sb = React.useMemo(
+    () =>
+      createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      ),
+    []
+  );
+
   const [countries, setCountries] = React.useState<Country[]>([]);
   const [liveCountryIds, setLiveCountryIds] = React.useState<Set<string>>(new Set());
   const [msg, setMsg] = React.useState<string | null>(null);
@@ -57,15 +73,20 @@ export default function CountryPage(): JSX.Element {
 
   // Load all countries for tiles
   React.useEffect(() => {
+    let cancelled = false;
     (async () => {
       const { data, error } = await sb
         .from("countries")
         .select("id,name,description,picture_url")
         .order("name");
+      if (cancelled) return;
       if (error) setMsg(error.message);
       setCountries((data as Country[]) || []);
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [sb]);
 
   // Compute "participating" countries = verified journeys exist in-season + active
   React.useEffect(() => {
@@ -135,7 +156,7 @@ export default function CountryPage(): JSX.Element {
     return () => {
       off = true;
     };
-  }, []);
+  }, [sb]);
 
   const liveCountries = React.useMemo(
     () => countries.filter((c) => liveCountryIds.has(c.id)),
@@ -200,5 +221,14 @@ export default function CountryPage(): JSX.Element {
         <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
       )}
     </div>
+  );
+}
+
+/* ---------- Server Page: wraps client child in Suspense ---------- */
+export default function Page() {
+  return (
+    <Suspense fallback={<div />}>
+      <CountryClient />
+    </Suspense>
   );
 }
