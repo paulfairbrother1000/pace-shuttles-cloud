@@ -112,7 +112,10 @@ export default function OperatorRouteDetailPage() {
       const raw = localStorage.getItem("ps_user");
       const u = raw ? (JSON.parse(raw) as PsUser) : null;
       setPsUser(u);
-      const locked = opFromQuery || (u?.operator_admin && u.operator_id) ? (opFromQuery || u!.operator_id!) : "";
+      const locked =
+        opFromQuery || (u?.operator_admin && u.operator_id)
+          ? (opFromQuery || u!.operator_id!)
+          : "";
       setOperatorId(locked);
     } catch {
       setPsUser(null);

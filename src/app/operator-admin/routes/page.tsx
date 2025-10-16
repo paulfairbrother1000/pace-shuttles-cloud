@@ -236,9 +236,8 @@ export default function OperatorRoutesTilesPage() {
             const pImg = publicImage(r.pickup?.picture_url);
             const dImg = publicImage(r.destination?.picture_url);
 
-            // ✅ Link back to the existing detail page path (pre-update behavior)
-            const effectiveOp =
-              isOpAdmin ? (psUser?.operator_id || "") : operatorId;
+            // ✅ Link back to the existing detail page path; pass op so edit locks operator
+            const effectiveOp = isOpAdmin ? (psUser?.operator_id || "") : operatorId;
             const href = `/operator-admin/routes/edit/${r.id}?op=${encodeURIComponent(effectiveOp)}`;
 
             return (
