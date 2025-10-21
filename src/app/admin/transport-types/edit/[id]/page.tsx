@@ -1,3 +1,4 @@
+// src/app/admin/transport-types/edit/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -226,6 +227,20 @@ export default function TransportTypeEditPage() {
           )}
         </div>
       </div>
+
+      {/* ---- New quick menu (additive) ---- */}
+      <nav className="flex flex-wrap items-center gap-2 text-sm">
+        <Link href="/admin/transport-types" className="rounded-full border px-3 py-1 hover:bg-neutral-50">
+          All types
+        </Link>
+        <Link href="/admin/transport-types/edit/new" className="rounded-full border px-3 py-1 hover:bg-neutral-50">
+          Create new
+        </Link>
+        {!isNew && (
+          <span className="rounded-full border px-3 py-1 bg-neutral-100">Editing: {editingId}</span>
+        )}
+      </nav>
+      {/* ---- end new menu ---- */}
 
       {msg && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">

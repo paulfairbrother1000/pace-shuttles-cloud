@@ -1,3 +1,5 @@
+// src/app/operator-admin/routes/edit/[id]/page.tsx
+
 "use client";
 
 import Image from "next/image";

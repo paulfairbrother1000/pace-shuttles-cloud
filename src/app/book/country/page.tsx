@@ -2,6 +2,7 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import WizardHeader from "@/components/WizardHeader";
@@ -57,14 +58,19 @@ export default function CountryPage(): JSX.Element {
 
   // Load all countries for tiles
   React.useEffect(() => {
+    let cancelled = false;
     (async () => {
       const { data, error } = await sb
         .from("countries")
         .select("id,name,description,picture_url")
         .order("name");
+      if (cancelled) return;
       if (error) setMsg(error.message);
       setCountries((data as Country[]) || []);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Compute "participating" countries = verified journeys exist in-season + active
@@ -174,31 +180,37 @@ export default function CountryPage(): JSX.Element {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
-      <WizardHeader step={1} />
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Select the country of travel</h1>
-        {msg && <p className="text-sm text-red-600">{msg}</p>}
-      </header>
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white">Loading…</section>}>
+      <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
+        {/* WizardHeader likely reads search params; wrap is handled by the outer Suspense, but keeping it explicit is fine too */}
+        <Suspense fallback={null}>
+          <WizardHeader step={1} />
+        </Suspense>
 
-      {loading ? (
-        <section className="rounded-2xl border p-4 bg-white">Loading…</section>
-      ) : liveCountries.length > 0 ? (
-        <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
-          {liveCountries.map((c) => (
-            <CountryTile key={c.id} c={c} />
-          ))}
-        </section>
-      ) : countries.length > 0 ? (
-        // Fallback: show all if none have live journeys (can remove if you prefer a blank state)
-        <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
-          {countries.map((c) => (
-            <CountryTile key={c.id} c={c} />
-          ))}
-        </section>
-      ) : (
-        <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
-      )}
-    </div>
+        <header className="space-y-2">
+          <h1 className="text-2xl font-semibold">Select the country of travel</h1>
+          {msg && <p className="text-sm text-red-600">{msg}</p>}
+        </header>
+
+        {loading ? (
+          <section className="rounded-2xl border p-4 bg-white">Loading…</section>
+        ) : liveCountries.length > 0 ? (
+          <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
+            {liveCountries.map((c) => (
+              <CountryTile key={c.id} c={c} />
+            ))}
+          </section>
+        ) : countries.length > 0 ? (
+          // Fallback: show all if none have live journeys
+          <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
+            {countries.map((c) => (
+              <CountryTile key={c.id} c={c} />
+            ))}
+          </section>
+        ) : (
+          <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
+        )}
+      </div>
+    </Suspense>
   );
 }

@@ -1,3 +1,5 @@
+// src/app/admin/operators/edit/[id]/page.tsx
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
