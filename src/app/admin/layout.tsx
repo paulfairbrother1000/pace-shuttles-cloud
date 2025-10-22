@@ -4,6 +4,13 @@ import TopBar from "@/components/Nav/TopBar";
 import RoleSwitch from "@/components/Nav/RoleSwitch";
 import { useEffect, useState } from "react";
 
+/**
+ * Site Admin layout:
+ * - TopBar is fixed at z-50
+ * - RoleSwitch is placed directly under it inside the same header stack
+ * - Content is padded to sit below both, so nothing overlaps
+ * - Legacy admin tab bars are hidden here (temporary kill-switch)
+ */
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [name, setName] = useState<string | null>(null);
   const [hasBothRoles, setHasBothRoles] = useState(false);
@@ -28,24 +35,31 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen">
-      {/* New sticky bar (always top-most) */}
-      <TopBar userName={name} homeHref="/" accountHref="/login" />
+      {/* Fixed header stack */}
+      <div className="fixed inset-x-0 top-0 z-50">
+        <TopBar userName={name} homeHref="/" accountHref="/login" />
+        {/* Keep RoleSwitch right under the TopBar; remove its external margins */}
+        <div className="px-4 py-3 bg-transparent">
+          <RoleSwitch
+            active="site"
+            show={hasBothRoles}
+            operatorHref="/operator-admin"
+            siteHref="/admin"
+            /* if your RoleSwitch adds margin by default, it will be visually fine here */
+          />
+        </div>
+      </div>
 
-      {/* Role switch (only when both roles) */}
-      <RoleSwitch active="site" show={hasBothRoles} operatorHref="/operator-admin" siteHref="/admin" />
-
-      {/* Content pushed below sticky bars */}
-      <div className="pt-20 px-4">{children}</div>
+      {/* Push content below BOTH bars:
+         ~56–60px TopBar + ~56px RoleSwitch area ≈ 7rem (28) */}
+      <main className="pt-28 px-4">{children}</main>
 
       {/* ──────────────────────────────────────────────────────────────
-         TEMPORARY KILL-SWITCH for legacy site-admin menus/tabs.
-         Remove this block after you delete the old component.
+         TEMP: hide any legacy tabbars/menus still rendered by pages.
+         Remove once you delete those old components.
          ────────────────────────────────────────────────────────────── */}
       <style jsx global>{`
-        /* The old admin tabs/menu sometimes render underneath our TopBar.
-           We hide common variants here. Keep this local to /admin layout. */
-
-        /* If the legacy bar is fixed, make sure it sits below and doesn’t catch clicks */
+        /* Don’t let any old fixed bars sit above our TopBar */
         .legacy-admin-menu,
         .admin-tabs,
         #admin-nav,
@@ -54,9 +68,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           pointer-events: none;
         }
 
-        /* If the legacy bar is not fixed (most cases), just hide it by structure:
-           Any nav/header/div that directly contains known admin links. Uses :has(),
-           which is supported in modern browsers and our admin UI. */
+        /* Hide containers that directly include the legacy admin links */
         :is(nav, header, div):has(> a[href="/admin/destinations"]),
         :is(nav, header, div):has(> a[href="/admin/pickups"]),
         :is(nav, header, div):has(> a[href="/admin/routes"]),
