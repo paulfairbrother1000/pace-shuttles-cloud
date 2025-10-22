@@ -2,6 +2,7 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useRouter } from "next/navigation";
 import WizardHeader from "@/components/WizardHeader";
@@ -174,31 +175,33 @@ export default function CountryPage(): JSX.Element {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
-      <WizardHeader step={1} />
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Select the country of travel</h1>
-        {msg && <p className="text-sm text-red-600">{msg}</p>}
-      </header>
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <div className="mx-auto max-w-6xl px-4 py-6 space-y-6">
+        <WizardHeader step={1} />
+        <header className="space-y-2">
+          <h1 className="text-2xl font-semibold">Select the country of travel</h1>
+          {msg && <p className="text-sm text-red-600">{msg}</p>}
+        </header>
 
-      {loading ? (
-        <section className="rounded-2xl border p-4 bg-white">Loading…</section>
-      ) : liveCountries.length > 0 ? (
-        <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
-          {liveCountries.map((c) => (
-            <CountryTile key={c.id} c={c} />
-          ))}
-        </section>
-      ) : countries.length > 0 ? (
-        // Fallback: show all if none have live journeys (can remove if you prefer a blank state)
-        <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
-          {countries.map((c) => (
-            <CountryTile key={c.id} c={c} />
-          ))}
-        </section>
-      ) : (
-        <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
-      )}
-    </div>
+        {loading ? (
+          <section className="rounded-2xl border p-4 bg-white">Loading…</section>
+        ) : liveCountries.length > 0 ? (
+          <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
+            {liveCountries.map((c) => (
+              <CountryTile key={c.id} c={c} />
+            ))}
+          </section>
+        ) : countries.length > 0 ? (
+          // Fallback: show all if none have live journeys (can remove if you prefer a blank state)
+          <section className="columns-1 sm:columns-2 lg:columns-3 gap-4 [column-fill:_balance]">
+            {countries.map((c) => (
+              <CountryTile key={c.id} c={c} />
+            ))}
+          </section>
+        ) : (
+          <section className="rounded-2xl border p-4 bg-white">No countries available yet.</section>
+        )}
+      </div>
+    </Suspense>
   );
 }
