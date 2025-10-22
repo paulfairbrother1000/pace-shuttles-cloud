@@ -1429,6 +1429,13 @@ const unitMinor =
                           onOpenPickup={() => openPickup(pu?.id)}
                           onOpenDestination={() => openDestination(de?.id)}
                         />
+
+                        {/* Legend to clarify mobile UI */}
+<div className="flex justify-between px-1 -mt-1">
+  <span className="text-[11px] text-muted">Seat price (incl. tax &amp; fees)</span>
+  <span className="text-[11px] text-muted">Seats</span>
+</div>
+
                       </div>
                     );
                   })
