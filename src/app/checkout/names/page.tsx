@@ -1,13 +1,13 @@
 // src/app/checkout/names/page.tsx
 "use client";
 
-
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import ClientTnCConsent from "@/components/ClientTnCConsent";
 import { submitCheckout } from "@/utils/checkout";
 
-export default function NamesPage() {
+/** Inner client component that uses useSearchParams */
+function NamesInner(): JSX.Element {
   const searchParams = useSearchParams();
 
   // Prefer URL (?quoteToken=... or ?token=...) then sessionStorage fallback
@@ -35,13 +35,13 @@ export default function NamesPage() {
     ccy: "GBP",
     passengers: [
       { first_name: "Alex", last_name: "Fairbrother", is_lead: true },
-      { first_name: "Sam", last_name: "Guest" }
+      { first_name: "Sam", last_name: "Guest" },
     ],
     lead_first_name: "Alex",
     lead_last_name: "Fairbrother",
     lead_email: "alex@example.com",
     lead_phone: "+1 555 123 4567",
-    perSeatAllIn: 120
+    perSeatAllIn: 120,
   };
 
   async function onContinue() {
@@ -97,5 +97,20 @@ export default function NamesPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+/** Page export with Suspense boundary to satisfy Next.js CSR bailout rules */
+export default function NamesPage(): JSX.Element {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-2xl p-6">
+          <div className="rounded-2xl border p-4 bg-white">Loading…</div>
+        </div>
+      }
+    >
+      <NamesInner />
+    </Suspense>
   );
 }
