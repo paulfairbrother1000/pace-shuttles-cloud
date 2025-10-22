@@ -1,10 +1,16 @@
-import AdminNav from "./_components/AdminNav";
+// BEFORE (you likely had something like this):
+// import AdminTabs from "@/components/Nav/AdminTabs";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
-    <>
-      <AdminNav />
-      <main className="mx-auto max-w-6xl px-6 py-6">{children}</main>
-    </>
+    <div className="min-h-screen">
+      {/* Keep the new header */}
+      <TopBar userName={name} homeHref="/" accountHref="/login" />
+      {/* ❌ remove the old tabs row */} 
+      {/* <AdminTabs /> */}
+
+      {/* Give content room below the sticky TopBar */}
+      <main className="pt-20">{children}</main>
+    </div>
   );
 }

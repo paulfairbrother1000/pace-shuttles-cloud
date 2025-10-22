@@ -36,12 +36,28 @@ export default function OperatorAdminLayout({
       <TopBar userName={name} homeHref="/" accountHref="/login" />
 
       {/* Segmented switch (only if user has both roles) */}
-      <RoleSwitch active="operator" show={hasBothRoles} operatorHref="/operator-admin" siteHref="/admin" />
+      <RoleSwitch
+        active="operator"
+        show={hasBothRoles}
+        operatorHref="/operator-admin"
+        siteHref="/admin"
+      />
 
-      {/* Push content below sticky bar */}
-      <div className="pt-20 px-4">
-        {children}
-      </div>
+      {/* Push content below sticky header + switch */}
+      <div className="pt-24 px-4">{children}</div>
+
+      {/* Kill-switch for any legacy operator tabs that pages might still render.
+          This is scoped here so it only affects /operator-admin pages. */}
+      <style jsx global>{`
+        /* Common legacy selectors we used to render for operator admin */
+        #operator-tabs,
+        .operator-tabs,
+        .operator-section-tabs,
+        nav[data-legacy-tabs="true"],
+        nav[aria-label="Operator sections"] {
+          display: none !important;
+        }
+      `}</style>
     </div>
   );
 }
