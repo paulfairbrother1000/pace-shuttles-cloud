@@ -1,15 +1,12 @@
-// app/layout.tsx
-import "./globals.css";
-import { Suspense } from "react";
+// src/app/layout.tsx (or app/layout.tsx)
+import SiteHeader from "@/components/SiteHeader";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        {/* Suspense boundary fixes all descendants that use useSearchParams */}
-        <Suspense fallback={null}>
-          {children}
-        </Suspense>
+        <SiteHeader />
+        {children}
       </body>
     </html>
   );

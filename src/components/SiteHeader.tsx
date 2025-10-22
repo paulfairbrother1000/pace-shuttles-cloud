@@ -5,6 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
+import RoleAwareMenu from "@/components/RoleAwareMenu";
 
 type PsUser = {
   first_name?: string | null;
@@ -37,6 +38,9 @@ export default function SiteHeader(): JSX.Element {
   const [profile, setProfile] = React.useState<PsUser | null>(null);
   const [loading, setLoading] = React.useState(true);
 
+  // drawer
+  const [open, setOpen] = React.useState(false);
+
   const supabase = React.useMemo(() => getSupabase(), []);
 
   const recomputeFromSession = React.useCallback(
@@ -60,11 +64,20 @@ export default function SiteHeader(): JSX.Element {
 
       if (cacheLooksWrong) {
         let row: PsUser | null = null;
-        const byId = await supabase.from("users").select("first_name, site_admin, operator_admin, operator_id, email").eq("id", session.user.id).maybeSingle();
+        const byId = await supabase
+          .from("users")
+          .select("first_name, site_admin, operator_admin, operator_id, email")
+          .eq("id", session.user.id)
+          .maybeSingle();
+
         if (!byId.error && byId.data) {
           row = byId.data as PsUser;
         } else if (email) {
-          const byEmail = await supabase.from("users").select("first_name, site_admin, operator_admin, operator_id, email").eq("email", email).maybeSingle();
+          const byEmail = await supabase
+            .from("users")
+            .select("first_name, site_admin, operator_admin, operator_id, email")
+            .eq("email", email)
+            .maybeSingle();
           if (!byEmail.error && byEmail.data) row = byEmail.data as PsUser;
         }
 
@@ -114,77 +127,89 @@ export default function SiteHeader(): JSX.Element {
     (authEmail ? authEmail.split("@")[0] : "") ||
     "";
 
-  /* ======================= UI (visual-only changes) ======================= */
+  /* ======================= UI ======================= */
   return (
-    <header className="ps-header">
-      {/* Header theme — full-bleed solid background, no grey/white edges */}
-      <style jsx global>{`
-        .ps-header {
-          --bg:              var(--bg, #0f1a2a);
-          --border:          var(--border, #20334d);
-          --text:            var(--text, #eaf2ff);
-          --muted:           var(--muted, #a3b3cc);
-          --accent:          var(--accent, #2a6cd6);
-          --accent-contrast: var(--accent-contrast, #ffffff);
-          --radius:          var(--radius, 14px);
-          --nav-bg:          color-mix(in oklab, var(--bg) 88%, white); /* ~one shade lighter than bg */
+    <>
+      {/* Top bar */}
+      <header
+        className="fixed top-0 left-0 right-0 z-[100] bg-neutral-700 text-white"
+        role="navigation"
+        aria-label="Site navigation"
+      >
+        <div className="mx-auto max-w-6xl px-4 py-2 flex items-center justify-between">
+          {/* Left: burger (white) */}
+          <button
+            type="button"
+            aria-label="Open menu"
+            onClick={() => setOpen(true)}
+            className="inline-flex items-center gap-2"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M3 6h18M3 12h18M3 18h18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
 
-          width: 100%;
-          background: var(--nav-bg);
-          color: var(--text);
-          border-bottom: 1px solid color-mix(in oklab, var(--bg) 70%, white 0%);
-        }
-
-        /* Center content; header background stays full width */
-        .ps-header .bar { max-width: 72rem; margin: 0 auto; padding: 0.75rem 1.5rem; }
-
-        /* Brand + pills */
-        .ps-header a.brand { color: var(--text); text-decoration: none; }
-        .ps-header .pill {
-          border-radius: 9999px;
-          padding: .375rem .75rem;
-          font-size: .85rem;
-          line-height: 1.2;
-          border: 1px solid color-mix(in oklab, var(--bg) 60%, white 0%);
-          color: var(--text);
-          background: transparent;
-          transition: background-color .15s ease, opacity .15s ease;
-        }
-        .ps-header .pill:hover { background: color-mix(in oklab, var(--bg) 80%, white 0%); }
-        .ps-header .pill.active {
-          background: var(--accent);
-          color: var(--accent-contrast);
-          border-color: transparent;
-        }
-      `}</style>
-
-      <div className="bar flex items-center justify-between">
-        {/* Left: Brand */}
-        <div className="flex items-center gap-3">
-          <Link href="/" className="brand font-semibold">Pace Shuttles</Link>
+          {/* Right: Home + Login/Account */}
+          <nav className="flex items-center gap-4 text-sm">
+            <Link href="/" className="hover:opacity-80">Home</Link>
+            {authEmail ? (
+              <Link href="/account" className="hover:opacity-80" title={authEmail}>
+                {firstName || "Account"}
+              </Link>
+            ) : (
+              <button
+                className="hover:opacity-80"
+                onClick={() => {
+                  try {
+                    localStorage.setItem(
+                      "next_after_login",
+                      typeof window !== "undefined"
+                        ? window.location.pathname + window.location.search
+                        : "/"
+                    );
+                  } catch {}
+                  router.push("/login");
+                }}
+              >
+                Login
+              </button>
+            )}
+          </nav>
         </div>
+      </header>
 
-        {/* Right: Pills */}
-        <nav className="flex items-center gap-2">
-          <Link href="/" className="pill active text-sm">Home</Link>
-
-          {(profile?.operator_admin || profile?.site_admin) ? (
-            <Link href="/operator/admin" className="pill text-sm">Operator Admin</Link>
-          ) : null}
-
-          {profile?.site_admin ? (
-            <Link href="/admin" className="pill text-sm">Admin</Link>
-          ) : null}
-
-          {authEmail ? (
-            <Link href="/account" className="pill active text-sm" title={authEmail}>
-              {firstName || "Account"}
-            </Link>
-          ) : (
-            <Link href="/login" className="pill active text-sm">Login</Link>
-          )}
-        </nav>
+      {/* Left drawer w/ RoleAwareMenu */}
+      <div
+        className={`fixed inset-0 z-[99] ${open ? "pointer-events-auto" : "pointer-events-none"}`}
+        aria-hidden={!open}
+      >
+        {/* overlay */}
+        <div
+          className={`absolute inset-0 bg-black/40 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
+          onClick={() => setOpen(false)}
+        />
+        {/* panel */}
+        <aside
+          className={`absolute top-0 left-0 h-full w-[320px] max-w-[80%] bg-white text-black shadow-xl
+                      transition-transform ${open ? "translate-x-0" : "-translate-x-full"}`}
+          role="dialog"
+          aria-label="Main menu"
+        >
+          <div className="p-3 border-b flex items-center justify-between">
+            <div className="font-medium">Menu</div>
+            <button aria-label="Close menu" onClick={() => setOpen(false)} className="px-2 py-1 rounded border">
+              Close
+            </button>
+          </div>
+          {/* Your existing role-aware nav goes here */}
+          <div className="p-3 overflow-auto h-[calc(100%-48px)]">
+            <RoleAwareMenu />
+          </div>
+        </aside>
       </div>
-    </header>
+
+      {/* spacer so page content doesn't hide under fixed bar */}
+      <div aria-hidden className="h-[44px]" />
+    </>
   );
 }
