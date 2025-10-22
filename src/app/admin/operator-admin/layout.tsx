@@ -21,7 +21,7 @@ export default function OperatorAdminLayout({ children }: { children: React.Reac
         setName(display);
         setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
       }
-    } catch {/* ignore */}
+    } catch { /* ignore */ }
   }, []);
 
   return (
@@ -29,14 +29,24 @@ export default function OperatorAdminLayout({ children }: { children: React.Reac
       <div className="fixed inset-x-0 top-0 z-50">
         <TopBar userName={name} homeHref="/" accountHref="/login" />
         <div className="px-4 py-3">
-          <RoleSwitch active="operator" show={hasBothRoles} operatorHref="/operator-admin" siteHref="/admin" />
+          <RoleSwitch
+            active="operator"
+            show={hasBothRoles}
+            operatorHref="/operator-admin"
+            siteHref="/admin"
+          />
         </div>
       </div>
 
       <main className="pt-28 px-4">{children}</main>
 
-      {/* Hide any legacy operator menus if a page re-renders them */}
+      {/* Hide legacy headers/old tabbars if a page still renders them */}
       <style jsx global>{`
+        .ps-header,
+        header.ps-header,
+        header[aria-label="Top navigation"] {
+          display: none !important;
+        }
         .mt-14.mx-4.inline-flex[role="tablist"] { display: none !important; }
       `}</style>
     </div>
