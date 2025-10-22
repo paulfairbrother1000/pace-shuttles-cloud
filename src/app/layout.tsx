@@ -1,7 +1,9 @@
-// src/app/layout.tsx (or app/layout.tsx)
+// app/layout.tsx  (or src/app/layout.tsx)
+import type { ReactNode } from "react";
 import SiteHeader from "@/components/SiteHeader";
+import "./globals.css";
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>

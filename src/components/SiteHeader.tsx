@@ -5,7 +5,6 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
-import RoleAwareMenu from "@/components/RoleAwareMenu";
 
 type PsUser = {
   first_name?: string | null;
@@ -28,6 +27,36 @@ function readCache(): PsUser | null {
 }
 function writeCache(u: PsUser) {
   try { localStorage.setItem("ps_user", JSON.stringify(u || {})); } catch {}
+}
+
+/** Minimal built-in role menu to avoid external dependency */
+function RoleMenuInline({ profile }: { profile: PsUser | null }) {
+  return (
+    <nav className="flex flex-col gap-2">
+      <Link href="/" className="px-3 py-2 rounded hover:bg-neutral-100">Home</Link>
+
+      {/* Operator/Admin items only when allowed */}
+      {profile?.operator_admin ? (
+        <Link href="/operator/admin" className="px-3 py-2 rounded hover:bg-neutral-100">
+          Operator Admin
+        </Link>
+      ) : null}
+
+      {profile?.site_admin ? (
+        <Link href="/admin" className="px-3 py-2 rounded hover:bg-neutral-100">Admin</Link>
+      ) : null}
+
+      {/* Always show booking entry points */}
+      <Link href="/book/country" className="px-3 py-2 rounded hover:bg-neutral-100">Book a Shuttle</Link>
+
+      {/* Account / Login */}
+      {profile?.email ? (
+        <Link href="/account" className="px-3 py-2 rounded hover:bg-neutral-100">Account</Link>
+      ) : (
+        <Link href="/login" className="px-3 py-2 rounded hover:bg-neutral-100">Login</Link>
+      )}
+    </nav>
+  );
 }
 
 export default function SiteHeader(): JSX.Element {
@@ -127,7 +156,6 @@ export default function SiteHeader(): JSX.Element {
     (authEmail ? authEmail.split("@")[0] : "") ||
     "";
 
-  /* ======================= UI ======================= */
   return (
     <>
       {/* Top bar */}
@@ -149,7 +177,7 @@ export default function SiteHeader(): JSX.Element {
             </svg>
           </button>
 
-          {/* Right: Home + Login/Account */}
+          {/* Right: Home + Login/Account (always visible) */}
           <nav className="flex items-center gap-4 text-sm">
             <Link href="/" className="hover:opacity-80">Home</Link>
             {authEmail ? (
@@ -178,7 +206,7 @@ export default function SiteHeader(): JSX.Element {
         </div>
       </header>
 
-      {/* Left drawer w/ RoleAwareMenu */}
+      {/* Left drawer */}
       <div
         className={`fixed inset-0 z-[99] ${open ? "pointer-events-auto" : "pointer-events-none"}`}
         aria-hidden={!open}
@@ -201,14 +229,14 @@ export default function SiteHeader(): JSX.Element {
               Close
             </button>
           </div>
-          {/* Your existing role-aware nav goes here */}
+
           <div className="p-3 overflow-auto h-[calc(100%-48px)]">
-            <RoleAwareMenu />
+            <RoleMenuInline profile={profile} />
           </div>
         </aside>
       </div>
 
-      {/* spacer so page content doesn't hide under fixed bar */}
+      {/* spacer so content isn’t hidden under fixed header */}
       <div aria-hidden className="h-[44px]" />
     </>
   );
