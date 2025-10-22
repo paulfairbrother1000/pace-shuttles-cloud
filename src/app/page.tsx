@@ -1093,8 +1093,11 @@ const unitMinor =
 
               <section className="space-y-4">
                 <p className="text-lg">
-                  <strong>Pace Shuttles</strong> offers fractional luxury charter and shuttle services to world-class,
-                  often inaccessible, luxury destinations.
+                  <strong>Luxury Transfers, Reimagined.</strong> Discover a new way to move between exclusive islands and shores with 
+                  semi-private charters that blend exclusivity with ease. Discover some of the finest beach clubs, restaurants and bars in style.
+                </p>
+                <p>
+                  Every journey feels like a vacation of its own. With <strong>Pace Shuttles the journey IS the destination.</strong>
                 </p>
               </section>
 
