@@ -1097,7 +1097,7 @@ const unitMinor =
                 </p>
                    <p className="text-lg">
                   Discover a new way to move between exclusive islands and shores with 
-                  semi-private charters that blend exclusivity with ease. Discover some of the finest beach clubs, restaurants and bars in style, where every journey feels like a vacation of its own.
+                  semi-private, shared charters that blend exclusivity with ease. Discover some of the finest beach clubs, restaurants and bars in style, where every journey feels like a vacation of its own.
                 </p>
                  <p className="text-lg">
                   With <strong>Pace Shuttles the journey IS the destination.</strong>
