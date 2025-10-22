@@ -509,10 +509,39 @@ export default function Page() {
         }, [countryId]);
 
         // ===== SECTION 3: Derived data, pricing, handlers, calendar helpers =====
+        /* ---------- VERIFIED ROUTE FILTER (active, capacity-carrying vehicles only) ---------- */
+
+        // 1) Vehicles that are active and have capacity (>0)
+        const activeVehicleIds = useMemo(() => {
+          const ids = new Set<string>();
+          for (const v of vehicles) {
+            const seats = Number(v?.maxseats ?? 0);
+            if (v && v.active !== false && Number.isFinite(seats) && seats > 0) {
+              ids.add(v.id);
+            }
+          }
+          return ids;
+        }, [vehicles]);
+
+        // 2) Routes that have at least one ACTIVE assignment to an active, capacity-carrying vehicle
+        const routesWithActiveVehicle = useMemo(() => {
+          const s = new Set<string>();
+          for (const a of assignments) {
+            if (a.is_active === false) continue;
+            if (activeVehicleIds.has(a.vehicle_id)) s.add(a.route_id);
+          }
+          return s;
+        }, [assignments, activeVehicleIds]);
+
+        // 3) Only show routes that meet the above condition
         const verifiedRoutes = useMemo(() => {
-          const withAsn = new Set(assignments.filter(a => a.is_active !== false).map((a) => a.route_id));
-          return routes.filter((r) => withAsn.has(r.id));
-        }, [routes, assignments]);
+          return routes.filter(r => routesWithActiveVehicle.has(r.id));
+        }, [routes, routesWithActiveVehicle]);
+
+
+
+
+
 
         type Occurrence = { id: string; route_id: string; dateISO: string };
         const occurrences: Occurrence[] = useMemo(() => {
