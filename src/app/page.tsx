@@ -1095,11 +1095,11 @@ const unitMinor =
                 <p className="text-lg">
                   <strong>Luxury Transfers, Reimagined.</strong> 
                 </p>
-                <P>
+                   <p className="text-lg">
                   Discover a new way to move between exclusive islands and shores with 
                   semi-private charters that blend exclusivity with ease. Discover some of the finest beach clubs, restaurants and bars in style, where every journey feels like a vacation of its own.
-                </P>
-                <p>
+                </p>
+                 <p className="text-lg">
                   With <strong>Pace Shuttles the journey IS the destination.</strong>
                 </p>
               </section>
