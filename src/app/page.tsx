@@ -1104,7 +1104,7 @@ const unitMinor =
                 </p>
               </section>
 
-              <section>
+              <section className="text-center pt-6">
                 <div className="relative w-full overflow-hidden rounded-2xl tile tile-border">
                   <div className="aspect-[16/10] sm:aspect-[21/9]">
                     <Image
