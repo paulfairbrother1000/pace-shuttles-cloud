@@ -1,9 +1,19 @@
 // src/app/orders/confirm/page.tsx
 "use client";
 
+import { Suspense } from "react";
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+
+/** Outer component adds the Suspense boundary required by Next 13+/15 when using useSearchParams */
+export default function OrdersConfirmPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-3xl px-4 py-8">Loading…</div>}>
+      <ConfirmInner />
+    </Suspense>
+  );
+}
 
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -39,7 +49,8 @@ function applyTaxFees(seatNet: number, tax: number, fees: number): number {
   return seatNet + taxDue + feesDue;
 }
 
-export default function OrderConfirmPage() {
+/** Inner component contains the original logic and safely calls useSearchParams */
+function ConfirmInner() {
   const params = useSearchParams();
   const router = useRouter();
 
@@ -68,47 +79,64 @@ export default function OrderConfirmPage() {
           sb.from("pickup_points").select("id,name").eq("id", pickupId).maybeSingle(),
           sb.from("destinations").select("id,name").eq("id", destinationId).maybeSingle(),
         ]);
-        setRoute(rRow as RouteRow || null);
-        setPickup(pRow as Minimal || null);
-        setDest(dRow as Minimal || null);
+        setRoute((rRow as RouteRow) || null);
+        setPickup((pRow as Minimal) || null);
+        setDest((dRow as Minimal) || null);
 
         // Build buckets (same cheapest-vehicle logic)
         const [{ data: taxRows }, { data: asnRows }, { data: vehRows }, { data: opRows }] = await Promise.all([
           sb.from("tax_fees").select("tax,fees").limit(1),
-          sb.from("route_vehicle_assignments").select("route_id,vehicle_id,preferred,is_active").eq("route_id", routeId).eq("is_active", true),
-          sb.from("vehicles").select("id,operator_id,minseats,maxseats,minvalue,maxseatdiscount,preferred,active").eq("active", true),
+          sb
+            .from("route_vehicle_assignments")
+            .select("route_id,vehicle_id,preferred,is_active")
+            .eq("route_id", routeId)
+            .eq("is_active", true),
+          sb
+            .from("vehicles")
+            .select("id,operator_id,minseats,maxseats,minvalue,maxseatdiscount,preferred,active")
+            .eq("active", true),
           sb.from("operators").select("id,csat"),
         ]);
 
         const tax = Number(taxRows?.[0]?.tax || 0);
         const fees = Number(taxRows?.[0]?.fees || 0);
 
-        const ops = new Map<string, number>((opRows || []).map((o: any) => [o.id, Number(o.csat || 0)]));
+        const ops = new Map<string, number>(
+          (opRows || []).map((o: any) => [o.id, Number(o.csat || 0)])
+        );
         const vehMap = new Map<string, any>((vehRows || []).map((v: any) => [v.id, v]));
-        const asn = (asnRows || []).map((a: any) => ({ ...a, v: vehMap.get(a.vehicle_id) })).filter((a: any) => a.v);
+        const asn = (asnRows || [])
+          .map((a: any) => ({ ...a, v: vehMap.get(a.vehicle_id) }))
+          .filter((a: any) => a.v);
 
-        const buckets: Bucket[] = asn.map((a: any) => {
-          const v = a.v;
-          const minseats = Number(v.minseats || 0);
-          const minvalue = Number(v.minvalue || 0);
-          return {
-            id: v.id,
-            base: minseats ? (minvalue / minseats) : Number.POSITIVE_INFINITY,
-            minvalue,
-            maxseats: Number(v.maxseats || 0),
-            maxdisc: Number(v.maxseatdiscount || 0),
-            csat: ops.get(v.operator_id) || 0,
-            prefRva: !!a.preferred,
-            prefVeh: !!v.preferred,
-            operator_id: v.operator_id,
-            net: 0,
-          };
-        }).filter(b => isFinite(b.base));
+        const buckets: Bucket[] = asn
+          .map((a: any) => {
+            const v = a.v;
+            const minseats = Number(v.minseats || 0);
+            const minvalue = Number(v.minvalue || 0);
+            return {
+              id: v.id,
+              base: minseats ? minvalue / minseats : Number.POSITIVE_INFINITY,
+              minvalue,
+              maxseats: Number(v.maxseats || 0),
+              maxdisc: Number(v.maxseatdiscount || 0),
+              csat: ops.get(v.operator_id) || 0,
+              prefRva: !!a.preferred,
+              prefVeh: !!v.preferred,
+              operator_id: v.operator_id,
+              net: 0,
+            };
+          })
+          .filter((b) => isFinite(b.base));
 
-        if (!buckets.length) { setPerSeat(null); setLoading(false); return; }
+        if (!buckets.length) {
+          setPerSeat(null);
+          setLoading(false);
+          return;
+        }
 
         // Sort by base price, then csat, then preferred flags
-        buckets.sort((a,b) => {
+        buckets.sort((a, b) => {
           if (Math.abs(a.base - b.base) > EPS) return a.base - b.base;
           if (a.csat !== b.csat) return b.csat - a.csat;
           if (a.prefRva !== b.prefRva) return a.prefRva ? -1 : 1;
@@ -116,11 +144,12 @@ export default function OrderConfirmPage() {
           return 0;
         });
 
-        // Next seat from cheapest bucket (simple version; your home page already did calendar-aware pricing)
+        // Next seat from cheapest bucket
         const cheapest = buckets[0];
-        const seatNet = (cheapest.net + cheapest.base < cheapest.minvalue - EPS)
-          ? cheapest.base
-          : cheapest.base * (1 - cheapest.maxdisc);
+        const seatNet =
+          cheapest.net + cheapest.base < cheapest.minvalue - EPS
+            ? cheapest.base
+            : cheapest.base * (1 - cheapest.maxdisc);
 
         const user = applyTaxFees(seatNet, tax, fees);
         setPerSeat(Math.round(user * 100) / 100);
@@ -135,12 +164,12 @@ export default function OrderConfirmPage() {
   async function payNow() {
     // TODO: replace with Stripe/PSP integration.
     // For now, just mimic a "payment" step and land on a success screen.
-    const params = new URLSearchParams({
+    const q = new URLSearchParams({
       routeId,
       date: dateISO,
       qty: String(qty),
     });
-    router.push(`/orders/success2?${params.toString()}`);
+    router.push(`/orders/success2?${q.toString()}`);
   }
 
   return (
@@ -156,10 +185,14 @@ export default function OrderConfirmPage() {
             <div className="font-medium">{route?.route_name || "Journey"}</div>
             <div className="text-sm text-neutral-700">
               {dateISO ? new Date(dateISO + "T12:00:00").toLocaleDateString() : "—"}
-              {route?.pickup_time ? ` • ${hhmmLocalToDisplay(route.pickup_time)}` : ""}<br/>
+              {route?.pickup_time ? ` • ${hhmmLocalToDisplay(route.pickup_time)}` : ""}
+              <br />
               {pickup?.name && dest?.name ? `${pickup.name} → ${dest.name}` : null}
               {typeof route?.approx_duration_mins === "number" && (
-                <> • Duration: <strong>{route.approx_duration_mins} mins</strong></>
+                <>
+                  {" "}
+                  • Duration: <strong>{route.approx_duration_mins} mins</strong>
+                </>
               )}
             </div>
           </div>
@@ -167,8 +200,15 @@ export default function OrderConfirmPage() {
           <div className="rounded-2xl border bg-white p-4 shadow">
             <div className="flex items-center justify-between">
               <div className="text-sm">
-                Tickets: <strong>{qty}</strong><br/>
-                {typeof perSeat === "number" ? <>Per seat: <strong>${perSeat.toFixed(2)}</strong></> : "Per-seat unavailable"}
+                Tickets: <strong>{qty}</strong>
+                <br />
+                {typeof perSeat === "number" ? (
+                  <>
+                    Per seat: <strong>${perSeat.toFixed(2)}</strong>
+                  </>
+                ) : (
+                  "Per-seat unavailable"
+                )}
               </div>
               <div className="text-base">
                 Total: <strong>{total !== null ? `$${total.toFixed(2)}` : "—"}</strong>
@@ -177,7 +217,9 @@ export default function OrderConfirmPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button className="rounded-lg border px-4 py-2" onClick={() => router.back()}>Back</button>
+            <button className="rounded-lg border px-4 py-2" onClick={() => router.back()}>
+              Back
+            </button>
             <button
               className="rounded-lg bg-neutral-900 text-white px-4 py-2 disabled:opacity-60"
               disabled={typeof total !== "number"}
