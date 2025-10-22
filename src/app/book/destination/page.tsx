@@ -2,6 +2,7 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import WizardHeader from "@/components/WizardHeader";
@@ -54,8 +55,8 @@ async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | nul
   return data?.signedUrl ?? null;
 }
 
-/* ---------- Page ---------- */
-export default function DestinationPage(): JSX.Element {
+/* ---------- Suspense-wrapped inner page ---------- */
+function Inner(): JSX.Element {
   const sp = useSearchParams();
   const router = useRouter();
 
@@ -289,5 +290,14 @@ export default function DestinationPage(): JSX.Element {
         </section>
       )}
     </div>
+  );
+}
+
+/* ---------- Suspense wrapper (required by Next 15 when using useSearchParams) ---------- */
+export default function DestinationPage(): JSX.Element {
+  return (
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <Inner />
+    </Suspense>
   );
 }
