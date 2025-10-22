@@ -3,6 +3,7 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import WizardHeader from "@/components/WizardHeader";
@@ -138,7 +139,11 @@ function applyTaxFees(seatNet: number, tax: number, fees: number): number {
   return seatNet + taxDue + feesDue;
 }
 
-export default function Page() {
+/* =========================
+   SUSPENSE-WRAPPED VERSION
+   ========================= */
+
+function Inner() {
   const params = useSearchParams();
   const router = useRouter();
 
@@ -685,5 +690,13 @@ export default function Page() {
         </section>
       )}
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <Inner />
+    </Suspense>
   );
 }
