@@ -1,10 +1,15 @@
+// src/app/admin/layout.tsx
 "use client";
 
 import TopBar from "@/components/Nav/TopBar";
 import RoleSwitch from "@/components/Nav/RoleSwitch";
 import { useEffect, useState } from "react";
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default function SiteAdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [name, setName] = useState<string | null>(null);
   const [hasBothRoles, setHasBothRoles] = useState(false);
 
@@ -14,8 +19,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       if (raw) {
         const u = JSON.parse(raw);
         const display =
-          u?.name ||
           u?.operator_name ||
+          u?.name ||
           [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
           null;
         setName(display);
@@ -28,10 +33,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen">
-      {/* Sticky global bar */}
+      {/* Single sticky header across all /admin pages */}
       <TopBar userName={name} homeHref="/" accountHref="/login" />
 
-      {/* Role switch (only if user has both) */}
+      {/* Segmented role switcher (only if user has both roles) */}
       <RoleSwitch active="site" show={hasBothRoles} operatorHref="/operator-admin" siteHref="/admin" />
 
       {/* Push page content below the sticky header */}
