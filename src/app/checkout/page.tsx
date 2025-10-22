@@ -1,6 +1,7 @@
+// app/checkout/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
@@ -92,8 +93,8 @@ export function isWetTrip(wet_or_dry?: string | null) {
   return (wet_or_dry || "").toLowerCase() === "wet";
 }
 
-
-export default function CheckoutPage() {
+/** Client subtree that uses useSearchParams — wrapped by Suspense in default export */
+function CheckoutClient() {
   const sp = useSearchParams();
   const qid = sp.get("qid");
 
@@ -328,5 +329,14 @@ export default function CheckoutPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/** Default export: Suspense boundary for CSR bailout safety in Next 15 */
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-4">Loading…</div>}>
+      <CheckoutClient />
+    </Suspense>
   );
 }
