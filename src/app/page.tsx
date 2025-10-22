@@ -7,6 +7,9 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
+import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
+
+
 /* ---------- Inline, dependency-free client top nav ---------- */
 function ClientTopNavBar({ userName }: { userName?: string | null }) {
   return (
@@ -315,7 +318,19 @@ export default function Page() {
   return (
     <div className="ps-theme min-h-screen bg-app text-app">
       {/* New: thin top nav (fixed). Everything else below remains unchanged */}
-      <ClientTopNavBar userName={displayName} />
+     
+
+
+
+{process.env.NEXT_PUBLIC_APP_FLAG_USE_ROLE_AWARE_MENU === "true" ? (
+  <RoleAwareMenu />
+) : (
+  <ClientTopNavBar userName={displayName} />
+)}
+
+
+
+
 
       <style jsx global>{`
   /* Scope to .ps-theme so we can roll out gradually */
