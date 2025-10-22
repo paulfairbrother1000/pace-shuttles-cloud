@@ -1,12 +1,9 @@
+// src/app/admin/countries/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-
-/* NEW: shared header */
-import TopBar from "@/components/Nav/TopBar";
-import RoleSwitch from "@/components/Nav/RoleSwitch";
 
 type UUID = string;
 
@@ -32,7 +29,7 @@ function supa() {
   return null;
 }
 
-/* ---------- Image normaliser (self-contained) ---------- */
+/* ---------- Image normaliser (matches tiles + edit page) ---------- */
 function ensureImageUrl(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -61,27 +58,6 @@ export default function AdminCountriesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<CountryRow[]>([]);
   const [q, setQ] = useState("");
-
-  /* NEW: ps_user → header name + role switch visibility */
-  const [headerName, setHeaderName] = useState<string | null>(null);
-  const [hasBothRoles, setHasBothRoles] = useState(false);
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("ps_user");
-      if (raw) {
-        const u = JSON.parse(raw);
-        const display =
-          u?.name ||
-          u?.operator_name ||
-          [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
-          null;
-        setHeaderName(display);
-        setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
   useEffect(() => {
     let off = false;
@@ -123,87 +99,82 @@ export default function AdminCountriesPage() {
   }, [rows, q]);
 
   return (
-    <div className="min-h-screen">
-      {/* NEW: sticky header (non-breaking) */}
-      <TopBar userName={headerName} homeHref="/" accountHref="/login" />
-      <RoleSwitch active="site" show={hasBothRoles} />
+    <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
+      <header className="flex items-center gap-3">
+        <h1 className="text-2xl font-semibold">Admin • Countries</h1>
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            className="border rounded-lg px-3 py-2 text-sm min-w-[220px]"
+            placeholder="Search…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button
+            className="rounded-full px-4 py-2 bg-blue-600 text-white text-sm"
+            onClick={() => router.push("/admin/countries/edit/new")}
+          >
+            New Country
+          </button>
+        </div>
+      </header>
 
-      <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-6">
-        <header className="flex items-center gap-3">
-          <h1 className="text-2xl font-semibold">Admin • Countries</h1>
-          <div className="ml-auto flex items-center gap-2">
-            <input
-              className="border rounded-lg px-3 py-2 text-sm min-w-[220px]"
-              placeholder="Search…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <button
-              className="rounded-full px-4 py-2 bg-blue-600 text-white text-sm"
-              onClick={() => router.push("/admin/countries/edit/new")}
-            >
-              New Country
-            </button>
-          </div>
-        </header>
+      {err && (
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+          {err}
+        </div>
+      )}
 
-        {err && (
-          <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
-            {err}
-          </div>
-        )}
+      {loading ? (
+        <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* New tile */}
+          <button
+            onClick={() => router.push("/admin/countries/edit/new")}
+            className="h-56 rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-blue-600"
+            title="Create a new country"
+          >
+            <div className="h-full w-full grid place-items-center">+ New Country</div>
+          </button>
 
-        {loading ? (
-          <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* New tile */}
-            <button
-              onClick={() => router.push("/admin/countries/edit/new")}
-              className="h-56 rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition text-blue-600"
-              title="Create a new country"
-            >
-              <div className="h-full w-full grid place-items-center">+ New Country</div>
-            </button>
-
-            {filtered.map((row) => {
-              const src = ensureImageUrl(row.picture_url); // <— tiles use this
-              return (
-                <div
-                  key={row.id}
-                  className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden hover:shadow-md transition cursor-pointer"
-                  onClick={() => router.push(`/admin/countries/edit/${row.id}`)}
-                  title="Edit country"
-                >
-                  <div className="relative h-48 w-full overflow-hidden bg-neutral-100">
-                    {src ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img
-                        src={src}
-                        alt={row.name || "Country"}
-                        className="absolute inset-0 h-full w-full object-cover"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.opacity = "0";
-                        }}
-                      />
-                    ) : (
-                      <div className="h-full w-full grid place-items-center text-sm text-neutral-400">
-                        No image
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-4">
-                    <div className="font-medium text-lg">{row.name}</div>
-                    <div className="text-neutral-600 text-sm">
-                      {row.description ? truncate(row.description) : "—"}
+          {filtered.map((row) => {
+            const src = ensureImageUrl(row.picture_url);
+            return (
+              <div
+                key={row.id}
+                className="rounded-2xl border border-neutral-200 bg-white shadow overflow-hidden hover:shadow-md transition cursor-pointer"
+                onClick={() => router.push(`/admin/countries/edit/${row.id}`)}
+                title="Edit country"
+              >
+                <div className="relative h-48 w-full overflow-hidden bg-neutral-100">
+                  {src ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={src}
+                      alt={row.name || "Country"}
+                      className="absolute inset-0 h-full w-full object-cover"
+                      onError={(e) => {
+                        // If something’s off, hide the broken image so the tile stays clean
+                        (e.currentTarget as HTMLImageElement).style.opacity = "0";
+                      }}
+                    />
+                  ) : (
+                    <div className="h-full w-full grid place-items-center text-sm text-neutral-400">
+                      No image
                     </div>
+                  )}
+                </div>
+                <div className="p-4">
+                  <div className="font-medium text-lg">{row.name}</div>
+                  <div className="text-neutral-600 text-sm">
+                    {row.description ? truncate(row.description) : "—"}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
