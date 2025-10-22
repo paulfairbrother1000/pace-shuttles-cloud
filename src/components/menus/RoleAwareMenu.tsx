@@ -14,58 +14,92 @@ type Props = {
   loading?: boolean;
 };
 
-/** Build menu items per role (flat lists). */
-function getMenu(profile: Profile | null): { label: string; href: string }[] {
-  if (!profile) {
-    // Guests / clients
-    return [
-      { label: "Login", href: "/login" },
-      { label: "Book a Shuttle", href: "/book/country" },
-    ];
+// Read crew-ish hint from the same localStorage ("ps_user") cache
+function isCrewFromCache(): boolean {
+  try {
+    if (typeof window === "undefined") return false;
+    const raw = localStorage.getItem("ps_user");
+    if (!raw) return false;
+    const u = JSON.parse(raw) || {};
+    const txt = String(u.jobrole || u.role || u.staff_role || "").toLowerCase();
+    return (
+      txt.includes("captain") ||
+      txt.includes("crew") ||
+      u.captain === true ||
+      u.crew === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getMenu(profile: Profile | null): { role: "guest"|"crew"|"operator"|"siteadmin"; items: {label:string; href:string}[] } {
+  if (profile?.site_admin) {
+    return {
+      role: "siteadmin",
+      items: [
+        { label: "Bookings", href: "/admin/bookings" },
+        { label: "Countries", href: "/admin/countries" },
+        { label: "Destinations", href: "/admin/destinations" },
+        { label: "Routes", href: "/admin/routes" },
+        { label: "Staff", href: "/admin/staff" },
+        { label: "Types", href: "/admin/types" },
+        { label: "Vehicles", href: "/admin/vehicles" },
+        { label: "Operators", href: "/admin/operators" },
+        { label: "Reports", href: "/admin/reports" },
+        { label: "Login", href: "/login" },
+      ],
+    };
   }
 
-  if (profile.site_admin) {
-    return [
-      { label: "Bookings", href: "/admin/bookings" },
-      { label: "Countries", href: "/admin/countries" },
-      { label: "Destinations", href: "/admin/destinations" },
-      { label: "Login", href: "/login" },
-      { label: "Operators", href: "/admin/operators" },
-      { label: "Pickups", href: "/admin/pickups" },
-      { label: "Reports", href: "/admin/reports" },
-      { label: "Routes", href: "/admin/routes" },
-      { label: "Staff", href: "/admin/staff" },
-      { label: "Types", href: "/admin/types" },
-      { label: "Vehicles", href: "/admin/vehicles" },
-    ];
+  if (profile?.operator_admin) {
+    return {
+      role: "operator",
+      items: [
+        { label: "Bookings", href: "/operator/bookings" },
+        { label: "Routes", href: "/operator/routes" },
+        { label: "Vehicles", href: "/operator/vehicles" },
+        { label: "Staff", href: "/operator/staff" },
+        { label: "Reports", href: "/operator/reports" },
+        { label: "Login", href: "/login" },
+      ],
+    };
   }
 
-  if (profile.operator_admin) {
-    return [
-      { label: "Bookings", href: "/operator/bookings" },
-      { label: "Login", href: "/login" },
-      { label: "Reports", href: "/operator/reports" },
-      { label: "Routes", href: "/operator/routes" },
-      { label: "Staff", href: "/operator/staff" },
-      { label: "Vehicles", href: "/operator/vehicles" },
-    ];
+  if (isCrewFromCache()) {
+    return {
+      role: "crew",
+      items: [
+        { label: "Bookings", href: "/crew/account" },
+        { label: "Reports", href: "/crew/reports" },
+        { label: "Login", href: "/login" },
+      ],
+    };
   }
 
-  // Captain/Crew
-  return [
-    { label: "Bookings", href: "/crew/account" },
-    { label: "Login", href: "/login" },
-    { label: "Reports", href: "/crew/reports" },
-  ];
+  // Guest / client (no burger)
+  return {
+    role: "guest",
+    items: [],
+  };
 }
 
 /**
- * Burger + Drawer only. NO wrapper header here.
- * SiteHeader renders the grey bar and places this on the left.
+ * Only renders a burger + drawer for crew/operator/siteadmin.
+ * Guests see nothing here (header still shows "Home" and "Login/Name" on the right).
  */
 export default function RoleAwareMenu({ profile, loading }: Props) {
   const [open, setOpen] = React.useState(false);
-  const items = React.useMemo(() => getMenu(profile), [profile]);
+  const { role, items } = React.useMemo(() => getMenu(profile), [profile]);
+
+  // Hide entirely for guests
+  if (role === "guest") return null;
+
+  const roleLabel =
+    loading ? "Loading…" :
+    role === "siteadmin" ? "Site Admin" :
+    role === "operator" ? "Operator Admin" :
+    "Crew";
 
   return (
     <>
@@ -84,30 +118,20 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
       {/* Drawer */}
       {open && (
         <div className="fixed inset-0 z-[60]">
-          {/* backdrop */}
+          {/* Backdrop */}
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setOpen(false)}
             aria-hidden
           />
-          {/* panel */}
+          {/* Panel */}
           <aside
-            className="absolute top:0 top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
+            className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
             role="dialog"
             aria-label="Main menu"
           >
             <div className="flex items-center justify-between px-4 py-3 border-b">
-              <div className="font-medium">
-                {loading
-                  ? "Loading…"
-                  : profile?.site_admin
-                  ? "Site Admin"
-                  : profile?.operator_admin
-                  ? "Operator Admin"
-                  : profile
-                  ? "Crew"
-                  : "Guest"}
-              </div>
+              <div className="font-medium">{roleLabel}</div>
               <button
                 aria-label="Close menu"
                 className="w-9 h-9"

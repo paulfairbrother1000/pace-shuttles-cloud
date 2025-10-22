@@ -10,16 +10,6 @@ import { createBrowserClient } from "@supabase/ssr";
 import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
 
 
-/* ---------- Inline, dependency-free client top nav ---------- */
-function ClientTopNavBar({ userName }: { userName?: string | null }) {
-  return (
-    <header className="fixed top-0 left-0 right-0 z-50 flex justify-between items-center px-4 py-2 bg-black/40 backdrop-blur-md text-white">
-      <a href="/" className="text-sm font-medium">Home</a>
-      <a href="/login" className="text-sm font-medium">{userName ?? "Login"}</a>
-    </header>
-  );
-}
-
 /* ---------- Greedy allocator + live-quote fetch ---------- */
 type Party = { size: number };
 
