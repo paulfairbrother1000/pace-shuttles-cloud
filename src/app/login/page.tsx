@@ -2,15 +2,27 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+
+export const dynamic = "force-dynamic";
 
 const sb = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-export default function LoginPage(): JSX.Element {
+export default function Page(): JSX.Element {
+  // Wrap useSearchParams usage in a suspense boundary to satisfy Next 15 CSR bailout rule
+  return (
+    <Suspense fallback={<div className="p-6">Loading…</div>}>
+      <LoginClient />
+    </Suspense>
+  );
+}
+
+function LoginClient(): JSX.Element {
   const router = useRouter();
   const sp = useSearchParams();
 
@@ -113,68 +125,68 @@ export default function LoginPage(): JSX.Element {
     }
   }
 
- async function onSignup(e: React.FormEvent) {
-  e.preventDefault();
-  setMsg(null);
+  async function onSignup(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
 
-  // basic client validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) return setMsg("Please enter a valid email address.");
-  if (!firstName.trim() || !lastName.trim()) return setMsg("Please provide first and last name.");
-  if (password.length < 6) return setMsg("Password must be at least 6 characters.");
-  if (password !== confirmPassword) return setMsg("Passwords do not match.");
+    // basic client validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) return setMsg("Please enter a valid email address.");
+    if (!firstName.trim() || !lastName.trim()) return setMsg("Please provide first and last name.");
+    if (password.length < 6) return setMsg("Password must be at least 6 characters.");
+    if (password !== confirmPassword) return setMsg("Passwords do not match.");
 
-  setWorking(true);
-  try {
-    // Create account (no email confirmation if it's disabled in Supabase)
-    const { data, error } = await sb.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { first_name: firstName.trim(), last_name: lastName.trim() },
-      },
-    });
+    setWorking(true);
+    try {
+      // Create account (no email confirmation if it's disabled in Supabase)
+      const { data, error } = await sb.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { first_name: firstName.trim(), last_name: lastName.trim() },
+        },
+      });
 
-    if (error) {
-      // Surface the real provider message (e.g., "Email signups are disabled")
-      throw new Error(error.message || "Sign up failed");
+      if (error) {
+        // Surface the real provider message (e.g., "Email signups are disabled")
+        throw new Error(error.message || "Sign up failed");
+      }
+
+      const user = data.user;
+      if (!user) {
+        // Shouldn’t happen when “Confirm email” is OFF, but handle gracefully
+        throw new Error("Account created, but no session returned. Check Supabase email confirmation settings.");
+      }
+
+      // Make sure we have a row in public.users (UPDATE fails if it doesn’t exist)
+      const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
+      const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
+
+      const upsertRow: Record<string, any> = {
+        id: user.id, // <- crucial
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        email, // helpful for your header/menu fetches
+      };
+      if (Number.isFinite(mobileNum)) upsertRow.mobile = mobileNum;
+      if (Number.isFinite(ccNum)) upsertRow.country_code = ccNum;
+
+      const { error: upErr } = await sb.from("users").upsert(upsertRow, { onConflict: "id" });
+      if (upErr) throw upErr;
+
+      // optional: auto-link crew record by email
+      try { await fetch("/api/crew/auto-link", { method: "POST" }); } catch {}
+
+      // cache + redirect
+      await cachePsUser();
+      try { localStorage.removeItem("next_after_login"); } catch {}
+      goNext(nextUrl);
+    } catch (err: any) {
+      setMsg(String(err?.message || err) || "Sign up failed");
+    } finally {
+      setWorking(false);
     }
-
-    const user = data.user;
-    if (!user) {
-      // Shouldn’t happen when “Confirm email” is OFF, but handle gracefully
-      throw new Error("Account created, but no session returned. Check Supabase email confirmation settings.");
-    }
-
-    // Make sure we have a row in public.users (UPDATE fails if it doesn’t exist)
-    const mobileNum = mobile.trim() ? Number(mobile.trim()) : null;
-    const ccNum = countryCode.trim() ? Number(countryCode.trim()) : null;
-
-    const upsertRow: Record<string, any> = {
-      id: user.id, // <- crucial
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      email, // helpful for your header/menu fetches
-    };
-    if (Number.isFinite(mobileNum)) upsertRow.mobile = mobileNum;
-    if (Number.isFinite(ccNum)) upsertRow.country_code = ccNum;
-
-    const { error: upErr } = await sb.from("users").upsert(upsertRow, { onConflict: "id" });
-    if (upErr) throw upErr;
-
-    // optional: auto-link crew record by email
-    try { await fetch("/api/crew/auto-link", { method: "POST" }); } catch {}
-
-    // cache + redirect
-    await cachePsUser();
-    try { localStorage.removeItem("next_after_login"); } catch {}
-    goNext(nextUrl);
-  } catch (err: any) {
-    setMsg(String(err?.message || err) || "Sign up failed");
-  } finally {
-    setWorking(false);
   }
-}
 
   return (
     <main className="ps-theme min-h-screen bg-app text-app">
