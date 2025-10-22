@@ -100,16 +100,7 @@ function MobileNav({ items }: { items: MenuItem[] }) {
   const [open, setOpen] = React.useState(false);
   return (
     <div className="md:hidden">
-      <div className="flex items-center justify-between">
-        {/* Left: Home (as requested) */}
-        <a
-          href="/"
-          className="text-sm font-semibold hover:opacity-90"
-          aria-label="Go to Home"
-          title="Home"
-        >
-          Home
-        </a>
+      <div className="flex items-center justify-end">
         <button
           className="h-9 w-9 inline-flex items-center justify-center rounded-md hover:bg-neutral-600 focus:outline-none"
           aria-label="Toggle menu"
@@ -122,9 +113,20 @@ function MobileNav({ items }: { items: MenuItem[] }) {
           </div>
         </button>
       </div>
+
       {open && (
         <div className="mt-2 border-t border-neutral-600">
           <ul className="flex flex-col p-2">
+            {/* Always include Home at the top of the burger */}
+            <li key="__home">
+              <a
+                href="/"
+                className="block px-3 py-2 text-base font-medium hover:bg-neutral-600/60 rounded-lg"
+              >
+                Home
+              </a>
+            </li>
+
             {items.map((it) => (
               <li key={it.href}>
                 <a
@@ -157,19 +159,26 @@ export function RoleAwareMenu({ forceRole }: { forceRole?: RoleKey } = {}) {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 px-4 py-2 bg-neutral-700 text-white">
       <div className="mx-auto max-w-[1120px] flex items-center justify-between">
-        {/* Left: Home (desktop label) */}
-        <a href="/" className="hidden md:inline text-sm font-medium hover:opacity-90">
-          Home
-        </a>
-        {/* Desktop menu */}
-        <DesktopNav items={items} />
-        {/* Right spacer to balance layout on desktop */}
+        {/* Left spacer (keeps center alignment symmetrical) */}
         <span className="hidden md:inline-block w-10" aria-hidden />
-        {/* Mobile menu */}
+        {/* Desktop menu */}
+        <nav className="hidden md:flex items-center justify-center gap-x-6">
+          {items.map((it) => (
+            <a
+              key={it.href}
+              href={it.href}
+              className="text-sm font-semibold tracking-wide hover:opacity-90"
+            >
+              {it.label}
+            </a>
+          ))}
+        </nav>
+        {/* Right: Mobile burger */}
         <MobileNav items={items} />
       </div>
     </header>
   );
 }
+
 
 export default RoleAwareMenu;

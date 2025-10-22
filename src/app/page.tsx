@@ -325,7 +325,8 @@ export default function Page() {
 {process.env.NEXT_PUBLIC_APP_FLAG_USE_ROLE_AWARE_MENU === "true" ? (
   <RoleAwareMenu />
 ) : (
-  <ClientTopNavBar userName={displayName} />
+  <RoleAwareMenu />
+
 )}
 
 
