@@ -111,10 +111,12 @@ export function JourneyCard({
         {/* vehicle type */}
         <div className="text-xs text-neutral-600">{vehicleType}</div>
 
-        {/* mobile captions: price/seat labels inside the card */}
+        {/* mobile captions: price/seat labels inside the card (brighter + slightly larger) */}
         <div className="mt-1 flex items-center justify-between md:hidden">
-          <span className="text-[11px] text-neutral-500">Seat price (incl. tax &amp; fees)</span>
-          <span className="text-[11px] text-neutral-500">Seats</span>
+          <span className="text-[12px] font-medium text-neutral-300">
+            Seat price (incl. tax &amp; fees)
+          </span>
+          <span className="text-[12px] font-medium text-neutral-300">Seats</span>
         </div>
 
         <div className="flex items-center justify-between">
