@@ -1,15 +1,15 @@
-// src/app/layout.tsx
-
-import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
+// app/layout.tsx
+import "./globals.css";
+import { Suspense } from "react";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <RoleAwareMenu />
-        {/* Spacer so content doesn't sit under the fixed bar */}
-        <div className="h-12 md:h-12" />
-        {children}
+        {/* Suspense boundary fixes all descendants that use useSearchParams */}
+        <Suspense fallback={null}>
+          {children}
+        </Suspense>
       </body>
     </html>
   );

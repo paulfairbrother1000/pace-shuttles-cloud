@@ -385,5 +385,5 @@ function LoginClient(): JSX.Element {
         )}
       </div>
     </main>
-  );
+  ); 
 }
