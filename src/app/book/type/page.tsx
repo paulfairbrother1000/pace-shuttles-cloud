@@ -1,6 +1,8 @@
+// app/book/type/page.tsx
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import WizardHeader from "@/components/WizardHeader";
@@ -29,7 +31,7 @@ function withinSeason(day: Date, from?: string | null, to?: string | null) {
   return true;
 }
 
-export default function TypePage(): JSX.Element {
+function Inner(): JSX.Element {
   const sp = useSearchParams();
   const router = useRouter();
 
@@ -166,5 +168,13 @@ export default function TypePage(): JSX.Element {
         </section>
       )}
     </div>
+  );
+}
+
+export default function TypePage(): JSX.Element {
+  return (
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <Inner />
+    </Suspense>
   );
 }

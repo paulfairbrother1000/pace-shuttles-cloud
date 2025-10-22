@@ -2,6 +2,7 @@
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import WizardHeader from "@/components/WizardHeader";
@@ -104,8 +105,8 @@ function applyTaxFees(seatNet: number, tax: number, fees: number): number {
   return seatNet + taxDue + feesDue;
 }
 
-/* ---------- Page ---------- */
-export default function DetailsPage(): JSX.Element {
+/* ---------- Suspense-wrapped inner page ---------- */
+function Inner(): JSX.Element {
   const sp = useSearchParams();
   const router = useRouter();
 
@@ -292,7 +293,7 @@ export default function DetailsPage(): JSX.Element {
 
   const total = typeof perSeat === "number" ? perSeat * qty : null;
 
-  // ⬇️ MAIN BUTTON → /book/pay (this is the only change you needed)
+  // ⬇️ MAIN BUTTON → /book/pay
   function goToPayment() {
     const qp = new URLSearchParams({
       routeId,
@@ -420,5 +421,14 @@ export default function DetailsPage(): JSX.Element {
         </>
       )}
     </div>
+  );
+}
+
+/* ---------- Suspense wrapper (required by Next 15 when using useSearchParams) ---------- */
+export default function DetailsPage(): JSX.Element {
+  return (
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <Inner />
+    </Suspense>
   );
 }

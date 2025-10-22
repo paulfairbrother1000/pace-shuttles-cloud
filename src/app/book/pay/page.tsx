@@ -1,6 +1,8 @@
+// app/book/pay/page.tsx
 "use client";
 
 import * as React from "react";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
@@ -20,7 +22,7 @@ const sb =
       )
     : null;
 
-export default function PayPage(): JSX.Element {
+function Inner(): JSX.Element {
   const router = useRouter();
   const qs = useSearchParams();
 
@@ -505,5 +507,13 @@ export default function PayPage(): JSX.Element {
         `}</style>
       </div>
     </div>
+  );
+}
+
+export default function PayPage(): JSX.Element {
+  return (
+    <Suspense fallback={<section className="rounded-2xl border p-4 bg-white m-4">Loading…</section>}>
+      <Inner />
+    </Suspense>
   );
 }
