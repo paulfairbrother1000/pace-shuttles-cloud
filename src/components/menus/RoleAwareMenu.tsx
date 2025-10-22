@@ -1,184 +1,142 @@
+// src/components/menus/RoleAwareMenu.tsx
 "use client";
 
+import Link from "next/link";
 import * as React from "react";
 
-/**
- * RoleAwareMenu
- * - Flat desktop bar + mobile burger.
- * - "Home" is handled by the left header label/button (links to "/"),
- *   so it is removed from the item lists.
- * - Role is resolved read-only from localStorage("ps_user") fields:
- *     site_admin (boolean), operator_admin (boolean),
- *     plus a best-effort crew/captain check.
- * - No layout/spacing changes to content: same fixed header height/padding.
- */
-
-type RoleKey = "client" | "crew" | "operator" | "siteadmin";
-
-type MenuItem = { label: string; href: string };
-type MenuMap = Record<RoleKey, MenuItem[]>;
-
-const MENUS: MenuMap = {
-  client: [
-    { label: "Login", href: "/login" },
-  ],
-  crew: [
-    { label: "Bookings", href: "/crew/account" },
-    { label: "Reports", href: "/crew/reports" }, // placeholder ok
-    { label: "Login", href: "/login" },
-  ],
-  operator: [
-    { label: "Bookings", href: "/operator/admin" },
-    { label: "Routes", href: "/operator-admin/routes" },
-    { label: "Vehicles", href: "/operator-admin/vehicles" },
-    { label: "Staff", href: "/operator-admin/staff" },
-    { label: "Reports", href: "/operator/admin/reports" },
-    { label: "Login", href: "/login" },
-  ],
-  siteadmin: [
-    { label: "Pickups", href: "/admin/pickups" },
-    { label: "Destinations", href: "/admin/destinations" },
-    { label: "Countries", href: "/admin/countries" },
-    { label: "Routes", href: "/operator-admin/routes" }, // shared page
-    { label: "Bookings", href: "/operator/admin" },      // shared page
-    { label: "Vehicles", href: "/operator-admin/vehicles" }, // shared page
-    { label: "Types", href: "/admin/transport-types" },
-    { label: "Staff", href: "/operator-admin/staff" },   // shared page
-    { label: "Operators", href: "/admin/operators" },
-    { label: "Reports", href: "/admin/reports" },
-    { label: "Login", href: "/login" },
-  ],
+type Profile = {
+  site_admin?: boolean | null;
+  operator_admin?: boolean | null;
 };
 
-function resolveRoleFromLocalStorage(): RoleKey {
-  try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem("ps_user") : null;
-    if (!raw) return "client";
-    const u = JSON.parse(raw) || {};
-    // Highest privilege wins
-    if (u.site_admin === true) return "siteadmin";
-    if (u.operator_admin === true) return "operator";
+type Props = {
+  profile: Profile | null;
+  loading?: boolean;
+};
 
-    // Crew/Captain heuristic (non-breaking, read-only):
-    // We accept any of these signals, if present.
-    const roleText = String(
-      u.jobrole || u.role || u.staff_role || ""
-    ).toLowerCase();
-    const isCrewish =
-      roleText.includes("captain") ||
-      roleText.includes("crew") ||
-      u.captain === true ||
-      u.crew === true;
-    if (isCrewish) return "crew";
-
-    // Fallback
-    return "client";
-  } catch {
-    return "client";
+/** Build menu items per role (flat lists). */
+function getMenu(profile: Profile | null): { label: string; href: string }[] {
+  if (!profile) {
+    // Guests / clients
+    return [
+      { label: "Login", href: "/login" },
+      { label: "Book a Shuttle", href: "/book/country" },
+    ];
   }
-}
 
-/** Desktop horizontal bar */
-function DesktopNav({ items }: { items: MenuItem[] }) {
-  return (
-    <nav className="hidden md:flex items-center justify-center gap-x-6">
-      {items.map((it) => (
-        <a
-          key={it.href}
-          href={it.href}
-          className="text-sm font-semibold tracking-wide hover:opacity-90"
-        >
-          {it.label}
-        </a>
-      ))}
-    </nav>
-  );
-}
+  if (profile.site_admin) {
+    return [
+      { label: "Bookings", href: "/admin/bookings" },
+      { label: "Countries", href: "/admin/countries" },
+      { label: "Destinations", href: "/admin/destinations" },
+      { label: "Login", href: "/login" },
+      { label: "Operators", href: "/admin/operators" },
+      { label: "Pickups", href: "/admin/pickups" },
+      { label: "Reports", href: "/admin/reports" },
+      { label: "Routes", href: "/admin/routes" },
+      { label: "Staff", href: "/admin/staff" },
+      { label: "Types", href: "/admin/types" },
+      { label: "Vehicles", href: "/admin/vehicles" },
+    ];
+  }
 
-/** Mobile burger -> vertical list */
-function MobileNav({ items }: { items: MenuItem[] }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div className="md:hidden">
-      <div className="flex items-center justify-end">
-        <button
-          className="h-9 w-9 inline-flex items-center justify-center rounded-md hover:bg-neutral-600 focus:outline-none"
-          aria-label="Toggle menu"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <div className="space-y-1.5">
-            <span className="block h-0.5 w-6 bg-white"></span>
-            <span className="block h-0.5 w-6 bg-white"></span>
-            <span className="block h-0.5 w-6 bg-white"></span>
-          </div>
-        </button>
-      </div>
+  if (profile.operator_admin) {
+    return [
+      { label: "Bookings", href: "/operator/bookings" },
+      { label: "Login", href: "/login" },
+      { label: "Reports", href: "/operator/reports" },
+      { label: "Routes", href: "/operator/routes" },
+      { label: "Staff", href: "/operator/staff" },
+      { label: "Vehicles", href: "/operator/vehicles" },
+    ];
+  }
 
-      {open && (
-        <div className="mt-2 border-t border-neutral-600">
-          <ul className="flex flex-col p-2">
-            {/* Always include Home at the top of the burger */}
-            <li key="__home">
-              <a
-                href="/"
-                className="block px-3 py-2 text-base font-medium hover:bg-neutral-600/60 rounded-lg"
-              >
-                Home
-              </a>
-            </li>
-
-            {items.map((it) => (
-              <li key={it.href}>
-                <a
-                  className="block px-3 py-2 text-base font-medium hover:bg-neutral-600/60 rounded-lg"
-                  href={it.href}
-                >
-                  {it.label}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
+  // Captain/Crew
+  return [
+    { label: "Bookings", href: "/crew/account" },
+    { label: "Login", href: "/login" },
+    { label: "Reports", href: "/crew/reports" },
+  ];
 }
 
 /**
- * RoleAwareMenu
- * Fixed header with identical spacing to your current one:
- *  - fixed top-0 left-0 right-0 z-50
- *  - px-4 py-2
- *  - dark grey background (neutral-700) for clarity
- * Add backdrop-blur if you currently use it.
+ * Burger + Drawer only. NO wrapper header here.
+ * SiteHeader renders the grey bar and places this on the left.
  */
-export function RoleAwareMenu({ forceRole }: { forceRole?: RoleKey } = {}) {
-  const role = forceRole ?? resolveRoleFromLocalStorage();
-  const items = MENUS[role];
+export default function RoleAwareMenu({ profile, loading }: Props) {
+  const [open, setOpen] = React.useState(false);
+  const items = React.useMemo(() => getMenu(profile), [profile]);
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 px-4 py-2 bg-neutral-700 text-white">
-      <div className="mx-auto max-w-[1120px] flex items-center justify-between">
-        {/* Left spacer (keeps center alignment symmetrical) */}
-        <span className="hidden md:inline-block w-10" aria-hidden />
-        {/* Desktop menu */}
-        <nav className="hidden md:flex items-center justify-center gap-x-6">
-          {items.map((it) => (
-            <a
-              key={it.href}
-              href={it.href}
-              className="text-sm font-semibold tracking-wide hover:opacity-90"
-            >
-              {it.label}
-            </a>
-          ))}
-        </nav>
-        {/* Right: Mobile burger */}
-        <MobileNav items={items} />
-      </div>
-    </header>
+    <>
+      {/* Burger (forced white) */}
+      <button
+        aria-label="Open menu"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center justify-center w-9 h-9"
+      >
+        <span
+          aria-hidden
+          className="relative block w-6 h-[2px] bg-white before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-white before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-white after:translate-y-2"
+        />
+      </button>
+
+      {/* Drawer */}
+      {open && (
+        <div className="fixed inset-0 z-[60]">
+          {/* backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          {/* panel */}
+          <aside
+            className="absolute top:0 top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
+            role="dialog"
+            aria-label="Main menu"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <div className="font-medium">
+                {loading
+                  ? "Loading…"
+                  : profile?.site_admin
+                  ? "Site Admin"
+                  : profile?.operator_admin
+                  ? "Operator Admin"
+                  : profile
+                  ? "Crew"
+                  : "Guest"}
+              </div>
+              <button
+                aria-label="Close menu"
+                className="w-9 h-9"
+                onClick={() => setOpen(false)}
+              >
+                <span
+                  aria-hidden
+                  className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
+                />
+              </button>
+            </div>
+
+            <nav className="px-5 py-4 space-y-6 text-lg">
+              {/* Always include Home at the top of the drawer */}
+              <div>
+                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
+              </div>
+
+              {items.map((it) => (
+                <div key={it.href}>
+                  <Link href={it.href} onClick={() => setOpen(false)}>
+                    {it.label}
+                  </Link>
+                </div>
+              ))}
+            </nav>
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
-
-
-export default RoleAwareMenu;
