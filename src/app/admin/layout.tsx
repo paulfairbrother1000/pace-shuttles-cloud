@@ -26,7 +26,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen">
-      {/* Fixed header stack */}
+      {/* NEW header (keep this visible) */}
       <div className="fixed inset-x-0 top-0 z-50">
         <TopBar userName={name} homeHref="/" accountHref="/login" />
         <div className="px-4 py-3">
@@ -39,22 +39,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         </div>
       </div>
 
-      {/* TopBar + RoleSwitch spacing */}
+      {/* space below TopBar + RoleSwitch */}
       <main className="pt-28 px-4">{children}</main>
 
-      {/* Hide legacy header & legacy tab rows ONLY */}
+      {/* Hide ONLY legacy header + legacy tab rows */}
       <style jsx global>{`
-        /* 1) Old dark-blue site header */
-        .ps-header,
-        header.ps-header,
-        header[aria-label="Top navigation"] {
-          display: none !important;
-        }
+        /* Legacy dark-blue header */
+        .ps-header, header.ps-header { display: none !important; }
 
-        /* 2) Old inline role switcher / tab bar some pages still render */
+        /* Old inline role switch / tab bar some pages still render */
         .mt-14.mx-4.inline-flex[role="tablist"] { display: none !important; }
 
-        /* 3) Any container that is basically the old admin tabs row */
+        /* Any container that is basically the old admin tabs row */
         :is(nav, header, div):has(> a[href^="/admin/destinations"]),
         :is(nav, header, div):has(> a[href^="/admin/pickups"]),
         :is(nav, header, div):has(> a[href^="/admin/routes"]),

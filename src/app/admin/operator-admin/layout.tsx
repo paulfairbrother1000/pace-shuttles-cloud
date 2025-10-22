@@ -26,6 +26,7 @@ export default function OperatorAdminLayout({ children }: { children: React.Reac
 
   return (
     <div className="min-h-screen">
+      {/* NEW header (keep this visible) */}
       <div className="fixed inset-x-0 top-0 z-50">
         <TopBar userName={name} homeHref="/" accountHref="/login" />
         <div className="px-4 py-3">
@@ -38,15 +39,12 @@ export default function OperatorAdminLayout({ children }: { children: React.Reac
         </div>
       </div>
 
+      {/* space below TopBar + RoleSwitch */}
       <main className="pt-28 px-4">{children}</main>
 
-      {/* Hide legacy headers/old tabbars if a page still renders them */}
+      {/* Hide ONLY legacy header + legacy tab rows */}
       <style jsx global>{`
-        .ps-header,
-        header.ps-header,
-        header[aria-label="Top navigation"] {
-          display: none !important;
-        }
+        .ps-header, header.ps-header { display: none !important; }
         .mt-14.mx-4.inline-flex[role="tablist"] { display: none !important; }
       `}</style>
     </div>
