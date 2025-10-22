@@ -108,14 +108,7 @@ export function JourneyCard({
           {typeof durationMins === "number" ? ` · ${durationMins} mins` : ""}
         </div>
 
-        {/* vehicle type */}
         <div className="text-xs text-neutral-600">{vehicleType}</div>
-
-        {/* mobile captions: price/seat labels inside the card */}
-        <div className="mt-1 flex items-center justify-between md:hidden">
-          <span className="text-[11px] text-neutral-500">Seat price (incl. tax &amp; fees)</span>
-          <span className="text-[11px] text-neutral-500">Seats</span>
-        </div>
 
         <div className="flex items-center justify-between">
           <div className="text-lg font-semibold">{soldOut ? "Sold out" : priceLabel}</div>
