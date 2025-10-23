@@ -1,24 +1,20 @@
 // /src/app/operator/admin/page.tsx
 
-"use client";                // ← REQUIRED: enables client hooks
-
-// Prevent static generation/prerender for this route
-
+"use client"; // enables client hooks
 export const dynamic = "force-dynamic";
-
-
-
-// …the rest of your existing imports and code stay exactly as-is
-
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
 type UUID = string;
 
-
-// near the top of /operator/admin/page.tsx
-type PsUser = { site_admin?: boolean; operator_admin?: boolean; operator_id?: string | null; operator_name?: string | null };
+/* ---------- ps_user ---------- */
+type PsUser = {
+  site_admin?: boolean;
+  operator_admin?: boolean;
+  operator_id?: string | null;
+  operator_name?: string | null;
+};
 
 function readPsUser(): PsUser {
   try {
@@ -28,12 +24,6 @@ function readPsUser(): PsUser {
     return {};
   }
 }
-
-
-
-// when you load operators/bookings:
-// if (isOpAdminLocked) use lockedOperatorId; don’t render the operator dropdown
-
 
 /* ---------- DB Shapes ---------- */
 type Journey = {
@@ -111,7 +101,7 @@ function horizonFor(tsISO: string): Horizon {
 }
 const isTWindow = (h: Horizon) => h === "T24" || h === "T72";
 
-/* ---------- Allocation preview (client-side only, unchanged policy) ---------- */
+/* ---------- Allocation preview (client-side only) ---------- */
 type Party = { order_id: UUID; size: number };
 type Boat = {
   vehicle_id: UUID;
@@ -209,7 +199,10 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
           // move g
           src.used -= g.size;
           tgt.used += g.size;
-          src.groups.splice(src.groups.findIndex((x) => x.order_id === g.order_id && x.size === g.size), 1);
+          src.groups.splice(
+            src.groups.findIndex((x) => x.order_id === g.order_id && x.size === g.size),
+            1
+          );
           tgt.groups.push(g);
 
           const sMap = byBoat.get(src.def.vehicle_id)!;
@@ -232,26 +225,18 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
 }
 
 /* ---------- Page ---------- */
-// …imports and helpers above…
-
 export default function OperatorAdminPage() {
   // ---- ps_user (must be inside component) ----
   const [psUser, setPsUser] = useState<PsUser>({});
-  useEffect(() => { setPsUser(readPsUser()); }, []);
+  useEffect(() => {
+    setPsUser(readPsUser());
+  }, []);
 
   const isSite = !!psUser.site_admin;
   const isOpAdminLocked = !!(psUser.operator_admin && psUser.operator_id);
   const lockedOperatorId = isOpAdminLocked ? (psUser.operator_id as UUID) : ("" as UUID);
 
-  // (now your existing state lines)
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  // …rest of the component…
-}
-
-
-
-
+  // State
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -482,7 +467,9 @@ export default function OperatorAdminPage() {
       const horizon = horizonFor(j.departure_ts);
 
       const oArr = ordersByKey.get(`${j.route_id}_${dateISO}`) ?? [];
-      const parties: Party[] = oArr.map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) })).filter((g) => g.size > 0);
+      const parties: Party[] = oArr
+        .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
+        .filter((g) => g.size > 0);
       if (!parties.length) continue;
 
       const rvaArr = (rvasByRoute.get(j.route_id) ?? []).filter((x) => x.is_active);
@@ -545,16 +532,17 @@ export default function OperatorAdminPage() {
           const locked = lockedByBoat.get(vid) ?? { seats: 0, groups: [] as number[] };
           const prev = previewRemaining.byBoat.get(vid);
 
-          const mergedGroups = [
-            ...locked.groups,
-            ...((prev?.orders ?? []).map((o) => o.size)),
-          ].sort((a, b) => b - a);
+          const mergedGroups = [...locked.groups, ...((prev?.orders ?? []).map((o) => o.size))].sort(
+            (a, b) => b - a
+          );
 
           dbTotal += locked.seats;
           maxTotal += Number(max ?? 0);
 
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find((c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt"));
+          const cap = crewRows.find(
+            (c) => c.vehicle_id === vid && (c.role_label || "").toLowerCase().includes("capt")
+          );
           perBoat.push({
             vehicle_id: vid,
             vehicle_name: name,
@@ -575,7 +563,9 @@ export default function OperatorAdminPage() {
           dbTotal += seats;
           maxTotal += b.max;
           const crewRows = crewMinByJourney.get(j.id) || [];
-          const cap = crewRows.find((c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt"));
+          const cap = crewRows.find(
+            (c) => c.vehicle_id === b.vehicle_id && (c.role_label || "").toLowerCase().includes("capt")
+          );
           perBoat.push({
             vehicle_id: b.vehicle_id,
             vehicle_name: v?.name ?? "Unknown",
@@ -670,9 +660,10 @@ export default function OperatorAdminPage() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ journeyId: row.journey.id, vehicleId: b.vehicle_id }),
             });
-            const r = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`, {
-              cache: "no-store",
-            });
+            const r = await fetch(
+              `/api/ops/crew/list?journey_id=${encodeURIComponent(row.journey.id)}`,
+              { cache: "no-store" }
+            );
             if (r.ok) {
               const { data } = (await r.json()) as { ok: boolean; data: CrewMinRow[] };
               setCrewMinByJourney((prev) => {
@@ -697,12 +688,20 @@ export default function OperatorAdminPage() {
     if (!supabase) return;
     try {
       const parties: Party[] = (orders || [])
-        .filter((o) => o.status === "paid" && o.route_id === routeById.get(row.journey.route_id)?.id)
-        .filter((o) => o.journey_date === toDateISO(new Date(row.journey.departure_ts)))
+        .filter(
+          (o) =>
+            o.status === "paid" &&
+            o.route_id === routeById.get(row.journey.route_id)?.id
+        )
+        .filter(
+          (o) => o.journey_date === toDateISO(new Date(row.journey.departure_ts))
+        )
         .map((o) => ({ order_id: o.id, size: Math.max(0, Number(o.qty ?? 0)) }))
         .filter((g) => g.size > 0);
 
-      const rvaArr = rvas.filter((x) => x.route_id === row.journey.route_id && x.is_active);
+      const rvaArr = rvas.filter(
+        (x) => x.route_id === row.journey.route_id && x.is_active
+      );
       const boats: Boat[] = rvaArr
         .map((x) => {
           const v = vehicles.find((vv) => vv.id === x.vehicle_id);
@@ -719,17 +718,27 @@ export default function OperatorAdminPage() {
 
       const preview = allocateDetailed(parties, boats, row.horizon);
 
-      await supabase.from("journey_vehicle_allocations").delete().eq("journey_id", row.journey.id);
+      await supabase
+        .from("journey_vehicle_allocations")
+        .delete()
+        .eq("journey_id", row.journey.id);
 
       const toInsert: JVALockRow[] = [];
       for (const [vid, info] of preview.byBoat.entries()) {
         if (!info.seats) continue;
         for (const o of info.orders) {
-          toInsert.push({ journey_id: row.journey.id, vehicle_id: vid, order_id: o.order_id, seats: o.size });
+          toInsert.push({
+            journey_id: row.journey.id,
+            vehicle_id: vid,
+            order_id: o.order_id,
+            seats: o.size,
+          });
         }
       }
       if (toInsert.length) {
-        const ins = await supabase.from("journey_vehicle_allocations").insert(toInsert);
+        const ins = await supabase
+          .from("journey_vehicle_allocations")
+          .insert(toInsert);
         if (ins.error) throw ins.error;
       }
       const { data: lockData, error: lockErr } = await supabase
@@ -750,7 +759,10 @@ export default function OperatorAdminPage() {
   async function unlockJourney(journeyId: UUID) {
     if (!supabase) return;
     try {
-      const del = await supabase.from("journey_vehicle_allocations").delete().eq("journey_id", journeyId);
+      const del = await supabase
+        .from("journey_vehicle_allocations")
+        .delete()
+        .eq("journey_id", journeyId);
       if (del.error) throw del.error;
       setLocksByJourney((prev) => {
         const copy = new Map(prev);
@@ -766,7 +778,7 @@ export default function OperatorAdminPage() {
   async function openCapModal(journeyId: UUID, vehicleId: UUID) {
     setCapModal({ open: true, journeyId, vehicleId, fetching: true, items: [] });
     try {
-      // ✅ send BOTH journeyId and vehicleId so server can use vehicle prefs
+      // send BOTH journeyId and vehicleId so server can use vehicle prefs
       const r = await fetch("/api/ops/captain-candidates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -794,9 +806,10 @@ export default function OperatorAdminPage() {
         body: JSON.stringify({ journeyId, staffId }),
       });
       if (r.ok) {
-        const get = await fetch(`/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`, {
-          cache: "no-store",
-        });
+        const get = await fetch(
+          `/api/ops/crew/list?journey_id=${encodeURIComponent(journeyId)}`,
+          { cache: "no-store" }
+        );
         if (get.ok) {
           const { data } = (await get.json()) as { ok: boolean; data: CrewMinRow[] };
           setCrewMinByJourney((prev) => {
@@ -823,8 +836,10 @@ export default function OperatorAdminPage() {
         <div>
           <h1 className="text-2xl font-semibold">Operator dashboard — Live Journeys</h1>
           <p className="text-neutral-600 text-sm">
-            Future journeys only · <strong>Paid</strong> = confirmed bookings · <strong>Locked</strong> = seats persisted to boats.
-            At <strong>T-72/T-24</strong> you may keep accepting bookings; press <strong>Lock</strong> to persist an updated split.
+            Future journeys only · <strong>Paid</strong> = confirmed bookings ·{" "}
+            <strong>Locked</strong> = seats persisted to boats. At <strong>T-72/T-24</strong>{" "}
+            you may keep accepting bookings; press <strong>Lock</strong> to persist an updated
+            split.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -833,6 +848,7 @@ export default function OperatorAdminPage() {
             className="border rounded-lg px-2 py-1 text-sm"
             value={operatorFilter}
             onChange={(e) => setOperatorFilter((e.target.value || "all") as any)}
+            disabled={isOpAdminLocked}
           >
             <option value="all">All operators</option>
             {operators.map((o) => (
@@ -851,7 +867,9 @@ export default function OperatorAdminPage() {
       {loading ? (
         <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
       ) : rows.length === 0 ? (
-        <div className="p-4 border rounded-xl bg-white shadow">No journeys with paid bookings yet.</div>
+        <div className="p-4 border rounded-xl bg-white shadow">
+          No journeys with paid bookings yet.
+        </div>
       ) : (
         <div className="space-y-6">
           {rows.map((row) => (
@@ -870,11 +888,17 @@ export default function OperatorAdminPage() {
 
                 <div className="ml-auto flex items-center gap-2">
                   {row.horizon === "T24" ? (
-                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">T-24 (Confirmed)</span>
+                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
+                      T-24 (Confirmed)
+                    </span>
                   ) : row.horizon === "T72" ? (
-                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">T-72 (Confirmed)</span>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">
+                      T-72 (Confirmed)
+                    </span>
                   ) : (
-                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">&gt;72h (Prep)</span>
+                    <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-700 text-xs">
+                      &gt;72h (Prep)
+                    </span>
                   )}
 
                   <span className="text-xs text-neutral-700">
@@ -893,7 +917,9 @@ export default function OperatorAdminPage() {
                   {(row.horizon === "T24" || row.horizon === "T72") &&
                     (row.isLocked ? (
                       <>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Locked</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+                          Locked
+                        </span>
                         <button
                           className="text-xs px-3 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-100"
                           onClick={() => unlockJourney(row.journey.id)}
@@ -984,7 +1010,7 @@ export default function OperatorAdminPage() {
                           )}
                         </td>
                         <td className="p-3">
-                          {(row.horizon === "T24" || row.horizon === "T72") ? (
+                          {row.horizon === "T24" || row.horizon === "T72" ? (
                             <button
                               className="px-3 py-2 rounded-lg text-white hover:opacity-90 transition"
                               style={{ backgroundColor: "#2563eb" }}
@@ -1014,7 +1040,10 @@ export default function OperatorAdminPage() {
           <div className="bg-white rounded-xl shadow-xl w-[520px] max-w-[95vw]">
             <div className="flex items-center justify-between p-3 border-b">
               <div className="font-medium">Assign captain</div>
-              <button className="text-sm text-neutral-600" onClick={() => setCapModal({ open: false, fetching: false, items: [] })}>
+              <button
+                className="text-sm text-neutral-600"
+                onClick={() => setCapModal({ open: false, fetching: false, items: [] })}
+              >
                 Close
               </button>
             </div>
