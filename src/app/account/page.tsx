@@ -1,4 +1,6 @@
 "use client";
+export const dynamic = "force-dynamic"; // (optional, but avoids SSG on this page)
+
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
