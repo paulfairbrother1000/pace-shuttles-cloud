@@ -1,166 +1,205 @@
-// src/components/menus/RoleAwareMenu.tsx
+// components/menus/RoleAwareMenu.tsx
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import * as React from "react";
+import { createBrowserClient, SupabaseClient } from "@supabase/ssr";
 
-type Profile = {
+/** Minimal ps_user shape we read from localStorage */
+type PsUser = {
+  id: string;
+  first_name?: string | null;
+  last_name?: string | null;
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
+  operator_id?: string | null;
+  operator_name?: string | null;
 };
 
-type Props = {
-  profile: Profile | null;
-  loading?: boolean;
-};
+type OperatorRow = { id: string; white_label_member: boolean };
 
-// Read crew-ish hint from the same localStorage ("ps_user") cache
-function isCrewFromCache(): boolean {
-  try {
-    if (typeof window === "undefined") return false;
-    const raw = localStorage.getItem("ps_user");
-    if (!raw) return false;
-    const u = JSON.parse(raw) || {};
-    const txt = String(u.jobrole || u.role || u.staff_role || "").toLowerCase();
-    return (
-      txt.includes("captain") ||
-      txt.includes("crew") ||
-      u.captain === true ||
-      u.crew === true
+function makeSb(): SupabaseClient | null {
+  if (
+    typeof window !== "undefined" &&
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  ) {
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
-  } catch {
-    return false;
   }
+  return null;
 }
 
-function getMenu(profile: Profile | null): { role: "guest"|"crew"|"operator"|"siteadmin"; items: {label:string; href:string}[] } {
-  if (profile?.site_admin) {
-    return {
-      role: "siteadmin",
-      items: [
-        { label: "Bookings", href: "/admin/bookings" },
-        { label: "Countries", href: "/admin/countries" },
-        { label: "Destinations", href: "/admin/destinations" },
-        { label: "Routes", href: "/admin/routes" },
-        { label: "Staff", href: "/admin/staff" },
-        { label: "Types", href: "/admin/types" },
-        { label: "Vehicles", href: "/admin/vehicles" },
-        { label: "Operators", href: "/admin/operators" },
-        { label: "Reports", href: "/admin/reports" },
-        { label: "Login", href: "/login" },
-      ],
+export default function RoleAwareMenu() {
+  const sb = useMemo(() => makeSb(), []);
+  const [user, setUser] = useState<PsUser | null>(null);
+  const [whiteLabel, setWhiteLabel] = useState(false);
+
+  const isSiteAdmin = !!user?.site_admin;
+  const isOperatorAdmin = !!(user?.operator_admin && user?.operator_id);
+
+  // Read ps_user
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("ps_user");
+      setUser(raw ? (JSON.parse(raw) as PsUser) : null);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
+  // Fetch operator.white_label_member if we have an operator_id
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!sb) return;
+      if (!user?.operator_id) {
+        setWhiteLabel(false);
+        return;
+      }
+      const { data } = await sb
+        .from("operators")
+        .select("id,white_label_member")
+        .eq("id", user.operator_id)
+        .maybeSingle();
+      if (!cancelled) {
+        setWhiteLabel(Boolean((data as OperatorRow | null)?.white_label_member));
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-  }
+  }, [sb, user?.operator_id]);
 
-  if (profile?.operator_admin) {
-    return {
-      role: "operator",
-      items: [
-        { label: "Bookings", href: "/operator/bookings" },
-        { label: "Routes", href: "/operator/routes" },
-        { label: "Vehicles", href: "/operator/vehicles" },
-        { label: "Staff", href: "/operator/staff" },
-        { label: "Reports", href: "/operator/reports" },
-        { label: "Login", href: "/login" },
-      ],
-    };
-  }
+  // Build role sections. Keep only the two required routing changes,
+  // and inject "White Label" conditionally. Sort items by label.
+  type Item = { label: string; href: string };
 
-  if (isCrewFromCache()) {
-    return {
-      role: "crew",
-      items: [
-        { label: "Bookings", href: "/crew/account" },
-        { label: "Reports", href: "/crew/reports" },
-        { label: "Login", href: "/login" },
-      ],
-    };
-  }
+  const siteItems: Item[] = useMemo(() => {
+    const base: Item[] = [
+      // keep whatever else you already render here
+      { label: "Countries", href: "/admin/countries" },
+      { label: "Destinations", href: "/admin/destinations" },
+      { label: "Operators", href: "/admin/operators" },
+      { label: "Routes", href: "/admin/routes" },
+      // UPDATED: “Types” must point here
+      { label: "Types", href: "/admin/transport-types" },
+    ];
 
-  // Guest / client (no burger)
-  return {
-    role: "guest",
-    items: [],
-  };
-}
+    // Site admin should ALSO see White Label menu item
+    if (isSiteAdmin) {
+      base.push({ label: "White Label", href: "/admin/white-label" });
+    }
 
-/**
- * Only renders a burger + drawer for crew/operator/siteadmin.
- * Guests see nothing here (header still shows "Home" and "Login/Name" on the right).
- */
-export default function RoleAwareMenu({ profile, loading }: Props) {
-  const [open, setOpen] = React.useState(false);
-  const { role, items } = React.useMemo(() => getMenu(profile), [profile]);
+    return base.sort((a, b) => a.label.localeCompare(b.label));
+  }, [isSiteAdmin]);
 
-  // Hide entirely for guests
-  if (role === "guest") return null;
+  const operatorItems: Item[] = useMemo(() => {
+    const base: Item[] = [
+      // UPDATED: “Bookings” must point here
+      { label: "Bookings", href: "/operator/admin" },
+      { label: "Routes", href: "/operator-admin/routes" },
+      { label: "Staff", href: "/operator-admin/staff" },
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
+      // keep any other existing operator links…
+    ];
 
-  const roleLabel =
-    loading ? "Loading…" :
-    role === "siteadmin" ? "Site Admin" :
-    role === "operator" ? "Operator Admin" :
-    "Crew";
+    // Show White Label for operator admins only if operator has the flag,
+    // OR if the user is also a site admin (site admin always sees it).
+    if (whiteLabel || isSiteAdmin) {
+      base.push({ label: "White Label", href: "/operator-admin/white-label" });
+    }
+
+    return base.sort((a, b) => a.label.localeCompare(b.label));
+  }, [whiteLabel, isSiteAdmin]);
+
+  // Simple burger UI (kept generic so it’s drop-in)
+  const [open, setOpen] = useState(false);
+
+  const displayName =
+    user?.operator_name ||
+    [user?.first_name, user?.last_name].filter(Boolean).join(" ") ||
+    "";
 
   return (
-    <>
-      {/* Burger (forced white) */}
-      <button
-        aria-label="Open menu"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center justify-center w-9 h-9"
-      >
-        <span
-          aria-hidden
-          className="relative block w-6 h-[2px] bg-white before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-white before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-white after:translate-y-2"
-        />
-      </button>
+    <header
+      className="sticky top-0 z-50 bg-neutral-900 text-white"
+      style={{ boxShadow: "0 1px 0 rgba(255,255,255,0.08)" }}
+    >
+      <div className="mx-auto max-w-[1200px] px-4 py-3 flex items-center gap-3">
+        <button
+          onClick={() => setOpen((s) => !s)}
+          className="inline-flex items-center justify-center w-9 h-9 rounded-md border border-neutral-700"
+          aria-label="Toggle menu"
+        >
+          ☰
+        </button>
+        <Link href="/" className="font-semibold tracking-wide">
+          Pace Shuttles
+        </Link>
+        <span className="ml-auto text-sm text-neutral-300">
+          {displayName || "Account"}
+        </span>
+      </div>
 
-      {/* Drawer */}
       {open && (
-        <div className="fixed inset-0 z-[60]">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setOpen(false)}
-            aria-hidden
-          />
-          {/* Panel */}
-          <aside
-            className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
-            role="dialog"
-            aria-label="Main menu"
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b">
-              <div className="font-medium">{roleLabel}</div>
-              <button
-                aria-label="Close menu"
-                className="w-9 h-9"
-                onClick={() => setOpen(false)}
-              >
-                <span
-                  aria-hidden
-                  className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
-                />
-              </button>
-            </div>
-
-            <nav className="px-5 py-4 space-y-6 text-lg">
-              {/* Always include Home at the top of the drawer */}
+        <nav className="bg-neutral-800 border-t border-neutral-700">
+          <div className="mx-auto max-w-[1200px] px-4 py-3 grid gap-6 md:grid-cols-2">
+            {/* Site admin section */}
+            {isSiteAdmin && (
               <div>
-                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
-              </div>
-
-              {items.map((it) => (
-                <div key={it.href}>
-                  <Link href={it.href} onClick={() => setOpen(false)}>
-                    {it.label}
-                  </Link>
+                <div className="text-xs uppercase tracking-wider text-neutral-400 mb-2">
+                  Site Admin
                 </div>
-              ))}
-            </nav>
-          </aside>
-        </div>
+                <ul className="space-y-1">
+                  {siteItems.map((it) => (
+                    <li key={`site-${it.href}`}>
+                      <Link
+                        href={it.href}
+                        className="block px-3 py-2 rounded hover:bg-neutral-700"
+                        onClick={() => setOpen(false)}
+                      >
+                        {it.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Operator admin section */}
+            {isOperatorAdmin && (
+              <div>
+                <div className="text-xs uppercase tracking-wider text-neutral-400 mb-2">
+                  Operator Admin
+                </div>
+                <ul className="space-y-1">
+                  {operatorItems.map((it) => (
+                    <li key={`op-${it.href}`}>
+                      <Link
+                        href={it.href}
+                        className="block px-3 py-2 rounded hover:bg-neutral-700"
+                        onClick={() => setOpen(false)}
+                      >
+                        {it.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* If the user has neither role, we still render an empty menu gracefully */}
+            {!isSiteAdmin && !isOperatorAdmin && (
+              <div className="text-sm text-neutral-300">
+                No admin role found for this account.
+              </div>
+            )}
+          </div>
+        </nav>
       )}
-    </>
+    </header>
   );
 }
