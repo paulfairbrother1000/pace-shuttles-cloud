@@ -4,7 +4,8 @@
 import * as React from "react";
 import Link from "next/link";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
-import RoleAwareMenu from "@/components/RoleAwareMenu";
+
+// import RoleAwareMenu from "@/components/RoleAwareMenu";
 
 type PsUser = {
   first_name?: string | null;
