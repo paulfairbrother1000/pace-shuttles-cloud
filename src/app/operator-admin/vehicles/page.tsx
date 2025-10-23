@@ -1,5 +1,4 @@
 /*--- src/app/operator-admin/vehicles/page.tsx ---*/
-
 "use client";
 
 import Link from "next/link";
@@ -96,20 +95,17 @@ export default function OperatorVehiclesIndex() {
         sb.from("operators").select("id,name,country_id").order("name"),
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
-        sb
-          .from("vehicles")
-          .select("*")
-          .order("created_at", { ascending: false }),
+        sb.from("vehicles").select("*").order("created_at", { ascending: false }),
       ]);
       if (off) return;
 
       if (ops.error || jts.error || rels.error || vs.error) {
         setMsg(
           ops.error?.message ||
-            jts.error?.message ||
-            rels.error?.message ||
-            vs.error?.message ||
-            "Load failed"
+          jts.error?.message ||
+          rels.error?.message ||
+          vs.error?.message ||
+          "Load failed"
         );
       }
 
@@ -119,9 +115,7 @@ export default function OperatorVehiclesIndex() {
       setRows((vs.data as VehicleRow[]) || []);
       setLoading(false);
     })();
-    return () => {
-      off = true;
-    };
+    return () => { off = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -162,8 +156,21 @@ export default function OperatorVehiclesIndex() {
     [opTypeRels, operatorId]
   );
 
+  /* --- Kill any stray page-level burger (RoleAwareMenu) that isn't in the fixed header --- */
+  useEffect(() => {
+    try {
+      const header = document.querySelector("header.ps-header") || document.querySelector("header[aria-label='Top navigation']");
+      document.querySelectorAll("#ps-new-admin-topbar").forEach((el) => {
+        if (!header || (el !== header && !header.contains(el))) {
+          el.remove();
+        }
+      });
+    } catch { /* ignore */ }
+  }, []);
+
   return (
-    <div className="space-y-6">
+    // White canvas for operator-admin pages
+    <div className="bg-white min-h-[calc(100vh-6rem)] p-4 space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Vehicles</h1>
         <p className="text-neutral-600">
@@ -208,6 +215,10 @@ export default function OperatorVehiclesIndex() {
 
       {/* Tiles */}
       <section>
+        {msg && (
+          <div className="mb-2 p-3 rounded-lg border bg-rose-50 text-rose-700 text-sm">{msg}</div>
+        )}
+
         {loading ? (
           <div className="p-4 rounded-2xl border bg-white shadow">Loading…</div>
         ) : filtered.length === 0 ? (
