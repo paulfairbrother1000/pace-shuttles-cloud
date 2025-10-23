@@ -232,8 +232,7 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
 }
 
 /* ---------- Page ---------- */
-export default function OperatorAdminPage() {
-
+// …imports and helpers above…
 
 export default function OperatorAdminPage() {
   // ---- ps_user (must be inside component) ----
@@ -242,13 +241,14 @@ export default function OperatorAdminPage() {
 
   const isSite = !!psUser.site_admin;
   const isOpAdminLocked = !!(psUser.operator_admin && psUser.operator_id);
-  const lockedOperatorId = isOpAdminLocked ? (psUser.operator_id as UUID) : "" as UUID;
+  const lockedOperatorId = isOpAdminLocked ? (psUser.operator_id as UUID) : ("" as UUID);
 
-  // (your existing state follows)
+  // (now your existing state lines)
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  // ...
+  // …rest of the component…
 }
+
 
 
 
