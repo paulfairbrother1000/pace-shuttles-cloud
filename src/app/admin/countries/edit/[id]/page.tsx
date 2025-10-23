@@ -4,21 +4,26 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
-/* NEW: shared header */
+/* Header bits */
 import TopBar from "@/components/Nav/TopBar";
 import RoleSwitch from "@/components/Nav/RoleSwitch";
 
 type UUID = string;
 
+// Storage config
+const BUCKET = "images";
+const COUNTRY_DIR = "countries";
+
+// DB row
 type CountryRow = {
   id: UUID;
   name: string;
   code: string | null;
   description: string | null;
-  picture_url: string | null;
+  picture_url: string | null; // may be full https URL or a storage key "images/countries/..."
 };
 
-/* ---------- Supabase client ---------- */
+/* ---------- Supabase client (browser only) ---------- */
 function supa() {
   if (
     typeof window !== "undefined" &&
@@ -38,6 +43,7 @@ function ensureImageUrl(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
   if (/^https?:\/\//i.test(raw)) return raw; // already absolute
+  // treat as storage key (bucket/path...)
   const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/+$/, "");
   if (!base) return undefined;
   const key = raw.replace(/^\/+/, "");
@@ -64,7 +70,7 @@ export default function CountryEditPage({
     picture_url: "",
   });
 
-  /* NEW: ps_user → header name + role switch visibility */
+  // header bits
   const [headerName, setHeaderName] = useState<string | null>(null);
   const [hasBothRoles, setHasBothRoles] = useState(false);
   useEffect(() => {
@@ -85,12 +91,13 @@ export default function CountryEditPage({
     }
   }, []);
 
-  // preview uses the SAME normaliser as the tiles
+  // preview uses exact same normaliser as tiles
   const previewSrc = useMemo(
     () => ensureImageUrl(row.picture_url) ?? "",
     [row.picture_url]
   );
 
+  /* ---------- Initial load ---------- */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -113,7 +120,6 @@ export default function CountryEditPage({
           if (off) return;
           setRow(data as CountryRow);
         } else {
-          // new record defaults
           setRow({
             id: "" as UUID,
             name: "",
@@ -137,16 +143,17 @@ export default function CountryEditPage({
     setRow((r) => ({ ...r, [key]: val }));
   }
 
+  /* ---------- Save ---------- */
   async function handleSave() {
     if (!client) return;
     setErr(null);
     try {
       const payload = {
         name: String(row.name || "").trim(),
-        // keep code as-is (we’re not editing it here)
         code: row.code ?? null,
         description: row.description?.trim() || null,
-        picture_url: row.picture_url?.trim() || null, // stored key or full URL
+        // store the storage key or full URL exactly as typed/filled
+        picture_url: row.picture_url?.trim() || null,
       };
 
       if (isCreate) {
@@ -165,9 +172,67 @@ export default function CountryEditPage({
     }
   }
 
+  /* ---------- File upload handling ---------- */
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    if (!client) return;
+    setErr(null);
+    setUploadMsg(null);
+
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Basic guards (client-side)
+    const MAX_MB = 8;
+    if (!file.type.startsWith("image/")) {
+      setErr("Please choose an image file.");
+      // reset input so picking the same file re-fires change
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    if (file.size > MAX_MB * 1024 * 1024) {
+      setErr(`Image is too large (max ${MAX_MB}MB).`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    try {
+      setUploading(true);
+
+      // Build path: countries/<slug>-<ts>.<ext>
+      const slug = slugify(row.name || "country");
+      const ext = extFromFilename(file.name);
+      const objectPath = `${COUNTRY_DIR}/${slug}-${Date.now()}.${ext}`;
+
+      // Upload
+      const { error: upErr } = await client.storage
+        .from(BUCKET)
+        .upload(objectPath, file, {
+          cacheControl: "3600",
+          upsert: true, // allow replacing if same key (timestamp usually avoids this)
+          contentType: file.type || `image/${ext}`,
+        });
+
+      if (upErr) throw upErr;
+
+      // Persist storage key in form state (exactly like older rows)
+      const storageKey = `${BUCKET}/${objectPath}`;
+      setRow((r) => ({ ...r, picture_url: storageKey }));
+      setUploadMsg("Image uploaded. Preview updated.");
+
+      // Reset input so user can pick same file again if needed
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  /* ---------- UI ---------- */
   return (
     <div className="min-h-screen">
-      {/* NEW: sticky header (non-breaking) */}
       <TopBar userName={headerName} homeHref="/" accountHref="/login" />
       <RoleSwitch active="site" show={hasBothRoles} />
 
@@ -207,7 +272,6 @@ export default function CountryEditPage({
                   />
                 </label>
 
-                {/* We keep code read-only here (if present) */}
                 {row.code ? (
                   <div className="text-xs text-neutral-600">
                     Code: <strong>{row.code}</strong>
@@ -237,6 +301,30 @@ export default function CountryEditPage({
                   />
                 </label>
 
+                {/* Choose file (label-for; works on iOS/Safari) */}
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <label
+                      htmlFor="country-file-input"
+                      className="px-3 py-2 rounded-lg border hover:bg-neutral-50 cursor-pointer inline-block select-none"
+                    >
+                      {uploading ? "Uploading…" : "Choose file & upload"}
+                    </label>
+                    <input
+                      id="country-file-input"
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="absolute inset-0 w-px h-px opacity-0"
+                      onChange={handleFilePicked}
+                      disabled={uploading}
+                    />
+                  </div>
+                  <span className="text-xs text-neutral-500">
+                    Uploads to <code>{BUCKET}/{COUNTRY_DIR}</code> and fills the field above.
+                  </span>
+                </div>
+
                 <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   {previewSrc ? (
@@ -255,9 +343,8 @@ export default function CountryEditPage({
                   )}
                 </div>
                 <div className="text-xs text-neutral-600">
-                  Tip: for Supabase Storage keys, use{" "}
-                  <code>images/countries/&lt;file&gt;</code>
-                  {" "}— we’ll turn it into a full public URL automatically.
+                  Tip: Storage keys should look like{" "}
+                  <code>{BUCKET}/{COUNTRY_DIR}/&lt;file&gt;</code>. We’ll convert keys to public URLs for preview automatically.
                 </div>
               </div>
             </div>
