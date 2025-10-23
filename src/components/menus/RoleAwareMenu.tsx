@@ -1,9 +1,9 @@
+// src/components/menus/RoleAwareMenu.tsx
 "use client";
 
 import Link from "next/link";
 import * as React from "react";
 
-/** localStorage("ps_user") shape – only the bits we use here */
 type PsUser = {
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
@@ -14,16 +14,10 @@ type PsUser = {
   captain?: boolean | null;
   crew?: boolean | null;
   white_label_member?: boolean | null; // DB column
-  white_label_menu?: boolean | null;   // tolerate alternative flag name
+  white_label_menu?: boolean | null;   // tolerate alternative flag
 };
 
 type Role = "guest" | "crew" | "operator" | "siteadmin";
-
-declare global {
-  interface Window {
-    __PS_BURGER_MOUNTED__?: boolean; // singleton guard
-  }
-}
 
 function readPsUser(): PsUser | null {
   try {
@@ -36,21 +30,16 @@ function readPsUser(): PsUser | null {
   }
 }
 
-function isCrewFromUser(u: PsUser | null): boolean {
+function isCrew(u: PsUser | null) {
   if (!u) return false;
   const txt = `${u.jobrole || ""} ${u.role || ""} ${u.staff_role || ""}`.toLowerCase();
-  return (
-    txt.includes("captain") ||
-    txt.includes("crew") ||
-    u.captain === true ||
-    u.crew === true
-  );
+  return txt.includes("captain") || txt.includes("crew") || u.captain === true || u.crew === true;
 }
 
 function deriveRole(u: PsUser | null): Role {
   if (u?.site_admin) return "siteadmin";
   if (u?.operator_admin || u?.operator_id) return "operator";
-  if (isCrewFromUser(u)) return "crew";
+  if (isCrew(u)) return "crew";
   return "guest";
 }
 
@@ -67,7 +56,7 @@ function buildItems(role: Role, u: PsUser | null): MenuItem[] {
   if (role === "crew") {
     items.push(
       { label: "Bookings", href: "/crew/account" },
-      { label: "Reports", href: "/crew/reports" }
+      { label: "Reports", href: "/crew/reports" },
     );
   }
 
@@ -77,7 +66,7 @@ function buildItems(role: Role, u: PsUser | null): MenuItem[] {
       { label: "Routes", href: "/operator-admin/routes" },
       { label: "Staff", href: "/operator-admin/staff" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
-      { label: "Reports", href: "/operator/admin/reports" }
+      { label: "Reports", href: "/operator/admin/reports" },
     );
     if (allowWhiteLabel(u, role)) {
       items.push({ label: "White Label", href: "/operator-admin/white-label" });
@@ -96,47 +85,27 @@ function buildItems(role: Role, u: PsUser | null): MenuItem[] {
       { label: "Staff", href: "/operator-admin/staff" },
       { label: "Types", href: "/admin/transport-types" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
-      { label: "White Label", href: "/operator-admin/white-label" }
+      { label: "White Label", href: "/operator-admin/white-label" },
     );
   }
 
-  // Alphabetical (Home is injected separately in the drawer)
+  // Alphabetical (Home is injected separately)
   items.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
   return items;
 }
 
-/**
- * Burger + drawer for crew/operator/siteadmin.
- * - No "Login" entry (header has it permanently).
- * - Singleton guard to avoid duplicate burgers (only first mount renders).
- */
+/** Burger + drawer for crew/operator/siteadmin. No “Login”. */
 export default function RoleAwareMenu() {
   const [open, setOpen] = React.useState(false);
   const [user, setUser] = React.useState<PsUser | null>(() => readPsUser());
-  const [allowedToRender, setAllowedToRender] = React.useState(false);
 
-  // Singleton guard – only one burger at a time (e.g., the one inside TopBar)
-  React.useEffect(() => {
-    if (window.__PS_BURGER_MOUNTED__) {
-      setAllowedToRender(false);
-      return;
-    }
-    window.__PS_BURGER_MOUNTED__ = true;
-    setAllowedToRender(true);
-    return () => {
-      // release guard on unmount (route change/unload)
-      if (window.__PS_BURGER_MOUNTED__) {
-        delete window.__PS_BURGER_MOUNTED__;
-      }
-    };
-  }, []);
-
-  // Keep in sync with ps_user changes
+  // stay in sync with ps_user cache
   React.useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "ps_user") setUser(readPsUser());
     };
     window.addEventListener("storage", onStorage);
+    // first pass sync
     const id = setTimeout(() => setUser(readPsUser()), 0);
     return () => {
       window.removeEventListener("storage", onStorage);
@@ -145,7 +114,7 @@ export default function RoleAwareMenu() {
   }, []);
 
   const role = React.useMemo(() => deriveRole(user), [user]);
-  if (!allowedToRender || role === "guest") return null;
+  if (role === "guest") return null;
 
   const items = React.useMemo(() => buildItems(role, user), [role, user]);
   const roleLabel =
@@ -155,7 +124,7 @@ export default function RoleAwareMenu() {
 
   return (
     <>
-      {/* Burger (forced white) – same visual as before */}
+      {/* Burger (same visual) */}
       <button
         aria-label="Open menu"
         onClick={() => setOpen(true)}
@@ -169,13 +138,7 @@ export default function RoleAwareMenu() {
 
       {open && (
         <div className="fixed inset-0 z-[60]">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setOpen(false)}
-            aria-hidden
-          />
-          {/* Panel */}
+          <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} aria-hidden />
           <aside
             className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
             role="dialog"
@@ -183,11 +146,7 @@ export default function RoleAwareMenu() {
           >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <div className="font-medium">{roleLabel}</div>
-              <button
-                aria-label="Close menu"
-                className="w-9 h-9"
-                onClick={() => setOpen(false)}
-              >
+              <button aria-label="Close menu" className="w-9 h-9" onClick={() => setOpen(false)}>
                 <span
                   aria-hidden
                   className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
@@ -196,17 +155,10 @@ export default function RoleAwareMenu() {
             </div>
 
             <nav className="px-5 py-4 space-y-6 text-lg">
-              {/* Home first */}
-              <div>
-                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
-              </div>
-
-              {/* Role-specific items (alphabetical) */}
+              <div><Link href="/" onClick={() => setOpen(false)}>Home</Link></div>
               {items.map((it) => (
                 <div key={it.href}>
-                  <Link href={it.href} onClick={() => setOpen(false)}>
-                    {it.label}
-                  </Link>
+                  <Link href={it.href} onClick={() => setOpen(false)}>{it.label}</Link>
                 </div>
               ))}
             </nav>
