@@ -4,127 +4,133 @@
 import Link from "next/link";
 import * as React from "react";
 
-type PsUser = {
+type Profile = {
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
   operator_id?: string | null;
-  jobrole?: string | null;
-  role?: string | null;
-  staff_role?: string | null;
-  captain?: boolean | null;
-  crew?: boolean | null;
-  white_label_member?: boolean | null; // DB column
-  white_label_menu?: boolean | null;   // tolerate alternative flag
+  operator_name?: string | null;
+  white_label_member?: boolean | null; // <- NEW we cache this in TopBar
 };
 
-type Role = "guest" | "crew" | "operator" | "siteadmin";
+type Props = {
+  /** If you already pass a profile, we’ll use it; otherwise we read ps_user. */
+  profile?: Profile | null;
+  loading?: boolean;
+};
 
-function readPsUser(): PsUser | null {
+// Read crew-ish hint from the same localStorage ("ps_user") cache
+function isCrewFromCache(): boolean {
   try {
-    if (typeof window === "undefined") return null;
+    if (typeof window === "undefined") return false;
     const raw = localStorage.getItem("ps_user");
-    if (!raw) return null;
-    return JSON.parse(raw) as PsUser;
+    if (!raw) return false;
+    const u = JSON.parse(raw) || {};
+    const txt = String(u.jobrole || u.role || u.staff_role || "").toLowerCase();
+    return (
+      txt.includes("captain") ||
+      txt.includes("crew") ||
+      u.captain === true ||
+      u.crew === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readPsUser(): Profile | null {
+  try {
+    const raw = localStorage.getItem("ps_user");
+    return raw ? (JSON.parse(raw) as Profile) : null;
   } catch {
     return null;
   }
 }
 
-function isCrew(u: PsUser | null) {
-  if (!u) return false;
-  const txt = `${u.jobrole || ""} ${u.role || ""} ${u.staff_role || ""}`.toLowerCase();
-  return txt.includes("captain") || txt.includes("crew") || u.captain === true || u.crew === true;
+function alpha<T extends { label: string }>(arr: T[]) {
+  return [...arr].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-function deriveRole(u: PsUser | null): Role {
-  if (u?.site_admin) return "siteadmin";
-  if (u?.operator_admin || u?.operator_id) return "operator";
-  if (isCrew(u)) return "crew";
-  return "guest";
-}
-
-function allowWhiteLabel(u: PsUser | null, role: Role): boolean {
-  if (role === "siteadmin") return true;
-  return Boolean(u?.white_label_menu ?? u?.white_label_member);
-}
-
-type MenuItem = { label: string; href: string };
-
-function buildItems(role: Role, u: PsUser | null): MenuItem[] {
-  const items: MenuItem[] = [];
-
-  if (role === "crew") {
-    items.push(
-      { label: "Bookings", href: "/crew/account" },
-      { label: "Reports", href: "/crew/reports" },
-    );
-  }
-
-  if (role === "operator") {
-    items.push(
-      { label: "Bookings", href: "/operator/admin" },
-      { label: "Routes", href: "/operator-admin/routes" },
-      { label: "Staff", href: "/operator-admin/staff" },
-      { label: "Vehicles", href: "/operator-admin/vehicles" },
-      { label: "Reports", href: "/operator/admin/reports" },
-    );
-    if (allowWhiteLabel(u, role)) {
-      items.push({ label: "White Label", href: "/operator-admin/white-label" });
-    }
-  }
-
-  if (role === "siteadmin") {
-    items.push(
-      { label: "Bookings", href: "/operator/admin" },
-      { label: "Countries", href: "/admin/countries" },
+function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"siteadmin"; items: {label:string; href:string}[] } {
+  // SITE ADMIN
+  if (p?.site_admin) {
+    const items = alpha([
+      { label: "Bookings",   href: "/operator/admin" },
+      { label: "Countries",  href: "/admin/countries" },
       { label: "Destinations", href: "/admin/destinations" },
-      { label: "Operators", href: "/admin/operators" },
-      { label: "Pickups", href: "/admin/pickups" },
-      { label: "Reports", href: "/admin/reports" },
-      { label: "Routes", href: "/operator-admin/routes" },
-      { label: "Staff", href: "/operator-admin/staff" },
-      { label: "Types", href: "/admin/transport-types" },
-      { label: "Vehicles", href: "/operator-admin/vehicles" },
-      { label: "White Label", href: "/operator-admin/white-label" },
-    );
+      { label: "Operators",  href: "/admin/operators" },
+      { label: "Pickups",    href: "/admin/pickups" },
+      { label: "Reports",    href: "/admin/reports" },
+      { label: "Routes",     href: "/operator-admin/routes" },
+      { label: "Staff",      href: "/operator-admin/staff" },
+      { label: "Types",      href: "/admin/transport-types" },
+      { label: "Vehicles",   href: "/operator-admin/vehicles" },
+      // white label always visible for site admin
+      { label: "White Label", href: "/operator/admin/white-label" },
+    ]);
+    return { role: "siteadmin", items };
   }
 
-  // Alphabetical (Home is injected separately)
-  items.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
-  return items;
+  // OPERATOR ADMIN
+  if (p?.operator_admin) {
+    const base = [
+      { label: "Bookings", href: "/operator/admin" },
+      { label: "Reports",  href: "/operator/admin/reports" },
+      { label: "Routes",   href: "/operator-admin/routes" },
+      { label: "Staff",    href: "/operator-admin/staff" },
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
+    ];
+    // only when flagged on the operator
+    if (p.white_label_member) {
+      base.push({ label: "White Label", href: "/operator/admin/white-label" });
+    }
+    return { role: "operator", items: alpha(base) };
+  }
+
+  // CREW
+  if (isCrewFromCache()) {
+    const items = alpha([
+      { label: "Bookings", href: "/crew/account" },
+      { label: "Reports",  href: "/crew/reports" }, // placeholder
+    ]);
+    return { role: "crew", items };
+  }
+
+  // Guest / client (no burger)
+  return { role: "guest", items: [] };
 }
 
-/** Burger + drawer for crew/operator/siteadmin. No “Login”. */
-export default function RoleAwareMenu() {
+/**
+ * Only renders a burger + drawer for crew/operator/siteadmin.
+ * Guests see nothing here (header still shows "Home" and "Login/Name" on the right).
+ * No “Login” in the drawer any more — it’s on the top bar.
+ */
+export default function RoleAwareMenu({ profile, loading }: Props) {
   const [open, setOpen] = React.useState(false);
-  const [user, setUser] = React.useState<PsUser | null>(() => readPsUser());
+  const [cache, setCache] = React.useState<Profile | null>(() => profile ?? readPsUser());
 
-  // stay in sync with ps_user cache
   React.useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "ps_user") setUser(readPsUser());
-    };
-    window.addEventListener("storage", onStorage);
-    // first pass sync
-    const id = setTimeout(() => setUser(readPsUser()), 0);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      clearTimeout(id);
-    };
-  }, []);
+    if (!profile) {
+      const onUpd = () => setCache(readPsUser());
+      window.addEventListener("ps_user:updated", onUpd);
+      return () => window.removeEventListener("ps_user:updated", onUpd);
+    }
+  }, [profile]);
 
-  const role = React.useMemo(() => deriveRole(user), [user]);
+  const effective = profile ?? cache;
+  const { role, items } = React.useMemo(() => buildMenu(effective), [effective]);
+
+  // Hide entirely for guests
   if (role === "guest") return null;
 
-  const items = React.useMemo(() => buildItems(role, user), [role, user]);
   const roleLabel =
+    loading ? "Loading…" :
     role === "siteadmin" ? "Site Admin" :
     role === "operator" ? "Operator Admin" :
     "Crew";
 
   return (
     <>
-      {/* Burger (same visual) */}
+      {/* Burger (forced white) */}
       <button
         aria-label="Open menu"
         onClick={() => setOpen(true)}
@@ -136,9 +142,16 @@ export default function RoleAwareMenu() {
         />
       </button>
 
+      {/* Drawer */}
       {open && (
         <div className="fixed inset-0 z-[60]">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} aria-hidden />
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          {/* Panel */}
           <aside
             className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
             role="dialog"
@@ -146,7 +159,11 @@ export default function RoleAwareMenu() {
           >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <div className="font-medium">{roleLabel}</div>
-              <button aria-label="Close menu" className="w-9 h-9" onClick={() => setOpen(false)}>
+              <button
+                aria-label="Close menu"
+                className="w-9 h-9"
+                onClick={() => setOpen(false)}
+              >
                 <span
                   aria-hidden
                   className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
@@ -155,10 +172,15 @@ export default function RoleAwareMenu() {
             </div>
 
             <nav className="px-5 py-4 space-y-6 text-lg">
-              <div><Link href="/" onClick={() => setOpen(false)}>Home</Link></div>
+              <div>
+                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
+              </div>
+
               {items.map((it) => (
                 <div key={it.href}>
-                  <Link href={it.href} onClick={() => setOpen(false)}>{it.label}</Link>
+                  <Link href={it.href} onClick={() => setOpen(false)}>
+                    {it.label}
+                  </Link>
                 </div>
               ))}
             </nav>

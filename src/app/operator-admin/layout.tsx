@@ -1,36 +1,54 @@
 // src/app/operator-admin/layout.tsx
 "use client";
 
-import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
-import { useEffect } from "react";
+import TopBar from "@/components/Nav/TopBar";
+import RoleSwitch from "@/components/Nav/RoleSwitch";
+import { useEffect, useState } from "react";
 
 export default function OperatorAdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  // Optional: if any legacy operator tab bars were ever injected by pages,
-  // hide them here so they don’t clash with the burger header.
+  const [name, setName] = useState<string | null>(null);
+  const [hasBothRoles, setHasBothRoles] = useState(false);
+
   useEffect(() => {
-    // no-op; style tag below handles this globally for /operator-admin/*
+    try {
+      const raw = localStorage.getItem("ps_user");
+      if (raw) {
+        const u = JSON.parse(raw);
+        const display =
+          u?.operator_name ||
+          u?.name ||
+          [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
+          null;
+        setName(display);
+        setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   return (
-    <div className="min-h-screen">
-      {/* NEW: same burger header used site-wide */}
-      <div id="ps-new-admin-topbar">
-        <RoleAwareMenu />
-      </div>
+    <div className="min-h-screen bg-white">
+      {/* Sticky top bar used site-wide (contains the single burger menu) */}
+      <TopBar userName={name} homeHref="/" accountHref="/account" />
 
-      {/* Spacer so the fixed header doesn’t overlap the page content */}
-      <div style={{ height: 64 }} aria-hidden="true" />
+      {/* Segmented switch (only if user has both roles) */}
+      <RoleSwitch
+        active="operator"
+        show={hasBothRoles}
+        operatorHref="/operator-admin"
+        siteHref="/admin"
+      />
 
-      {/* Page content */}
-      <div className="px-4">{children}</div>
+      {/* Push content below sticky header + switch */}
+      <div className="pt-24 px-4">{children}</div>
 
-      {/* Kill-switch for any legacy operator tabs a page might still render */}
+      {/* Kill any legacy operator tabs that older pages/components might inject */}
       <style jsx global>{`
-        /* Common legacy selectors we used to render for operator admin */
         #operator-tabs,
         .operator-tabs,
         .operator-section-tabs,
