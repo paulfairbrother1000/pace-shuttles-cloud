@@ -29,13 +29,7 @@ function readPsUser(): PsUser {
   }
 }
 
-// inside component
-const [psUser, setPsUser] = useState<PsUser>({});
-useEffect(() => { setPsUser(readPsUser()); }, []);
 
-const isSite = !!psUser.site_admin;
-const isOpAdminLocked = !!(psUser.operator_admin && psUser.operator_id);
-const lockedOperatorId = isOpAdminLocked ? psUser.operator_id! : "";
 
 // when you load operators/bookings:
 // if (isOpAdminLocked) use lockedOperatorId; don’t render the operator dropdown
@@ -239,6 +233,25 @@ function allocateDetailed(parties: Party[], boats: Boat[], horizon: Horizon): De
 
 /* ---------- Page ---------- */
 export default function OperatorAdminPage() {
+
+
+export default function OperatorAdminPage() {
+  // ---- ps_user (must be inside component) ----
+  const [psUser, setPsUser] = useState<PsUser>({});
+  useEffect(() => { setPsUser(readPsUser()); }, []);
+
+  const isSite = !!psUser.site_admin;
+  const isOpAdminLocked = !!(psUser.operator_admin && psUser.operator_id);
+  const lockedOperatorId = isOpAdminLocked ? (psUser.operator_id as UUID) : "" as UUID;
+
+  // (your existing state follows)
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  // ...
+}
+
+
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
