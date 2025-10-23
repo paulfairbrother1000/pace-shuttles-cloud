@@ -1,36 +1,45 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
 
 /**
- * Site Admin layout
- * - Renders the new burger/role-aware top menu once.
- * - Hides the legacy white tab bar on admin pages via scoped CSS.
- * - Adds top padding so page content clears the fixed header.
+ * Admin layout: render the same burger header used on Home
+ * and (optionally) remove only the legacy tab header if it appears.
  */
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  // Optional: wait for client to avoid any hydration flicker for the fixed bar
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+export default function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  // VERY narrow legacy cleanup so we never touch the new menu
+  useEffect(() => {
+    try {
+      const legacy = [
+        ...document.querySelectorAll("header.ps-header, .ps-header"),
+        ...document.querySelectorAll('[role="tablist"]'),
+      ];
+      legacy.forEach((el) => {
+        if (!document.getElementById("ps-new-admin-topbar")?.contains(el)) {
+          el.remove();
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   return (
     <div className="min-h-screen">
-      {/* NEW burger header (the same one the home page uses) */}
-      {mounted && <RoleAwareMenu />}
+      {/* New shared burger header (same as Home) */}
+      <div id="ps-new-admin-topbar" className="relative z-[60]">
+        <RoleAwareMenu />
+      </div>
 
-      {/* Hide the legacy header/tabs ONLY on /admin routes */}
-      <style jsx global>{`
-        /* Old white tab bar & legacy header variants */
-        header.ps-header,
-        .ps-header,
-        [role="tablist"] {
-          display: none !important;
-        }
-      `}</style>
+      {/* Spacer so fixed header doesn’t overlap content */}
+      <div className="h-16" aria-hidden="true" />
 
-      {/* Push content below fixed header (RoleAwareMenu is fixed top) */}
-      <div className="pt-20 px-4">{children}</div>
+      <main>{children}</main>
     </div>
   );
 }
