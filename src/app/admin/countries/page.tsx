@@ -90,7 +90,8 @@ export default function AdminCountriesPage() {
         if (looksLikeOldMenu) suspects.add(el);
       });
 
-      // Don't ever remove the new burger bar if present (we wrap it in #ps-new-admin-topbar in layout)
+      // Don't ever remove the new burger bar if present.
+      // We render RoleAwareMenu inside #ps-new-admin-topbar below.
       const isInsideNewTopBar = (el: Element) => {
         const top = document.getElementById("ps-new-admin-topbar");
         return !!top && (el === top || top.contains(el));
@@ -146,7 +147,9 @@ export default function AdminCountriesPage() {
   return (
     <>
       {/* NEW: shared burger header (same component as Home) */}
-      <RoleAwareMenu />
+      <div id="ps-new-admin-topbar">
+        <RoleAwareMenu />
+      </div>
 
       {/* Spacer so fixed header doesn’t overlap the page content */}
       <div style={{ height: 64 }} aria-hidden="true" />
