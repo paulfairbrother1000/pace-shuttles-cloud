@@ -146,10 +146,17 @@ export default function AdminCountriesPage() {
 
   return (
     <>
-      {/* NEW: shared burger header (same component as Home) */}
-      <div id="ps-new-admin-topbar">
-        <RoleAwareMenu />
-      </div>
+
+
+{process.env.NEXT_PUBLIC_APP_FLAG_USE_ROLE_AWARE_MENU === "true" ? (
+  <RoleAwareMenu />
+) : (
+  <RoleAwareMenu />
+
+)}
+
+
+
 
       {/* Spacer so fixed header doesn’t overlap the page content */}
       <div style={{ height: 64 }} aria-hidden="true" />
