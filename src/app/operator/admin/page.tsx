@@ -3,10 +3,10 @@
 "use client";                // ← REQUIRED: enables client hooks
 
 // Prevent static generation/prerender for this route
-export const prerender = false;
+
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "force-no-store";
+
+
 
 // …the rest of your existing imports and code stay exactly as-is
 
