@@ -1,7 +1,6 @@
-// src/app/admin/countries/edit/[id]/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 
@@ -11,16 +10,12 @@ import RoleSwitch from "@/components/Nav/RoleSwitch";
 
 type UUID = string;
 
-// Adjust if your bucket is named differently (e.g. "public")
-const BUCKET = "images";                 // bucket name
-const COUNTRY_DIR = "countries";         // folder within the bucket
-
 type CountryRow = {
   id: UUID;
   name: string;
   code: string | null;
   description: string | null;
-  picture_url: string | null; // may be a full https URL OR a storage key: "images/countries/file.jpg"
+  picture_url: string | null;
 };
 
 /* ---------- Supabase client ---------- */
@@ -38,7 +33,7 @@ function supa() {
   return null;
 }
 
-/* ---------- Helpers ---------- */
+/* ---------- SAME normaliser as the tiles ---------- */
 function ensureImageUrl(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -47,20 +42,6 @@ function ensureImageUrl(input?: string | null): string | undefined {
   if (!base) return undefined;
   const key = raw.replace(/^\/+/, "");
   return `${base}/storage/v1/object/public/${key}`;
-}
-
-function slugify(s: string) {
-  return (s || "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
-function extFromFilename(name: string) {
-  const m = /\.([a-z0-9]+)$/i.exec(name || "");
-  return m ? m[1].toLowerCase() : "jpg";
 }
 
 export default function CountryEditPage({
@@ -73,11 +54,7 @@ export default function CountryEditPage({
   const isCreate = params.id === "new";
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-
   const [err, setErr] = useState<string | null>(null);
-  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
   const [row, setRow] = useState<CountryRow>({
     id: "" as UUID,
@@ -163,7 +140,6 @@ export default function CountryEditPage({
   async function handleSave() {
     if (!client) return;
     setErr(null);
-    setSaving(true);
     try {
       const payload = {
         name: String(row.name || "").trim(),
@@ -186,54 +162,6 @@ export default function CountryEditPage({
       router.push("/admin/countries");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  /* ---------- File upload handling ---------- */
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // NOTE: We keep this for programmatic uses if needed elsewhere,
-  // but Safari/iOS may block .click() on display:none inputs.
-  async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!client) return;
-    setErr(null);
-    setUploadMsg(null);
-
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    try {
-      setUploading(true);
-
-      // Build a safe path: countries/<slug>-<ts>.<ext>
-      const slug = slugify(row.name || "country");
-      const ext = extFromFilename(file.name);
-      const objectPath = `${COUNTRY_DIR}/${slug}-${Date.now()}.${ext}`;
-
-      // Upload to bucket
-      const { error: upErr } = await client.storage
-        .from(BUCKET)
-        .upload(objectPath, file, {
-          cacheControl: "3600",
-          upsert: true,
-          contentType: file.type || `image/${ext}`,
-        });
-
-      if (upErr) throw upErr;
-
-      // Store as storage key so tiles + ensureImageUrl work:
-      const storageKey = `${BUCKET}/${objectPath}`;
-      setRow((r) => ({ ...r, picture_url: storageKey }));
-      setUploadMsg("Image uploaded. Preview updated.");
-
-      // Clear file input so the same file can be re-picked if needed
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-    } finally {
-      setUploading(false);
     }
   }
 
@@ -254,26 +182,11 @@ export default function CountryEditPage({
           <h1 className="text-2xl font-semibold">
             {isCreate ? "New Country" : "Edit Country"}
           </h1>
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              className="px-4 py-2 rounded-lg text-white disabled:opacity-60"
-              disabled={saving}
-              style={{ backgroundColor: "#2563eb" }}
-              onClick={handleSave}
-            >
-              {saving ? "Saving…" : isCreate ? "Create Country" : "Save Changes"}
-            </button>
-          </div>
         </header>
 
         {err && (
           <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
             {err}
-          </div>
-        )}
-        {uploadMsg && (
-          <div className="p-3 border rounded-lg bg-emerald-50 text-emerald-700 text-sm">
-            {uploadMsg}
           </div>
         )}
 
@@ -312,7 +225,7 @@ export default function CountryEditPage({
                 </label>
               </div>
 
-              {/* Right: image field + preview + file picker */}
+              {/* Right: image field + preview */}
               <div className="space-y-3">
                 <label className="block text-sm">
                   <span className="text-neutral-700">Picture URL or storage key</span>
@@ -323,31 +236,6 @@ export default function CountryEditPage({
                     placeholder="images/countries/antigua-and-barbuda.jpg or full https URL"
                   />
                 </label>
-
-                {/* Choose file — Safari/iOS friendly (no display:none) */}
-                <div className="flex items-center gap-2">
-                  <div className="relative">
-                    <label
-                      htmlFor="country-file-input"
-                      className="px-3 py-2 rounded-lg border hover:bg-neutral-50 cursor-pointer inline-block select-none"
-                    >
-                      {uploading ? "Uploading…" : "Choose file & upload"}
-                    </label>
-                    <input
-                      id="country-file-input"
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      // Visually hidden but still clickable via label (not display:none)
-                      className="absolute inset-0 w-px h-px opacity-0"
-                      onChange={handleFilePicked}
-                      disabled={uploading}
-                    />
-                  </div>
-                  <span className="text-xs text-neutral-500">
-                    Uploads to <code>{BUCKET}/{COUNTRY_DIR}</code> and fills the field above.
-                  </span>
-                </div>
 
                 <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -367,8 +255,9 @@ export default function CountryEditPage({
                   )}
                 </div>
                 <div className="text-xs text-neutral-600">
-                  Tip: Supabase Storage keys should look like{" "}
-                  <code>{BUCKET}/{COUNTRY_DIR}/&lt;file&gt;</code>. We’ll turn it into a public URL automatically for previews and tiles.
+                  Tip: for Supabase Storage keys, use{" "}
+                  <code>images/countries/&lt;file&gt;</code>
+                  {" "}— we’ll turn it into a full public URL automatically.
                 </div>
               </div>
             </div>
@@ -381,12 +270,11 @@ export default function CountryEditPage({
                 Cancel
               </button>
               <button
-                className="px-4 py-2 rounded-lg text-white disabled:opacity-60"
+                className="px-4 py-2 rounded-lg text-white"
                 style={{ backgroundColor: "#2563eb" }}
                 onClick={handleSave}
-                disabled={saving}
               >
-                {saving ? "Saving…" : isCreate ? "Create Country" : "Save Changes"}
+                {isCreate ? "Create Country" : "Save Changes"}
               </button>
             </div>
           </div>

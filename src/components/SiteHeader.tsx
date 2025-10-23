@@ -3,9 +3,9 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
-
-// import RoleAwareMenu from "@/components/RoleAwareMenu";
+import RoleAwareMenu from "@/components/RoleAwareMenu";
 
 type PsUser = {
   first_name?: string | null;
@@ -33,13 +33,11 @@ function readCache(): PsUser | null {
 function writeCache(u: PsUser) {
   try {
     localStorage.setItem("ps_user", JSON.stringify(u || {}));
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
 export default function SiteHeader(): JSX.Element {
-  // ✅ All hooks at top level, unconditionally
+  const pathname = usePathname();
   const [authEmail, setAuthEmail] = React.useState<string | null>(null);
   const [profile, setProfile] = React.useState<PsUser | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -58,9 +56,7 @@ export default function SiteHeader(): JSX.Element {
         return;
       }
       if (!session) {
-        try {
-          localStorage.removeItem("ps_user");
-        } catch {}
+        localStorage.removeItem("ps_user");
         setAuthEmail(null);
         setProfile(null);
         setLoading(false);
@@ -79,20 +75,17 @@ export default function SiteHeader(): JSX.Element {
 
       if (cacheLooksWrong) {
         let row: PsUser | null = null;
-
-        // ⚠️ No spaces in select list; avoids odd REST URLs/400s
         const byId = await supabase
           .from("users")
-          .select("first_name,site_admin,operator_admin,operator_id,email")
+          .select("first_name, site_admin, operator_admin, operator_id, email")
           .eq("id", session.user.id)
           .maybeSingle();
-
         if (!byId.error && byId.data) {
           row = byId.data as PsUser;
         } else if (email) {
           const byEmail = await supabase
             .from("users")
-            .select("first_name,site_admin,operator_admin,operator_id,email")
+            .select("first_name, site_admin, operator_admin, operator_id, email")
             .eq("email", email)
             .maybeSingle();
           if (!byEmail.error && byEmail.data) row = byEmail.data as PsUser;
@@ -126,7 +119,6 @@ export default function SiteHeader(): JSX.Element {
 
   React.useEffect(() => {
     let alive = true;
-
     (async () => {
       setLoading(true);
       if (!supabase) {
@@ -141,19 +133,16 @@ export default function SiteHeader(): JSX.Element {
     })();
 
     if (!supabase) return;
-
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       await recomputeFromSession(session);
     });
 
     return () => {
       alive = false;
-      // guard in case the client changed shape
-      try {
-        sub?.subscription?.unsubscribe();
-      } catch {}
+      sub.subscription.unsubscribe();
     };
-  }, [supabase, recomputeFromSession]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname, supabase, recomputeFromSession]);
 
   const firstName =
     profile?.first_name?.trim() ||
@@ -162,7 +151,7 @@ export default function SiteHeader(): JSX.Element {
 
   return (
     <header className="ps-header">
-      {/* Global fixes to prevent white flashes and ensure full-bleed header */}
+      {/* Global fixes to kill any white gaps and ensure full-bleed header */}
       <style jsx global>{`
         html, body { margin: 0; padding: 0; background:#0f1a2a; }
         .ps-header {
@@ -170,9 +159,10 @@ export default function SiteHeader(): JSX.Element {
           top: 0;
           z-index: 50;
           width: 100%;
+          /* solid grey bar (no white bleed on scroll) */
           background: #454545;
           color: #ffffff;
-          border-bottom: 0;
+          border-bottom: 0; /* kill thin white line on some mobiles */
         }
         .ps-header .bar {
           max-width: 72rem;
@@ -184,7 +174,9 @@ export default function SiteHeader(): JSX.Element {
           gap: .75rem;
         }
         .ps-header a.brand,
-        .ps-header .pill { color: #ffffff; }
+        .ps-header .pill {
+          color: #ffffff;
+        }
         .ps-header .pill {
           border-radius: 9999px;
           padding: .375rem .75rem;
@@ -193,12 +185,17 @@ export default function SiteHeader(): JSX.Element {
           border: 1px solid rgba(255,255,255,.18);
           background: transparent;
         }
-        .ps-header .pill:hover { background: rgba(255,255,255,.08); }
+        .ps-header .pill:hover {
+          background: rgba(255,255,255,.08);
+        }
       `}</style>
 
       <div className="bar">
         {/* Left: burger (role-aware) */}
-        <RoleAwareMenu profile={profile} loading={loading} />
+        <RoleAwareMenu
+          profile={profile}
+          loading={loading}
+        />
 
         {/* Right: Home + Login/Name */}
         <nav className="flex items-center gap-2">

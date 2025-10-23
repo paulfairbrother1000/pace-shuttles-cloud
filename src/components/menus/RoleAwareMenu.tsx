@@ -3,61 +3,22 @@
 
 import Link from "next/link";
 import * as React from "react";
-import { createBrowserClient } from "@supabase/ssr";
 
 type Profile = {
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
   operator_id?: string | null;
+  operator_name?: string | null;
+  white_label_member?: boolean | null; // <- NEW we cache this in TopBar
 };
 
-type Props = { profile?: Profile | null; loading?: boolean };
+type Props = {
+  /** If you already pass a profile, we’ll use it; otherwise we read ps_user. */
+  profile?: Profile | null;
+  loading?: boolean;
+};
 
-// ---------- NEW: keep ps_user fresh ----------
-async function syncPsUserCache() {
-  try {
-    if (typeof window === "undefined") return;
-    const raw = localStorage.getItem("ps_user");
-    const cached = raw ? JSON.parse(raw) : null;
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    if (!url || !key) return;
-    const sb = createBrowserClient(url, key);
-
-    // 1) Who am I?
-    const { data: auth } = await sb.auth.getUser();
-    const email = auth?.user?.email;
-    if (!email) return;
-
-    // 2) Fetch latest profile and (if present) operator
-    const { data: userRow } = await sb
-      .from("users")
-      .select("id, first_name, last_name, operator_admin, site_admin, operator_id, operator_name")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (!userRow) return;
-
-    // Merge with any existing shape we store in ps_user
-    const next = {
-      ...(cached || {}),
-      ...userRow,
-      // keep a few convenience mirrors many pages rely on
-      name:
-        cached?.name ||
-        [userRow.first_name, userRow.last_name].filter(Boolean).join(" ") ||
-        auth.user?.user_metadata?.full_name ||
-        "",
-    };
-
-    localStorage.setItem("ps_user", JSON.stringify(next));
-  } catch {
-    // ignore – never block rendering
-  }
-}
-// --------------------------------------------
-
+// Read crew-ish hint from the same localStorage ("ps_user") cache
 function isCrewFromCache(): boolean {
   try {
     if (typeof window === "undefined") return false;
@@ -76,82 +37,100 @@ function isCrewFromCache(): boolean {
   }
 }
 
-function getMenu(profile: Profile | null): {
-  role: "guest" | "crew" | "operator" | "siteadmin";
-  items: { label: string; href: string }[];
-} {
-  if (profile?.site_admin) {
-    // Site admin: operator-admin pages + site-admin pages
-    return {
-      role: "siteadmin",
-      items: [
-        { label: "Bookings", href: "/operator/admin" },
-        { label: "Countries", href: "/admin/countries" },
-        { label: "Destinations", href: "/admin/destinations" },
-        { label: "Operators", href: "/admin/operators" },
-        { label: "Reports", href: "/admin/reports" },
-        { label: "Routes", href: "/operator-admin/routes" },
-        { label: "Staff", href: "/operator-admin/staff" },
-        { label: "Types", href: "/admin/transport-types" },
-        { label: "Vehicles", href: "/operator-admin/vehicles" },
-        // (Login is permanently in the chrome; don’t duplicate it in the drawer)
-      ].sort((a, b) => a.label.localeCompare(b.label)),
-    };
+function readPsUser(): Profile | null {
+  try {
+    const raw = localStorage.getItem("ps_user");
+    return raw ? (JSON.parse(raw) as Profile) : null;
+  } catch {
+    return null;
+  }
+}
+
+function alpha<T extends { label: string }>(arr: T[]) {
+  return [...arr].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"siteadmin"; items: {label:string; href:string}[] } {
+  // SITE ADMIN
+  if (p?.site_admin) {
+    const items = alpha([
+      { label: "Bookings",   href: "/operator/admin" },
+      { label: "Countries",  href: "/admin/countries" },
+      { label: "Destinations", href: "/admin/destinations" },
+      { label: "Operators",  href: "/admin/operators" },
+      { label: "Pickups",    href: "/admin/pickups" },
+      { label: "Reports",    href: "/admin/reports" },
+      { label: "Routes",     href: "/operator-admin/routes" },
+      { label: "Staff",      href: "/operator-admin/staff" },
+      { label: "Types",      href: "/admin/transport-types" },
+      { label: "Vehicles",   href: "/operator-admin/vehicles" },
+      // white label always visible for site admin
+      { label: "White Label", href: "/operator/admin/white-label" },
+    ]);
+    return { role: "siteadmin", items };
   }
 
-  if (profile?.operator_admin) {
-    return {
-      role: "operator",
-      items: [
-        { label: "Bookings", href: "/operator/admin" },
-        { label: "Reports", href: "/operator/admin/reports" },
-        { label: "Routes", href: "/operator-admin/routes" },
-        { label: "Staff", href: "/operator-admin/staff" },
-        { label: "Vehicles", href: "/operator-admin/vehicles" },
-      ].sort((a, b) => a.label.localeCompare(b.label)),
-    };
+  // OPERATOR ADMIN
+  if (p?.operator_admin) {
+    const base = [
+      { label: "Bookings", href: "/operator/admin" },
+      { label: "Reports",  href: "/operator/admin/reports" },
+      { label: "Routes",   href: "/operator-admin/routes" },
+      { label: "Staff",    href: "/operator-admin/staff" },
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
+    ];
+    // only when flagged on the operator
+    if (p.white_label_member) {
+      base.push({ label: "White Label", href: "/operator/admin/white-label" });
+    }
+    return { role: "operator", items: alpha(base) };
   }
 
+  // CREW
   if (isCrewFromCache()) {
-    return {
-      role: "crew",
-      items: [
-        { label: "Bookings", href: "/crew/account" },
-        { label: "Reports", href: "/crew/reports" },
-      ].sort((a, b) => a.label.localeCompare(b.label)),
-    };
+    const items = alpha([
+      { label: "Bookings", href: "/crew/account" },
+      { label: "Reports",  href: "/crew/reports" }, // placeholder
+    ]);
+    return { role: "crew", items };
   }
 
+  // Guest / client (no burger)
   return { role: "guest", items: [] };
 }
 
+/**
+ * Only renders a burger + drawer for crew/operator/siteadmin.
+ * Guests see nothing here (header still shows "Home" and "Login/Name" on the right).
+ * No “Login” in the drawer any more — it’s on the top bar.
+ */
 export default function RoleAwareMenu({ profile, loading }: Props) {
-  // Always try to refresh ps_user on first mount (fixes stale operator_admin/operator_id)
+  const [open, setOpen] = React.useState(false);
+  const [cache, setCache] = React.useState<Profile | null>(() => profile ?? readPsUser());
+
   React.useEffect(() => {
-    syncPsUserCache();
-  }, []);
+    if (!profile) {
+      const onUpd = () => setCache(readPsUser());
+      window.addEventListener("ps_user:updated", onUpd);
+      return () => window.removeEventListener("ps_user:updated", onUpd);
+    }
+  }, [profile]);
 
-  const { role, items } = React.useMemo(
-    () => getMenu(profile ?? null),
-    [profile]
-  );
+  const effective = profile ?? cache;
+  const { role, items } = React.useMemo(() => buildMenu(effective), [effective]);
 
-  // Don’t render a burger for guests
+  // Hide entirely for guests
   if (role === "guest") return null;
 
-  const [open, setOpen] = React.useState(false);
   const roleLabel =
-    loading
-      ? "Loading…"
-      : role === "siteadmin"
-      ? "Site Admin"
-      : role === "operator"
-      ? "Operator Admin"
-      : "Crew";
+    loading ? "Loading…" :
+    role === "siteadmin" ? "Site Admin" :
+    role === "operator" ? "Operator Admin" :
+    "Crew";
 
   return (
     <>
-      {/* Burger (white) */}
+      {/* Burger (forced white) */}
       <button
         aria-label="Open menu"
         onClick={() => setOpen(true)}
@@ -166,7 +145,13 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
       {/* Drawer */}
       {open && (
         <div className="fixed inset-0 z-[60]">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} />
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          {/* Panel */}
           <aside
             className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
             role="dialog"
@@ -174,7 +159,11 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
           >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <div className="font-medium">{roleLabel}</div>
-              <button aria-label="Close menu" className="w-9 h-9" onClick={() => setOpen(false)}>
+              <button
+                aria-label="Close menu"
+                className="w-9 h-9"
+                onClick={() => setOpen(false)}
+              >
                 <span
                   aria-hidden
                   className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
@@ -184,10 +173,9 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
 
             <nav className="px-5 py-4 space-y-6 text-lg">
               <div>
-                <Link href="/" onClick={() => setOpen(false)}>
-                  Home
-                </Link>
+                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
               </div>
+
               {items.map((it) => (
                 <div key={it.href}>
                   <Link href={it.href} onClick={() => setOpen(false)}>
