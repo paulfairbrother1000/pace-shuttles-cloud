@@ -194,10 +194,8 @@ export default function CountryEditPage({
   /* ---------- File upload handling ---------- */
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  async function handleChooseFile() {
-    fileInputRef.current?.click();
-  }
-
+  // NOTE: We keep this for programmatic uses if needed elsewhere,
+  // but Safari/iOS may block .click() on display:none inputs.
   async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
     if (!client) return;
     setErr(null);
@@ -326,23 +324,26 @@ export default function CountryEditPage({
                   />
                 </label>
 
-                {/* Choose file */}
+                {/* Choose file — Safari/iOS friendly (no display:none) */}
                 <div className="flex items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleFilePicked}
-                  />
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-60"
-                    onClick={handleChooseFile}
-                    disabled={uploading}
-                  >
-                    {uploading ? "Uploading…" : "Choose file & upload"}
-                  </button>
+                  <div className="relative">
+                    <label
+                      htmlFor="country-file-input"
+                      className="px-3 py-2 rounded-lg border hover:bg-neutral-50 cursor-pointer inline-block select-none"
+                    >
+                      {uploading ? "Uploading…" : "Choose file & upload"}
+                    </label>
+                    <input
+                      id="country-file-input"
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      // Visually hidden but still clickable via label (not display:none)
+                      className="absolute inset-0 w-px h-px opacity-0"
+                      onChange={handleFilePicked}
+                      disabled={uploading}
+                    />
+                  </div>
                   <span className="text-xs text-neutral-500">
                     Uploads to <code>{BUCKET}/{COUNTRY_DIR}</code> and fills the field above.
                   </span>
