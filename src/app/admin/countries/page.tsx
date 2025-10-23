@@ -59,6 +59,48 @@ export default function AdminCountriesPage() {
   const [rows, setRows] = useState<CountryRow[]>([]);
   const [q, setQ] = useState("");
 
+  /* ------------------------------------------------------------------
+     Kill the legacy admin tab header if some older component/layout
+     renders it above this page. This does NOT touch the new burger TopBar.
+     ------------------------------------------------------------------ */
+  useEffect(() => {
+    try {
+      // anything that looks like the old white tab bar or legacy header
+      const suspects = new Set<Element>();
+
+      // Old fixed header class we saw in the DOM dump
+      document.querySelectorAll("header.ps-header, .ps-header").forEach((n) => suspects.add(n));
+
+      // Old tab-row wrapper used role="tablist"
+      document.querySelectorAll('div[role="tablist"], header[role="tablist"]').forEach((n) =>
+        suspects.add(n)
+      );
+
+      // Any container whose links look like the old /admin/* nav list
+      [...document.querySelectorAll("nav,header,div")].forEach((el) => {
+        const anchors = [...el.querySelectorAll("a")];
+        const looksLikeOldMenu = anchors.some((a) =>
+          /\/admin\/(destinations|pickups|routes|operators|vehicles|transport-?types|reports|testing|countries)\b/i.test(
+            a.getAttribute("href") || ""
+          )
+        );
+        if (looksLikeOldMenu) suspects.add(el);
+      });
+
+      // Don't ever remove the new burger bar if present (we wrap it in #ps-new-admin-topbar in layout)
+      const isInsideNewTopBar = (el: Element) => {
+        const top = document.getElementById("ps-new-admin-topbar");
+        return !!top && (el === top || top.contains(el));
+      };
+
+      [...suspects].forEach((el) => {
+        if (!isInsideNewTopBar(el)) el.remove();
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
     let off = false;
     (async () => {
