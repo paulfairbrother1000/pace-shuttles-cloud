@@ -1,10 +1,9 @@
-// src/components/menus/RoleAwareMenu.tsx
 "use client";
 
 import Link from "next/link";
 import * as React from "react";
 
-/** What we cache in localStorage("ps_user"). Only the bits we read here. */
+/** localStorage("ps_user") shape – only the bits we use here */
 type PsUser = {
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
@@ -14,12 +13,17 @@ type PsUser = {
   staff_role?: string | null;
   captain?: boolean | null;
   crew?: boolean | null;
-  /** NOTE: schema calls it white_label_member in your DB. Keep both keys tolerant. */
-  white_label_member?: boolean | null;
-  white_label_menu?: boolean | null; // if you’ve migrated the name in your app anywhere
+  white_label_member?: boolean | null; // DB column
+  white_label_menu?: boolean | null;   // tolerate alternative flag name
 };
 
 type Role = "guest" | "crew" | "operator" | "siteadmin";
+
+declare global {
+  interface Window {
+    __PS_BURGER_MOUNTED__?: boolean; // singleton guard
+  }
+}
 
 function readPsUser(): PsUser | null {
   try {
@@ -45,39 +49,35 @@ function isCrewFromUser(u: PsUser | null): boolean {
 
 function deriveRole(u: PsUser | null): Role {
   if (u?.site_admin) return "siteadmin";
-  // Treat presence of operator_id as operator-admin (your operator pages rely on it)
   if (u?.operator_admin || u?.operator_id) return "operator";
   if (isCrewFromUser(u)) return "crew";
   return "guest";
 }
 
 function allowWhiteLabel(u: PsUser | null, role: Role): boolean {
-  if (role === "siteadmin") return true; // site admin always sees it
-  // You said: only operators whose operator has white_label_menu set to true.
-  // Your schema column is white_label_member. Be tolerant to either flag.
+  if (role === "siteadmin") return true;
   return Boolean(u?.white_label_menu ?? u?.white_label_member);
 }
 
 type MenuItem = { label: string; href: string };
 
-/** Build menu items for a given role + user flags, then sort alphabetically (Home is injected separately) */
 function buildItems(role: Role, u: PsUser | null): MenuItem[] {
   const items: MenuItem[] = [];
 
   if (role === "crew") {
     items.push(
       { label: "Bookings", href: "/crew/account" },
-      { label: "Reports", href: "/crew/reports" } // placeholder page ok
+      { label: "Reports", href: "/crew/reports" }
     );
   }
 
   if (role === "operator") {
     items.push(
-      { label: "Bookings", href: "/operator/admin" },                 // src/app/operator/admin/page.tsx
-      { label: "Routes", href: "/operator-admin/routes" },            // shared tiles
-      { label: "Vehicles", href: "/operator-admin/vehicles" },        // shared tiles
-      { label: "Staff", href: "/operator-admin/staff" },              // shared tiles
-      { label: "Reports", href: "/operator/admin/reports" }           // operator reports page
+      { label: "Bookings", href: "/operator/admin" },
+      { label: "Routes", href: "/operator-admin/routes" },
+      { label: "Staff", href: "/operator-admin/staff" },
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
+      { label: "Reports", href: "/operator/admin/reports" }
     );
     if (allowWhiteLabel(u, role)) {
       items.push({ label: "White Label", href: "/operator-admin/white-label" });
@@ -86,41 +86,57 @@ function buildItems(role: Role, u: PsUser | null): MenuItem[] {
 
   if (role === "siteadmin") {
     items.push(
-      { label: "Bookings", href: "/operator/admin" },                 // same bookings page
+      { label: "Bookings", href: "/operator/admin" },
       { label: "Countries", href: "/admin/countries" },
       { label: "Destinations", href: "/admin/destinations" },
       { label: "Operators", href: "/admin/operators" },
       { label: "Pickups", href: "/admin/pickups" },
       { label: "Reports", href: "/admin/reports" },
-      { label: "Routes", href: "/operator-admin/routes" },            // shared tiles
-      { label: "Staff", href: "/operator-admin/staff" },              // shared tiles
+      { label: "Routes", href: "/operator-admin/routes" },
+      { label: "Staff", href: "/operator-admin/staff" },
       { label: "Types", href: "/admin/transport-types" },
-      { label: "Vehicles", href: "/operator-admin/vehicles" }         // shared tiles
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
+      { label: "White Label", href: "/operator-admin/white-label" }
     );
-    // Admin always sees White Label
-    items.push({ label: "White Label", href: "/operator-admin/white-label" });
   }
 
-  // Alphabetical (case-insensitive)
+  // Alphabetical (Home is injected separately in the drawer)
   items.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
   return items;
 }
 
 /**
- * Only renders a burger + drawer for crew/operator/siteadmin.
- * Guests see nothing here. Style/markup kept exactly as your original component.
+ * Burger + drawer for crew/operator/siteadmin.
+ * - No "Login" entry (header has it permanently).
+ * - Singleton guard to avoid duplicate burgers (only first mount renders).
  */
 export default function RoleAwareMenu() {
   const [open, setOpen] = React.useState(false);
   const [user, setUser] = React.useState<PsUser | null>(() => readPsUser());
+  const [allowedToRender, setAllowedToRender] = React.useState(false);
 
-  // Keep in sync with login/logout "ps_user" updates
+  // Singleton guard – only one burger at a time (e.g., the one inside TopBar)
+  React.useEffect(() => {
+    if (window.__PS_BURGER_MOUNTED__) {
+      setAllowedToRender(false);
+      return;
+    }
+    window.__PS_BURGER_MOUNTED__ = true;
+    setAllowedToRender(true);
+    return () => {
+      // release guard on unmount (route change/unload)
+      if (window.__PS_BURGER_MOUNTED__) {
+        delete window.__PS_BURGER_MOUNTED__;
+      }
+    };
+  }, []);
+
+  // Keep in sync with ps_user changes
   React.useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "ps_user") setUser(readPsUser());
     };
     window.addEventListener("storage", onStorage);
-    // Also poll once after mount in case a page wrote ps_user synchronously
     const id = setTimeout(() => setUser(readPsUser()), 0);
     return () => {
       window.removeEventListener("storage", onStorage);
@@ -129,10 +145,9 @@ export default function RoleAwareMenu() {
   }, []);
 
   const role = React.useMemo(() => deriveRole(user), [user]);
-  if (role === "guest") return null;
+  if (!allowedToRender || role === "guest") return null;
 
   const items = React.useMemo(() => buildItems(role, user), [role, user]);
-
   const roleLabel =
     role === "siteadmin" ? "Site Admin" :
     role === "operator" ? "Operator Admin" :
@@ -140,7 +155,7 @@ export default function RoleAwareMenu() {
 
   return (
     <>
-      {/* Burger (forced white) – same as your original */}
+      {/* Burger (forced white) – same visual as before */}
       <button
         aria-label="Open menu"
         onClick={() => setOpen(true)}
@@ -152,7 +167,6 @@ export default function RoleAwareMenu() {
         />
       </button>
 
-      {/* Drawer – unchanged structure/visuals */}
       {open && (
         <div className="fixed inset-0 z-[60]">
           {/* Backdrop */}
@@ -187,7 +201,7 @@ export default function RoleAwareMenu() {
                 <Link href="/" onClick={() => setOpen(false)}>Home</Link>
               </div>
 
-              {/* Then items (alphabetical as requested) */}
+              {/* Role-specific items (alphabetical) */}
               {items.map((it) => (
                 <div key={it.href}>
                   <Link href={it.href} onClick={() => setOpen(false)}>
@@ -195,11 +209,6 @@ export default function RoleAwareMenu() {
                   </Link>
                 </div>
               ))}
-
-              {/* Always keep Login accessible */}
-              <div>
-                <Link href="/login" onClick={() => setOpen(false)}>Login</Link>
-              </div>
             </nav>
           </aside>
         </div>
