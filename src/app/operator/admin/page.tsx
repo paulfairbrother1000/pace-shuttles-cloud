@@ -6,6 +6,31 @@ import { createBrowserClient } from "@supabase/ssr";
 
 type UUID = string;
 
+
+// near the top of /operator/admin/page.tsx
+type PsUser = { site_admin?: boolean; operator_admin?: boolean; operator_id?: string | null; operator_name?: string | null };
+
+function readPsUser(): PsUser {
+  try {
+    const raw = localStorage.getItem("ps_user");
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+// inside component
+const [psUser, setPsUser] = useState<PsUser>({});
+useEffect(() => { setPsUser(readPsUser()); }, []);
+
+const isSite = !!psUser.site_admin;
+const isOpAdminLocked = !!(psUser.operator_admin && psUser.operator_id);
+const lockedOperatorId = isOpAdminLocked ? psUser.operator_id! : "";
+
+// when you load operators/bookings:
+// if (isOpAdminLocked) use lockedOperatorId; don’t render the operator dropdown
+
+
 /* ---------- DB Shapes ---------- */
 type Journey = {
   id: UUID;
