@@ -7,7 +7,7 @@ import { TilePicker } from "../components/TilePicker";
 import { JourneyCard } from "../components/JourneyCard";
 import { createBrowserClient } from "@supabase/ssr";
 
-import RoleAwareMenu from "@/components/menus/RoleAwareMenu";
+
 
 
 /* ---------- Greedy allocator + live-quote fetch ---------- */
@@ -312,12 +312,6 @@ export default function Page() {
 
 
 
-{process.env.NEXT_PUBLIC_APP_FLAG_USE_ROLE_AWARE_MENU === "true" ? (
-  <RoleAwareMenu />
-) : (
-  <RoleAwareMenu />
-
-)}
 
 
 
