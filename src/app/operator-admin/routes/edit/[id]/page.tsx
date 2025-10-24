@@ -1,3 +1,4 @@
+// src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
 import Image from "next/image";
@@ -43,7 +44,7 @@ type RouteRow = {
   approximate_distance_miles: number | null;
 };
 
-/* ---------- Public-image helper (same as other admin pages) ---------- */
+/* ---------- Public-image helper ---------- */
 function publicImage(input?: string | null): string | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
@@ -64,7 +65,7 @@ function publicImage(input?: string | null): string | undefined {
           : `${raw}?v=5`;
       }
       return raw;
-    } catch { /* ignore */ }
+    } catch {}
   }
   if (raw.startsWith("/storage/v1/object/public/")) {
     return `https://${supaHost}${raw}?v=5`;
@@ -91,6 +92,7 @@ export default function OperatorRouteDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
+  const isCreate = params.id === "new"; // ← NEW
 
   /* Operator context is LOCKED from the tiles page via ?op=... */
   const opFromQuery = search.get("op") || "";
@@ -124,9 +126,17 @@ export default function OperatorRouteDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load route + current assignments (global)
+  // Load route + current assignments (global) — skip in CREATE mode
   useEffect(() => {
     if (!sb) return;
+    if (isCreate) {
+      // Creating a new route: nothing to fetch by id
+      setRoute(null);
+      setMsg(null);
+      setLoading(false);
+      return;
+    }
+
     let off = false;
     (async () => {
       setLoading(true);
@@ -185,11 +195,11 @@ export default function OperatorRouteDetailPage() {
     return () => {
       off = true;
     };
-  }, [params.id]);
+  }, [params.id, isCreate]);
 
   // Load vehicles for the LOCKED operator
   useEffect(() => {
-    if (!sb || !operatorId) return;
+    if (!sb || !operatorId || isCreate) return; // ← NEW guard: no need in create mode
     let off = false;
     (async () => {
       const { data, error } = await sb
@@ -206,17 +216,19 @@ export default function OperatorRouteDetailPage() {
     return () => {
       off = true;
     };
-  }, [operatorId]);
+  }, [operatorId, isCreate]);
 
   const assignedForThisRoute = useMemo(() => {
+    if (isCreate) return []; // ← NEW
     const ids = new Set(vehicles.map((v) => v.id));
     return assignments.filter((a) => a.route_id === params.id && ids.has(a.vehicle_id));
-  }, [assignments, vehicles, params.id]);
+  }, [assignments, vehicles, params.id, isCreate]);
 
   const preferred = assignedForThisRoute.find((a) => a.preferred);
   const assignedIds = new Set(assignedForThisRoute.map((a) => a.vehicle_id));
 
   async function reloadAssignments() {
+    if (isCreate) return; // ← NEW
     const { data, error } = await sb!
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
@@ -225,6 +237,7 @@ export default function OperatorRouteDetailPage() {
   }
 
   async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
+    if (isCreate) return; // ← NEW
     try {
       if (currentlyAssigned) {
         const { error } = await sb!
@@ -249,6 +262,7 @@ export default function OperatorRouteDetailPage() {
   }
 
   async function setPreferred(routeId: string, vehicleId: string) {
+    if (isCreate) return; // ← NEW
     try {
       const { error: clearErr } = await sb!
         .from("route_vehicle_assignments")
@@ -274,122 +288,141 @@ export default function OperatorRouteDetailPage() {
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
-        <button className="rounded-full border px-3 py-1.5 text-sm" onClick={() => router.push("/operator-admin/routes")}>
+        <button
+          className="rounded-full border px-3 py-1.5 text-sm"
+          onClick={() => router.push("/operator-admin/routes")}
+        >
           ← Back
         </button>
         <h1 className="text-2xl font-semibold">
-          {route ? `${route.pickup?.name ?? "—"} → ${route.destination?.name ?? "—"}` : "Route"}
+          {isCreate
+            ? "New Route"
+            : route
+            ? `${route.pickup?.name ?? "—"} → ${route.destination?.name ?? "—"}`
+            : "Route"}
         </h1>
       </div>
 
       {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      {/* Hero images + facts */}
-      <section className="rounded-2xl border bg-white shadow overflow-hidden">
-        <div className="grid grid-cols-2 gap-0">
-          <div className="relative aspect-[16/7]">
-            {publicImage(route?.pickup?.picture_url) ? (
-              <Image
-                src={publicImage(route?.pickup?.picture_url)!}
-                alt={route?.pickup?.name || "Pickup"}
-                fill
-                unoptimized
-                className="object-cover"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-neutral-100" />
-            )}
-          </div>
-          <div className="relative aspect-[16/7]">
-            {publicImage(route?.destination?.picture_url) ? (
-              <Image
-                src={publicImage(route?.destination?.picture_url)!}
-                alt={route?.destination?.name || "Destination"}
-                fill
-                unoptimized
-                className="object-cover"
-              />
-            ) : (
-              <div className="absolute inset-0 bg-neutral-100" />
-            )}
-          </div>
+      {/* When creating, no UUID exists yet, so we show a gentle note instead of trying to load/assign */}
+      {isCreate ? (
+        <div className="rounded-2xl border bg-white shadow p-4 text-sm">
+          <p>
+            You’re creating a new route. After saving the route details on the edit form,
+            you’ll be able to return here to assign vehicles and set a preferred vehicle.
+          </p>
         </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 text-sm">
-          <div>
-            <div className="text-neutral-500">Frequency</div>
-            <div className="font-medium">{route?.frequency || "—"}</div>
-          </div>
-          <div>
-            <div className="text-neutral-500">Pickup time (local)</div>
-            <div className="font-medium">{route?.pickup_time || "—"}</div>
-          </div>
-          <div>
-            <div className="text-neutral-500">Duration</div>
-            <div className="font-medium">
-              {route?.approx_duration_mins != null ? `${route.approx_duration_mins} mins` : "—"}
-            </div>
-          </div>
-          <div>
-            <div className="text-neutral-500">Distance</div>
-            <div className="font-medium">
-              {route?.approximate_distance_miles != null ? `${route.approximate_distance_miles} mi` : "—"}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Vehicle assignment for the LOCKED operator */}
-      <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
-        {!operatorId ? (
-          <div className="text-sm text-neutral-500">
-            No operator selected. Open this page from the routes list (which sets the operator context).
-          </div>
-        ) : vehicles.length === 0 ? (
-          <div className="text-sm text-neutral-500">No active vehicles for this operator.</div>
-        ) : (
-          <>
-            <div className="flex flex-wrap gap-2">
-              {vehicles.map((v) => {
-                const assigned = assignedIds.has(v.id);
-                const isPref = preferred?.vehicle_id === v.id;
-                return (
-                  <div
-                    key={v.id}
-                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
-                      assigned ? "bg-black text-white border-black" : "bg-white"
-                    }`}
-                  >
-                    <button
-                      className="outline-none"
-                      title={assigned ? "Unassign" : "Assign to route"}
-                      onClick={() => toggleAssign(params.id, v.id, assigned)}
-                    >
-                      {v.name} ({v.minseats}–{v.maxseats})
-                    </button>
-                    <button
-                      className={`rounded-full border px-2 py-0.5 text-xs ${
-                        isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
-                      }`}
-                      title="Mark as preferred"
-                      onClick={() => setPreferred(params.id, v.id)}
-                    >
-                      ★
-                    </button>
-                  </div>
-                );
-              })}
+      ) : (
+        <>
+          {/* Hero images + facts */}
+          <section className="rounded-2xl border bg-white shadow overflow-hidden">
+            <div className="grid grid-cols-2 gap-0">
+              <div className="relative aspect-[16/7]">
+                {publicImage(route?.pickup?.picture_url) ? (
+                  <Image
+                    src={publicImage(route?.pickup?.picture_url)!}
+                    alt={route?.pickup?.name || "Pickup"}
+                    fill
+                    unoptimized
+                    className="object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 bg-neutral-100" />
+                )}
+              </div>
+              <div className="relative aspect-[16/7]">
+                {publicImage(route?.destination?.picture_url) ? (
+                  <Image
+                    src={publicImage(route?.destination?.picture_url)!}
+                    alt={route?.destination?.name || "Destination"}
+                    fill
+                    unoptimized
+                    className="object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 bg-neutral-100" />
+                )}
+              </div>
             </div>
 
-            <div className="text-sm">
-              Preferred:&nbsp;
-              <span className="font-medium">
-                {preferred ? vehicles.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
-              </span>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 text-sm">
+              <div>
+                <div className="text-neutral-500">Frequency</div>
+                <div className="font-medium">{route?.frequency || "—"}</div>
+              </div>
+              <div>
+                <div className="text-neutral-500">Pickup time (local)</div>
+                <div className="font-medium">{route?.pickup_time || "—"}</div>
+              </div>
+              <div>
+                <div className="text-neutral-500">Duration</div>
+                <div className="font-medium">
+                  {route?.approx_duration_mins != null ? `${route.approx_duration_mins} mins` : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-neutral-500">Distance</div>
+                <div className="font-medium">
+                  {route?.approximate_distance_miles != null ? `${route.approximate_distance_miles} mi` : "—"}
+                </div>
+              </div>
             </div>
-          </>
-        )}
-      </section>
+          </section>
+
+          {/* Vehicle assignment for the LOCKED operator */}
+          <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
+            {!operatorId ? (
+              <div className="text-sm text-neutral-500">
+                No operator selected. Open this page from the routes list (which sets the operator context).
+              </div>
+            ) : vehicles.length === 0 ? (
+              <div className="text-sm text-neutral-500">No active vehicles for this operator.</div>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {vehicles.map((v) => {
+                    const assigned = assignedIds.has(v.id);
+                    const isPref = preferred?.vehicle_id === v.id;
+                    return (
+                      <div
+                        key={v.id}
+                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
+                          assigned ? "bg-black text-white border-black" : "bg-white"
+                        }`}
+                      >
+                        <button
+                          className="outline-none"
+                          title={assigned ? "Unassign" : "Assign to route"}
+                          onClick={() => toggleAssign(params.id, v.id, assigned)}
+                        >
+                          {v.name} ({v.minseats}–{v.maxseats})
+                        </button>
+                        <button
+                          className={`rounded-full border px-2 py-0.5 text-xs ${
+                            isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
+                          }`}
+                          title="Mark as preferred"
+                          onClick={() => setPreferred(params.id, v.id)}
+                        >
+                          ★
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="text-sm">
+                  Preferred:&nbsp;
+                  <span className="font-medium">
+                    {preferred ? vehicles.find((v) => v.id === preferred.vehicle_id)?.name ?? "—" : "—"}
+                  </span>
+                </div>
+              </>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
