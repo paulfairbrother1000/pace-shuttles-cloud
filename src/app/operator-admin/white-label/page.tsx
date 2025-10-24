@@ -1,10 +1,17 @@
+// src/app/operator-admin/white-label/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
 
 /* ---------- Types ---------- */
-type PsUser = { operator_admin?: boolean | null; operator_id?: string | null };
+type PsUser = {
+  operator_admin?: boolean | null;
+  operator_id?: string | null;
+  site_admin?: boolean | null;
+};
+
+type Operator = { id: string; name: string };
 
 type WlAsset = {
   wl_asset_id: string;
@@ -18,17 +25,27 @@ type WlAsset = {
   owner_operator_name: string;
   country_id: string | null;
   vehicle_description: string | null;
-  vehicle_picture_url: string | null;  // storage path or http
+  vehicle_picture_url: string | null; // storage path or http
   vehicle_type_id: string | null;
 };
 
-type Unavail = { start_ts: string; end_ts: string; source: "wl" | "blackout" | "ps_confirmed" | "ps_paid" | string };
+type Unavail = {
+  start_ts: string;
+  end_ts: string;
+  source: "wl" | "blackout" | "ps_confirmed" | "ps_paid" | string;
+};
 
 /* ---------- Helpers ---------- */
 function readPsUser(): PsUser | null {
-  try { return JSON.parse(localStorage.getItem("ps_user") || "null"); } catch { return null; }
+  try {
+    return JSON.parse(localStorage.getItem("ps_user") || "null");
+  } catch {
+    return null;
+  }
 }
-function isHttp(url?: string | null) { return !!url && /^https?:\/\//i.test(url); }
+function isHttp(url?: string | null) {
+  return !!url && /^https?:\/\//i.test(url);
+}
 const money = (cents?: number | null) =>
   cents == null ? "—" : `US$ ${(cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
@@ -50,7 +67,6 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 function daysCovered(startIso: string, endIso: string): string[] {
   const start = new Date(startIso);
   const end = new Date(endIso);
-  // normalize to date boundaries
   const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
   const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
   const out: string[] = [];
@@ -71,6 +87,10 @@ export default function OperatorWhiteLabelPage() {
   }, []);
 
   const [psUser, setPsUser] = useState<PsUser | null>(null);
+
+  /* Site-admin operator picker */
+  const [operators, setOperators] = useState<Operator[]>([]);
+  const [operatorId, setOperatorId] = useState<string>(""); // chosen operator for site-admin
 
   /* Data */
   const [assets, setAssets] = useState<WlAsset[]>([]);
@@ -102,20 +122,63 @@ export default function OperatorWhiteLabelPage() {
   const [charterId, setCharterId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
-  useEffect(() => { setPsUser(readPsUser()); }, []);
+  /* ps_user */
+  useEffect(() => {
+    setPsUser(readPsUser());
+  }, []);
 
-  /* Load market assets for current operator */
+  /* Site-admin: load operators for dropdown */
+  useEffect(() => {
+    if (!sb) return;
+    if (!(psUser?.site_admin && !psUser?.operator_admin)) return;
+
+    let off = false;
+    (async () => {
+      const { data, error } = await sb.from("operators").select("id,name").order("name");
+      if (off) return;
+      if (error) setMsg(error.message);
+      setOperators((data as Operator[]) || []);
+    })();
+    return () => {
+      off = true;
+    };
+  }, [sb, psUser?.site_admin, psUser?.operator_admin]);
+
+  /* Load market assets for the current operator context */
   useEffect(() => {
     let off = false;
     (async () => {
       setLoading(true);
       setMsg(null);
-      if (!sb) { setMsg("Supabase not available."); setLoading(false); return; }
+      if (!sb) {
+        setMsg("Supabase not available.");
+        setLoading(false);
+        return;
+      }
 
-      const operatorId = psUser?.operator_admin ? psUser?.operator_id ?? null : null;
-      if (!operatorId) { setMsg("You must be an Operator Admin to use White Label."); setLoading(false); return; }
+      // Determine which operator to query for:
+      let effectiveOperatorId: string | null = null;
 
-      const { data, error } = await sb.rpc("wl_market_for_operator", { p_operator_id: operatorId });
+      if (psUser?.operator_admin && psUser.operator_id) {
+        // operator admin: locked to own operator
+        effectiveOperatorId = psUser.operator_id;
+        // reflect lock in local select (not shown for op-admins)
+        if (!operatorId) setOperatorId(psUser.operator_id);
+      } else if (psUser?.site_admin) {
+        // site admin: use chosen operator (or none yet)
+        effectiveOperatorId = operatorId || null;
+      }
+
+      if (!effectiveOperatorId) {
+        // Site admin but no operator chosen yet: show prompt, no error
+        setAssets([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await sb.rpc("wl_market_for_operator", {
+        p_operator_id: effectiveOperatorId,
+      });
       if (off) return;
 
       if (error) {
@@ -134,8 +197,11 @@ export default function OperatorWhiteLabelPage() {
 
       setLoading(false);
     })();
-    return () => { off = true; };
-  }, [sb, psUser]);
+    return () => {
+      off = true;
+    };
+    // Refresh when operator selection or role changes
+  }, [sb, psUser?.operator_admin, psUser?.operator_id, psUser?.site_admin, operatorId]);
 
   /* Resolve hero image whenever selection changes */
   useEffect(() => {
@@ -146,7 +212,9 @@ export default function OperatorWhiteLabelPage() {
       const url = await resolveSignedImage(sb, selected.vehicle_picture_url || null);
       if (!off) setHeroUrl(url);
     })();
-    return () => { off = true; };
+    return () => {
+      off = true;
+    };
   }, [sb, selected]);
 
   /* Preload next 90 days of blocks for selected asset */
@@ -172,34 +240,40 @@ export default function OperatorWhiteLabelPage() {
       });
       if (off) return;
 
-      if (error) { setMsg(error.message); return; }
+      if (error) {
+        setMsg(error.message);
+        return;
+      }
 
       const ranges = (data as Unavail[]) || [];
       setBlockedRanges(ranges);
 
-      // Turn ranges into a set of yyyy-mm-dd strings
       const set = new Set<string>();
       for (const r of ranges) {
         for (const d of daysCovered(r.start_ts, r.end_ts)) set.add(d);
       }
       setBlockedDays(set);
     })();
-    return () => { off = true; };
+    return () => {
+      off = true;
+    };
   }, [sb, selected]);
 
   /* When date changes, show immediate availability hint */
   useEffect(() => {
-    if (!date) { setAvailMsg(null); return; }
+    if (!date) {
+      setAvailMsg(null);
+      return;
+    }
     if (blockedDays.has(date)) setAvailMsg("❌ Not available on that date.");
-    else                       setAvailMsg("✅ Available on that date.");
+    else setAvailMsg("✅ Available on that date.");
   }, [date, blockedDays]);
 
-  const allAgreed =
-    agree.insurance && agree.crew && agree.cleanFuel && agree.damages && agree.deposit;
+  const allAgreed = agree.insurance && agree.crew && agree.cleanFuel && agree.damages && agree.deposit;
 
   function dayWindowISO(d: string) {
     const startIso = new Date(`${d}T${PICKUP_TIME}:00Z`).toISOString();
-    const endIso   = new Date(`${d}T${RETURN_TIME}:00Z`).toISOString();
+    const endIso = new Date(`${d}T${RETURN_TIME}:00Z`).toISOString();
     return { startIso, endIso };
   }
 
@@ -207,26 +281,48 @@ export default function OperatorWhiteLabelPage() {
   async function createBooking() {
     setMsg(null);
     if (!sb || !selected) return;
-    if (!date) { setMsg("Pick a date."); return; }
-    if (!allAgreed) { setMsg("Please accept all T&Cs to continue."); return; }
-    if (blockedDays.has(date)) { setMsg("Selected date is unavailable."); return; }
+    if (!date) {
+      setMsg("Pick a date.");
+      return;
+    }
+    if (!allAgreed) {
+      setMsg("Please accept all T&Cs to continue.");
+      return;
+    }
+    if (blockedDays.has(date)) {
+      setMsg("Selected date is unavailable.");
+      return;
+    }
 
-    const operatorId = psUser?.operator_admin ? psUser?.operator_id ?? null : null;
-    if (!operatorId) { setMsg("Missing operator context."); return; }
+    // Use the same effective operator logic as above
+    const effectiveOperatorId =
+      psUser?.operator_admin && psUser.operator_id
+        ? psUser.operator_id
+        : psUser?.site_admin
+        ? operatorId || null
+        : null;
+
+    if (!effectiveOperatorId) {
+      setMsg("Missing operator context.");
+      return;
+    }
 
     const { startIso, endIso } = dayWindowISO(date);
 
     setCreating(true);
     const { data, error } = await sb.rpc("wl_create_booking", {
       p_wl_asset_id: selected.wl_asset_id,
-      p_lessee_operator_id: operatorId,
+      p_lessee_operator_id: effectiveOperatorId,
       p_start_ts: startIso,
       p_end_ts: endIso,
       p_terms_version: "v1",
     });
     setCreating(false);
 
-    if (error) { setMsg(error.message); return; }
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
     setCharterId(String(data));
     setMsg("Booking created (pending). You can confirm (MVP) to simulate payment.");
   }
@@ -237,9 +333,15 @@ export default function OperatorWhiteLabelPage() {
     setConfirming(true);
     const { error } = await sb.rpc("wl_confirm_booking", { p_charter_id: charterId });
     setConfirming(false);
-    if (error) { setMsg(error.message); return; }
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
     setMsg("✅ Booking confirmed.");
   }
+
+  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
+  const isSiteAdminOnly = Boolean(psUser?.site_admin && !psUser?.operator_admin);
 
   return (
     <>
@@ -254,6 +356,42 @@ export default function OperatorWhiteLabelPage() {
       `}</style>
 
       <div className="max-w-5xl mx-auto p-4 space-y-6">
+        {/* Role pills like other pages */}
+        <div className="flex items-center gap-2">
+          <a
+            href="/operator-admin/white-label"
+            className="rounded-full px-3 py-1.5 text-sm border"
+            style={{ background: "#000", color: "#fff", borderColor: "transparent" }}
+          >
+            Operator Admin
+          </a>
+          <a
+            href="/admin/white-label"
+            className="rounded-full px-3 py-1.5 text-sm border"
+          >
+            Site Admin
+          </a>
+
+          {/* Site admin: operator picker (choose context) */}
+          {isSiteAdminOnly && (
+            <div className="ml-auto flex items-center gap-2">
+              <label className="text-sm text-neutral-600">Operator</label>
+              <select
+                className="border rounded-full px-3 py-1.5"
+                value={operatorId}
+                onChange={(e) => setOperatorId(e.target.value)}
+              >
+                <option value="">— Select —</option>
+                {operators.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
         <header className="space-y-1">
           <h1 className="text-2xl font-semibold">White Label — Day Charter</h1>
           <p className="text-neutral-600">
@@ -261,7 +399,12 @@ export default function OperatorWhiteLabelPage() {
           </p>
         </header>
 
-        {loading ? (
+        {/* Site admin with no operator selected yet */}
+        {isSiteAdminOnly && !operatorId ? (
+          <div className="p-4 border rounded-lg bg-neutral-50">
+            Choose an operator above to view their White Label market, or switch to <b>Site Admin</b> to administer assets.
+          </div>
+        ) : loading ? (
           <div className="p-4">Loading…</div>
         ) : assets.length === 0 ? (
           <div className="p-4">No white label boats available right now.</div>
@@ -269,7 +412,7 @@ export default function OperatorWhiteLabelPage() {
           <>
             {/* 1) Boat list with image tiles */}
             <section className="grid md:grid-cols-2 gap-4">
-              {assets.map(a => {
+              {assets.map((a) => {
                 const thumb = thumbs[a.wl_asset_id] || null;
                 const desc = (a.vehicle_description || "").trim();
                 const shortDesc = desc.length > 120 ? desc.slice(0, 117) + "…" : desc;
@@ -278,9 +421,7 @@ export default function OperatorWhiteLabelPage() {
                   <button
                     key={a.wl_asset_id}
                     className={`text-left rounded-2xl border overflow-hidden shadow-sm transition ${
-                      selected?.wl_asset_id === a.wl_asset_id
-                        ? "border-black"
-                        : "border-neutral-200 hover:border-neutral-400"
+                      selected?.wl_asset_id === a.wl_asset_id ? "border-black" : "border-neutral-200 hover:border-neutral-400"
                     }`}
                     onClick={() => {
                       setSelected(a);
@@ -298,9 +439,7 @@ export default function OperatorWhiteLabelPage() {
                       <div className="text-lg font-semibold">{a.vehicle_name}</div>
                       <div className="text-xs text-neutral-500">Owner: {a.owner_operator_name}</div>
                       {shortDesc && <p className="text-sm mt-1">{shortDesc}</p>}
-                      <div className="mt-2 text-sm">
-                        Seats: <b>{a.seats_capacity ?? "—"}</b>
-                      </div>
+                      <div className="mt-2 text-sm">Seats: <b>{a.seats_capacity ?? "—"}</b></div>
                       <div className="text-sm">
                         Day rate: <b>{money(a.day_rate_cents)}</b> • Deposit: <b>{money(a.security_deposit_cents)}</b>
                       </div>
@@ -324,9 +463,7 @@ export default function OperatorWhiteLabelPage() {
                   <div className="text-sm text-neutral-600">
                     Seats: <b>{selected.seats_capacity ?? "—"}</b>
                   </div>
-                  {selected.vehicle_description && (
-                    <p className="text-sm">{selected.vehicle_description}</p>
-                  )}
+                  {selected.vehicle_description && <p className="text-sm">{selected.vehicle_description}</p>}
                   <div className="text-sm">
                     Day rate: <b>{money(selected.day_rate_cents)}</b> • Deposit: <b>{money(selected.security_deposit_cents)}</b>
                   </div>
@@ -348,11 +485,17 @@ export default function OperatorWhiteLabelPage() {
                     <div className="text-sm bg-neutral-50 border rounded-lg p-3">
                       <div className="font-semibold">Pickup & return</div>
                       <ul className="list-disc ml-5">
-                        <li>Pickup from <b>{PICKUP_TIME}</b></li>
-                        <li>Return by <b>{RETURN_TIME}</b></li>
+                        <li>
+                          Pickup from <b>{PICKUP_TIME}</b>
+                        </li>
+                        <li>
+                          Return by <b>{RETURN_TIME}</b>
+                        </li>
                         <li>Remove all rubbish</li>
                         <li>Hose down the vessel</li>
-                        <li>Refuel to <b>full</b></li>
+                        <li>
+                          Refuel to <b>full</b>
+                        </li>
                       </ul>
                     </div>
                   </div>
@@ -364,8 +507,10 @@ export default function OperatorWhiteLabelPage() {
                       <div className="text-sm text-neutral-600">No blocked days.</div>
                     ) : (
                       <div className="flex flex-wrap gap-2">
-                        {[...blockedDays].sort().map(d => (
-                          <span key={d} className="text-xs px-2 py-1 rounded-full border">{d}</span>
+                        {[...blockedDays].sort().map((d) => (
+                          <span key={d} className="text-xs px-2 py-1 rounded-full border">
+                            {d}
+                          </span>
                         ))}
                       </div>
                     )}
@@ -376,12 +521,49 @@ export default function OperatorWhiteLabelPage() {
                 <div className="p-4 border-t">
                   <div className="rounded-xl border p-3">
                     <div className="font-semibold mb-2">Terms & Conditions (summary)</div>
-                    <label className="block"><input type="checkbox" checked={agree.insurance} onChange={e=>setAgree(a=>({...a,insurance:e.target.checked}))} /> I have appropriate insurance for this charter.</label>
-                    <label className="block"><input type="checkbox" checked={agree.crew} onChange={e=>setAgree(a=>({...a,crew:e.target.checked}))} /> My crew are insured and certified.</label>
-                    <label className="block"><input type="checkbox" checked={agree.cleanFuel} onChange={e=>setAgree(a=>({...a,cleanFuel:e.target.checked}))} /> I will return the vessel cleaned and full of fuel.</label>
-                    <label className="block"><input type="checkbox" checked={agree.damages} onChange={e=>setAgree(a=>({...a,damages:e.target.checked}))} /> I accept liability for damages caused to/by the vessel.</label>
-                    <label className="block"><input type="checkbox" checked={agree.deposit} onChange={e=>setAgree(a=>({...a,deposit:e.target.checked}))} /> I agree to the security deposit.</label>
-                    <div className="text-xs text-neutral-500 mt-2">We store <code>terms_version</code> with the booking.</div>
+                    <label className="block">
+                      <input
+                        type="checkbox"
+                        checked={agree.insurance}
+                        onChange={(e) => setAgree((a) => ({ ...a, insurance: e.target.checked }))}
+                      />{" "}
+                      I have appropriate insurance for this charter.
+                    </label>
+                    <label className="block">
+                      <input
+                        type="checkbox"
+                        checked={agree.crew}
+                        onChange={(e) => setAgree((a) => ({ ...a, crew: e.target.checked }))}
+                      />{" "}
+                      My crew are insured and certified.
+                    </label>
+                    <label className="block">
+                      <input
+                        type="checkbox"
+                        checked={agree.cleanFuel}
+                        onChange={(e) => setAgree((a) => ({ ...a, cleanFuel: e.target.checked }))}
+                      />{" "}
+                      I will return the vessel cleaned and full of fuel.
+                    </label>
+                    <label className="block">
+                      <input
+                        type="checkbox"
+                        checked={agree.damages}
+                        onChange={(e) => setAgree((a) => ({ ...a, damages: e.target.checked }))}
+                      />{" "}
+                      I accept liability for damages caused to/by the vessel.
+                    </label>
+                    <label className="block">
+                      <input
+                        type="checkbox"
+                        checked={agree.deposit}
+                        onChange={(e) => setAgree((a) => ({ ...a, deposit: e.target.checked }))}
+                      />{" "}
+                      I agree to the security deposit.
+                    </label>
+                    <div className="text-xs text-neutral-500 mt-2">
+                      We store <code>terms_version</code> with the booking.
+                    </div>
                   </div>
                 </div>
 
