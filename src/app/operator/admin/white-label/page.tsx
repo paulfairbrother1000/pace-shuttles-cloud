@@ -245,25 +245,18 @@ export default function OperatorWhiteLabelPage() {
     <div className="max-w-5xl mx-auto p-4 space-y-6">
       {/* ✅ Page-local CSS to hide any legacy “operator sections” bar.
           This mirrors the pattern we used on other pages and only affects this page. */}
-      <style jsx global>{`
-        #operator-tabs,
-        .operator-tabs,
-        .operator-section-tabs,
-        nav[data-legacy-tabs="true"],
-        nav[aria-label="Operator sections"],
-        nav[aria-label="Operator Admin sections"],
-        /* Defensive: hide any nav that contains the old operator links */
-        nav:has(a[href*="/operator-admin/staff"]),
-        nav:has(a[href*="/operator-admin/vehicles"]),
-        nav:has(a[href*="/operator-admin/routes"]),
-        nav:has(a[href*="/operator-admin/reports"]),
-        nav:has(a[href*="/operator/admin/staff"]),
-        nav:has(a[href*="/operator/admin/vehicles"]),
-        nav:has(a[href*="/operator/admin/routes"]),
-        nav:has(a[href*="/operator/admin/reports"]) {
-          display: none !important;
-        }
-      `}</style>
+<style jsx global>{`
+  /* Hide only the legacy second-row operator tabs, not the main header */
+  #operator-tabs,
+  .operator-tabs,
+  .operator-section-tabs,
+  nav[data-legacy-tabs="true"],
+  nav[aria-label="Operator sections"],
+  nav[aria-label="Operator Admin sections"] {
+    display: none !important;
+  }
+`}</style>
+
 
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">White Label — Day Charter</h1>
