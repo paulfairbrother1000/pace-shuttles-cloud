@@ -1,7 +1,6 @@
 // src/app/operator-admin/layout.tsx
 "use client";
 
-import TopBar from "@/components/Nav/TopBar";
 import RoleSwitch from "@/components/Nav/RoleSwitch";
 import { useEffect, useState } from "react";
 
@@ -10,7 +9,6 @@ export default function OperatorAdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [name, setName] = useState<string | null>(null);
   const [hasBothRoles, setHasBothRoles] = useState(false);
 
   useEffect(() => {
@@ -18,12 +16,6 @@ export default function OperatorAdminLayout({
       const raw = localStorage.getItem("ps_user");
       if (raw) {
         const u = JSON.parse(raw);
-        const display =
-          u?.operator_name ||
-          u?.name ||
-          [u?.first_name, u?.last_name].filter(Boolean).join(" ") ||
-          null;
-        setName(display);
         setHasBothRoles(!!(u?.site_admin && u?.operator_admin));
       }
     } catch {
@@ -33,8 +25,7 @@ export default function OperatorAdminLayout({
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Sticky top bar used site-wide (contains the single burger menu) */}
-      <TopBar userName={name} homeHref="/" accountHref="/account" />
+      {/* Global SiteHeader is rendered by RootLayout; do NOT render another header here. */}
 
       {/* Segmented switch (only if user has both roles) */}
       <RoleSwitch
@@ -44,10 +35,10 @@ export default function OperatorAdminLayout({
         siteHref="/admin"
       />
 
-      {/* Push content below sticky header + switch */}
-      <div className="pt-24 px-4">{children}</div>
+      {/* Page content */}
+      <div className="px-4 py-6">{children}</div>
 
-      {/* Kill any legacy operator tabs that older pages/components might inject */}
+      {/* Hide any legacy operator tabs older pages/components might inject */}
       <style jsx global>{`
         #operator-tabs,
         .operator-tabs,

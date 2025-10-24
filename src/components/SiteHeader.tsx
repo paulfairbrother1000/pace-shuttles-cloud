@@ -5,6 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
+import RoleAwareMenu from "@/components/menus/RoleAwareMenu"; // ← ADDED
 
 type PsUser = {
   first_name?: string | null;
@@ -127,7 +128,7 @@ export default function SiteHeader(): JSX.Element {
           --accent:          var(--accent, #2a6cd6);
           --accent-contrast: var(--accent-contrast, #ffffff);
           --radius:          var(--radius, 14px);
-          --nav-bg:          color-mix(in oklab, var(--bg) 88%, white); /* ~one shade lighter than bg */
+          --nav-bg:          color-mix(in oklab, var(--bg) 88%, white);
 
           width: 100%;
           background: var(--nav-bg);
@@ -135,10 +136,8 @@ export default function SiteHeader(): JSX.Element {
           border-bottom: 1px solid color-mix(in oklab, var(--bg) 70%, white 0%);
         }
 
-        /* Center content; header background stays full width */
         .ps-header .bar { max-width: 72rem; margin: 0 auto; padding: 0.75rem 1.5rem; }
 
-        /* Brand + pills */
         .ps-header a.brand { color: var(--text); text-decoration: none; }
         .ps-header .pill {
           border-radius: 9999px;
@@ -159,12 +158,14 @@ export default function SiteHeader(): JSX.Element {
       `}</style>
 
       <div className="bar flex items-center justify-between">
-        {/* Left: Brand */}
+        {/* Left: Brand + role-aware nav */}
         <div className="flex items-center gap-3">
           <Link href="/" className="brand font-semibold">Pace Shuttles</Link>
+          {/* burger on mobile; inline links on desktop; hides for guests */}
+          <RoleAwareMenu profile={profile} loading={loading} /> {/* ← ADDED */}
         </div>
 
-        {/* Right: Pills */}
+        {/* Right: Pills (Home/Login/Account + role entry points you already had) */}
         <nav className="flex items-center gap-2">
           <Link href="/" className="pill active text-sm">Home</Link>
 

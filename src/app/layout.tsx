@@ -1,4 +1,4 @@
-// src/app/layout.tsx (or app/layout.tsx)
+// src/app/layout.tsx (root layout)
 import type { ReactNode } from "react";
 import { Suspense } from "react";
 import SiteHeader from "@/components/SiteHeader";
@@ -8,7 +8,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        {/* SiteHeader uses navigation hooks, so wrap it */}
+        {/* Single global header for the whole site */}
         <Suspense fallback={null}>
           <SiteHeader />
         </Suspense>
