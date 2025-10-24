@@ -1,3 +1,4 @@
+// src/app/operator-admin/routes/page.tsx
 "use client";
 
 import Image from "next/image";
@@ -190,6 +191,10 @@ export default function OperatorRoutesTilesPage() {
         psUser.operator_id
       : "";
 
+  // NEW: determine create URL & enabled state
+  const effectiveOp = isOpAdmin ? (psUser?.operator_id || "") : operatorId;
+  const canCreate = Boolean(effectiveOp);
+
   return (
     <div className="p-4 space-y-6">
       <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -216,12 +221,29 @@ export default function OperatorRoutesTilesPage() {
           )}
         </div>
 
-        <input
-          className="border rounded-full px-3 py-2"
-          placeholder="Search routes…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+        <div className="flex items-center gap-2">
+          <input
+            className="border rounded-full px-3 py-2"
+            placeholder="Search routes…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {/* NEW: Create button (enabled when an operator context exists) */}
+          <Link
+            href={
+              canCreate
+                ? `/operator-admin/routes/edit/new?op=${encodeURIComponent(effectiveOp)}`
+                : "#"
+            }
+            className={`rounded-full px-3 py-2 text-sm ${
+              canCreate
+                ? "bg-blue-600 text-white hover:bg-blue-700"
+                : "bg-neutral-300 text-neutral-600 cursor-not-allowed pointer-events-none"
+            }`}
+          >
+            New route
+          </Link>
+        </div>
       </header>
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
