@@ -101,6 +101,10 @@ export default function PartnersApplyPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submittedId, setSubmittedId] = useState<string | null>(null);
 
+  // ----- (NEW for "Other" country) -----
+  const OTHER = "__OTHER__";
+  const [otherCountryText, setOtherCountryText] = useState("");
+
   // Load lookups
   useEffect(() => {
     let off = false;
@@ -161,6 +165,10 @@ export default function PartnersApplyPage() {
     setSelectedPlaceIds((prev) => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
+  // ----- (NEW) dynamic label text -----
+  const typeLabel =
+    applicationType === "operator" ? "I am an…" : "I represent a…";
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
@@ -174,6 +182,10 @@ export default function PartnersApplyPage() {
       setMsg("Please choose a country of operation.");
       return;
     }
+    if (countryId === OTHER && !otherCountryText.trim()) {
+      setMsg("Please specify your country in the text box.");
+      return;
+    }
 
     if (applicationType === "operator") {
       if (!transportTypeId) { setMsg("Please choose a vehicle type."); return; }
@@ -183,7 +195,10 @@ export default function PartnersApplyPage() {
 
     const payload: any = {
       application_type: applicationType,
-      country_id: countryId || null,
+      country_id:
+        countryId === OTHER
+          ? `Other - ${otherCountryText.trim()}`
+          : (countryId || null),
 
       // org
       org_name: orgName,
@@ -276,7 +291,7 @@ export default function PartnersApplyPage() {
           <form onSubmit={onSubmit} className="tile tile-border p-5 space-y-5">
             {/* Type */}
             <div>
-              <label className="label">I am a…</label>
+              <label className="label">{typeLabel}</label>
               <div className="flex gap-3">
                 {(["operator","destination"] as const).map((t) => (
                   <button
@@ -297,12 +312,31 @@ export default function PartnersApplyPage() {
               <select
                 className="input"
                 value={countryId}
-                onChange={(e) => setCountryId(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setCountryId(v);
+                  if (v !== OTHER) setOtherCountryText("");
+                }}
                 required
               >
                 <option value="">Select country…</option>
                 {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                <option value={OTHER}>Other</option>
               </select>
+
+              {countryId === OTHER && (
+                <div className="mt-2">
+                  <input
+                    className="input"
+                    value={otherCountryText}
+                    onChange={(e) => setOtherCountryText(e.target.value)}
+                    placeholder="Type your country or territory…"
+                  />
+                  <p className="muted text-xs mt-1">
+                    This will be submitted as <span className="font-mono">Other - [your text]</span>.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Operator-specific */}
