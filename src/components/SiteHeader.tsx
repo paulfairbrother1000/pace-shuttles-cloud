@@ -165,26 +165,40 @@ export default function SiteHeader(): JSX.Element {
           <RoleAwareMenu profile={profile} loading={loading} /> {/* ← ADDED */}
         </div>
 
-        {/* Right: Pills (Home/Login/Account + role entry points you already had) */}
-        <nav className="flex items-center gap-2">
-          <Link href="/" className="pill active text-sm">Home</Link>
+{/* Right: Pills */}
+<nav className="flex items-center gap-2">
+  {/* Always show Home */}
+  <Link href="/" className="pill active text-sm">Home</Link>
 
-          {(profile?.operator_admin || profile?.site_admin) ? (
-            <Link href="/operator/admin" className="pill text-sm">Operator Admin</Link>
-          ) : null}
+  {/* Role entry pills: show on DESKTOP ONLY */}
+  {(profile?.operator_admin || profile?.site_admin) ? (
+    <Link
+      href="/operator/admin"
+      className="pill text-sm hidden md:inline-flex"
+    >
+      Operator Admin
+    </Link>
+  ) : null}
 
-          {profile?.site_admin ? (
-            <Link href="/admin" className="pill text-sm">Admin</Link>
-          ) : null}
+  {profile?.site_admin ? (
+    <Link
+      href="/admin"
+      className="pill text-sm hidden md:inline-flex"
+    >
+      Admin
+    </Link>
+  ) : null}
 
-          {authEmail ? (
-            <Link href="/account" className="pill active text-sm" title={authEmail}>
-              {firstName || "Account"}
-            </Link>
-          ) : (
-            <Link href="/login" className="pill active text-sm">Login</Link>
-          )}
-        </nav>
+  {/* Always show Login/Account */}
+  {authEmail ? (
+    <Link href="/account" className="pill active text-sm" title={authEmail}>
+      {firstName || "Account"}
+    </Link>
+  ) : (
+    <Link href="/login" className="pill active text-sm">Login</Link>
+  )}
+</nav>
+
       </div>
     </header>
   );
