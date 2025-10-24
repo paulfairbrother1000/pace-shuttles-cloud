@@ -9,7 +9,7 @@ type Profile = {
   operator_admin?: boolean | null;
   operator_id?: string | null;
   operator_name?: string | null;
-  white_label_member?: boolean | null; // <- NEW we cache this in TopBar
+  white_label_member?: boolean | null; // cached in TopBar
 };
 
 type Props = {
@@ -50,21 +50,23 @@ function alpha<T extends { label: string }>(arr: T[]) {
   return [...arr].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"siteadmin"; items: {label:string; href:string}[] } {
+function buildMenu(p: Profile | null): {
+  role: "guest" | "crew" | "operator" | "siteadmin";
+  items: { label: string; href: string }[];
+} {
   // SITE ADMIN
   if (p?.site_admin) {
     const items = alpha([
-      { label: "Bookings",   href: "/operator/admin" },
-      { label: "Countries",  href: "/admin/countries" },
+      { label: "Bookings", href: "/operator/admin" },
+      { label: "Countries", href: "/admin/countries" },
       { label: "Destinations", href: "/admin/destinations" },
-      { label: "Operators",  href: "/admin/operators" },
-      { label: "Pickups",    href: "/admin/pickups" },
-      { label: "Reports",    href: "/admin/reports" },
-      { label: "Routes",     href: "/operator-admin/routes" },
-      { label: "Staff",      href: "/operator-admin/staff" },
-      { label: "Types",      href: "/admin/transport-types" },
-      { label: "Vehicles",   href: "/operator-admin/vehicles" },
-      // white label always visible for site admin
+      { label: "Operators", href: "/admin/operators" },
+      { label: "Pickups", href: "/admin/pickups" },
+      { label: "Reports", href: "/admin/reports" },
+      { label: "Routes", href: "/operator-admin/routes" },
+      { label: "Staff", href: "/operator-admin/staff" },
+      { label: "Types", href: "/admin/transport-types" },
+      { label: "Vehicles", href: "/operator-admin/vehicles" },
       { label: "White Label", href: "/operator/admin/white-label" },
     ]);
     return { role: "siteadmin", items };
@@ -74,12 +76,11 @@ function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"sitead
   if (p?.operator_admin) {
     const base = [
       { label: "Bookings", href: "/operator/admin" },
-      { label: "Reports",  href: "/operator/admin/reports" },
-      { label: "Routes",   href: "/operator-admin/routes" },
-      { label: "Staff",    href: "/operator-admin/staff" },
+      { label: "Reports", href: "/operator/admin/reports" },
+      { label: "Routes", href: "/operator-admin/routes" },
+      { label: "Staff", href: "/operator-admin/staff" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
     ];
-    // only when flagged on the operator
     if (p.white_label_member) {
       base.push({ label: "White Label", href: "/operator/admin/white-label" });
     }
@@ -90,7 +91,7 @@ function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"sitead
   if (isCrewFromCache()) {
     const items = alpha([
       { label: "Bookings", href: "/crew/account" },
-      { label: "Reports",  href: "/crew/reports" }, // placeholder
+      { label: "Reports", href: "/crew/reports" }, // placeholder
     ]);
     return { role: "crew", items };
   }
@@ -100,9 +101,10 @@ function buildMenu(p: Profile | null): { role: "guest"|"crew"|"operator"|"sitead
 }
 
 /**
- * Only renders a burger + drawer for crew/operator/siteadmin.
- * Guests see nothing here (header still shows "Home" and "Login/Name" on the right).
- * No “Login” in the drawer any more — it’s on the top bar.
+ * Renders role-aware nav:
+ * - Guests: nothing (your TopBar shows Home/Login).
+ * - Mobile: burger ONLY if user has roles.
+ * - Desktop: inline links for users with roles (no burger).
  */
 export default function RoleAwareMenu({ profile, loading }: Props) {
   const [open, setOpen] = React.useState(false);
@@ -119,7 +121,7 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
   const effective = profile ?? cache;
   const { role, items } = React.useMemo(() => buildMenu(effective), [effective]);
 
-  // Hide entirely for guests
+  // Hide entirely for guests (client users)
   if (role === "guest") return null;
 
   const roleLabel =
@@ -130,63 +132,76 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
 
   return (
     <>
-      {/* Burger (forced white) */}
-      <button
-        aria-label="Open menu"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center justify-center w-9 h-9"
-      >
-        <span
-          aria-hidden
-          className="relative block w-6 h-[2px] bg-white before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-white before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-white after:translate-y-2"
-        />
-      </button>
-
-      {/* Drawer */}
-      {open && (
-        <div className="fixed inset-0 z-[60]">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setOpen(false)}
-            aria-hidden
-          />
-          {/* Panel */}
-          <aside
-            className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
-            role="dialog"
-            aria-label="Main menu"
+      {/* Desktop: inline links (NO burger) */}
+      <nav className="hidden md:flex items-center gap-4">
+        {items.map((it) => (
+          <Link
+            key={`${it.label}-${it.href}`}
+            href={it.href}
+            className="text-sm text-neutral-700 hover:text-black"
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b">
-              <div className="font-medium">{roleLabel}</div>
-              <button
-                aria-label="Close menu"
-                className="w-9 h-9"
-                onClick={() => setOpen(false)}
-              >
-                <span
-                  aria-hidden
-                  className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
-                />
-              </button>
-            </div>
+            {it.label}
+          </Link>
+        ))}
+      </nav>
 
-            <nav className="px-5 py-4 space-y-6 text-lg">
-              <div>
-                <Link href="/" onClick={() => setOpen(false)}>Home</Link>
+      {/* Mobile: burger ONLY if user has roles */}
+      <div className="md:hidden">
+        <button
+          aria-label="Open menu"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center justify-center w-9 h-9"
+        >
+          {/* burger icon (inherit current text color; remove forced white) */}
+          <span
+            aria-hidden
+            className="relative block w-6 h-[2px] bg-current before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-current before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-current after:translate-y-2"
+          />
+        </button>
+
+        {/* Drawer */}
+        {open && (
+          <div className="fixed inset-0 z-[60]">
+            {/* Backdrop */}
+            <div
+              className="absolute inset-0 bg-black/40"
+              onClick={() => setOpen(false)}
+              aria-hidden
+            />
+            {/* Panel */}
+            <aside
+              className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
+              role="dialog"
+              aria-label="Main menu"
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b">
+                <div className="font-medium">{roleLabel}</div>
+                <button
+                  aria-label="Close menu"
+                  className="w-9 h-9"
+                  onClick={() => setOpen(false)}
+                >
+                  <span
+                    aria-hidden
+                    className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
+                  />
+                </button>
               </div>
 
-              {items.map((it) => (
-                <div key={it.href}>
-                  <Link href={it.href} onClick={() => setOpen(false)}>
-                    {it.label}
-                  </Link>
-                </div>
-              ))}
-            </nav>
-          </aside>
-        </div>
-      )}
+              <nav className="px-5 py-4 space-y-6 text-lg">
+                {/* NOTE: Home/Login live in the header for everyone, so not duplicated here */}
+                {items.map((it) => (
+                  <div key={it.href}>
+                    <Link href={it.href} onClick={() => setOpen(false)}>
+                      {it.label}
+                    </Link>
+                  </div>
+                ))}
+              </nav>
+            </aside>
+          </div>
+        )}
+      </div>
     </>
   );
 }
