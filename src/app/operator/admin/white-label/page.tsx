@@ -242,179 +242,175 @@ export default function OperatorWhiteLabelPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-4 space-y-6">
-      {/* ✅ Page-local CSS to hide any legacy “operator sections” bar.
-          This mirrors the pattern we used on other pages and only affects this page. */}
-<style jsx global>{`
-  /* Hide only the legacy second-row operator tabs, not the main header */
-  #operator-tabs,
-  .operator-tabs,
-  .operator-section-tabs,
-  nav[data-legacy-tabs="true"],
-  nav[aria-label="Operator sections"],
-  nav[aria-label="Operator Admin sections"] {
-    display: none !important;
-  }
-`}</style>
+    <>
+      {/* Hide legacy operator sub-nav on this page only */}
+      <style jsx global>{`
+        #operator-tabs,
+        .operator-tabs,
+        .operator-section-tabs,
+        nav[aria-label="Operator sections"] {
+          display: none !important;
+        }
+      `}</style>
 
+      <div className="max-w-5xl mx-auto p-4 space-y-6">
+        <header className="space-y-1">
+          <h1 className="text-2xl font-semibold">White Label — Day Charter</h1>
+          <p className="text-neutral-600">
+            Hire an owner boat for your own charter. Pick a boat, check availability, accept T&Cs, then confirm.
+          </p>
+        </header>
 
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">White Label — Day Charter</h1>
-        <p className="text-neutral-600">
-          Hire an owner boat for your own charter. Pick a boat, check availability, accept T&Cs, then confirm.
-        </p>
-      </header>
+        {loading ? (
+          <div className="p-4">Loading…</div>
+        ) : assets.length === 0 ? (
+          <div className="p-4">No white label boats available right now.</div>
+        ) : (
+          <>
+            {/* 1) Boat list with image tiles */}
+            <section className="grid md:grid-cols-2 gap-4">
+              {assets.map(a => {
+                const thumb = thumbs[a.wl_asset_id] || null;
+                const desc = (a.vehicle_description || "").trim();
+                const shortDesc = desc.length > 120 ? desc.slice(0, 117) + "…" : desc;
 
-      {loading ? (
-        <div className="p-4">Loading…</div>
-      ) : assets.length === 0 ? (
-        <div className="p-4">No white label boats available right now.</div>
-      ) : (
-        <>
-          {/* 1) Boat list with image tiles */}
-          <section className="grid md:grid-cols-2 gap-4">
-            {assets.map(a => {
-              const thumb = thumbs[a.wl_asset_id] || null;
-              const desc = (a.vehicle_description || "").trim();
-              const shortDesc = desc.length > 120 ? desc.slice(0, 117) + "…" : desc;
-
-              return (
-                <button
-                  key={a.wl_asset_id}
-                  className={`text-left rounded-2xl border overflow-hidden shadow-sm transition ${
-                    selected?.wl_asset_id === a.wl_asset_id
-                      ? "border-black"
-                      : "border-neutral-200 hover:border-neutral-400"
-                  }`}
-                  onClick={() => {
-                    setSelected(a);
-                    setCharterId(null);
-                    setAvailMsg(null);
-                    setDate("");
-                  }}
-                >
-                  {thumb ? (
-                    <img src={thumb} alt={a.vehicle_name} className="w-full h-40 object-cover" />
-                  ) : (
-                    <div className="w-full h-40 bg-neutral-100" />
-                  )}
-                  <div className="p-4">
-                    <div className="text-lg font-semibold">{a.vehicle_name}</div>
-                    <div className="text-xs text-neutral-500">Owner: {a.owner_operator_name}</div>
-                    {shortDesc && <p className="text-sm mt-1">{shortDesc}</p>}
-                    <div className="mt-2 text-sm">
-                      Seats: <b>{a.seats_capacity ?? "—"}</b>
+                return (
+                  <button
+                    key={a.wl_asset_id}
+                    className={`text-left rounded-2xl border overflow-hidden shadow-sm transition ${
+                      selected?.wl_asset_id === a.wl_asset_id
+                        ? "border-black"
+                        : "border-neutral-200 hover:border-neutral-400"
+                    }`}
+                    onClick={() => {
+                      setSelected(a);
+                      setCharterId(null);
+                      setAvailMsg(null);
+                      setDate("");
+                    }}
+                  >
+                    {thumb ? (
+                      <img src={thumb} alt={a.vehicle_name} className="w-full h-40 object-cover" />
+                    ) : (
+                      <div className="w-full h-40 bg-neutral-100" />
+                    )}
+                    <div className="p-4">
+                      <div className="text-lg font-semibold">{a.vehicle_name}</div>
+                      <div className="text-xs text-neutral-500">Owner: {a.owner_operator_name}</div>
+                      {shortDesc && <p className="text-sm mt-1">{shortDesc}</p>}
+                      <div className="mt-2 text-sm">
+                        Seats: <b>{a.seats_capacity ?? "—"}</b>
+                      </div>
+                      <div className="text-sm">
+                        Day rate: <b>{money(a.day_rate_cents)}</b> • Deposit: <b>{money(a.security_deposit_cents)}</b>
+                      </div>
                     </div>
-                    <div className="text-sm">
-                      Day rate: <b>{money(a.day_rate_cents)}</b> • Deposit: <b>{money(a.security_deposit_cents)}</b>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </section>
-
-          {/* 2) Selected boat hero + details */}
-          {selected && (
-            <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow-sm">
-              {heroUrl ? (
-                <img src={heroUrl} alt={selected.vehicle_name} className="w-full max-h-80 object-cover" />
-              ) : (
-                <div className="w-full h-48 bg-neutral-100" />
-              )}
-
-              <div className="p-4 space-y-2">
-                <div className="text-xl font-semibold">{selected.vehicle_name}</div>
-                <div className="text-sm text-neutral-600">
-                  Seats: <b>{selected.seats_capacity ?? "—"}</b>
-                </div>
-                {selected.vehicle_description && (
-                  <p className="text-sm">{selected.vehicle_description}</p>
-                )}
-                <div className="text-sm">
-                  Day rate: <b>{money(selected.day_rate_cents)}</b> • Deposit: <b>{money(selected.security_deposit_cents)}</b>
-                </div>
-              </div>
-
-              {/* 3) Availability (date only) + pickup/return rules + blocked days panel */}
-              <div className="p-4 space-y-3 border-t">
-                <div className="grid md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-neutral-600 mb-1">Charter date</label>
-                    <input
-                      type="date"
-                      className="w-full border rounded-lg px-3 py-2"
-                      value={date}
-                      onChange={(e) => setDate(e.target.value)}
-                    />
-                    {availMsg && <div className="mt-2 text-sm">{availMsg}</div>}
-                  </div>
-                  <div className="text-sm bg-neutral-50 border rounded-lg p-3">
-                    <div className="font-semibold">Pickup & return</div>
-                    <ul className="list-disc ml-5">
-                      <li>Pickup from <b>{PICKUP_TIME}</b></li>
-                      <li>Return by <b>{RETURN_TIME}</b></li>
-                      <li>Remove all rubbish</li>
-                      <li>Hose down the vessel</li>
-                      <li>Refuel to <b>full</b></li>
-                    </ul>
-                  </div>
-                </div>
-
-                {/* blocked days list */}
-                <div className="rounded-xl border p-3">
-                  <div className="font-semibold mb-2">Unavailable days (next 90 days)</div>
-                  {blockedDays.size === 0 ? (
-                    <div className="text-sm text-neutral-600">No blocked days.</div>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {[...blockedDays].sort().map(d => (
-                        <span key={d} className="text-xs px-2 py-1 rounded-full border">{d}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 4) T&Cs — all must be checked */}
-              <div className="p-4 border-t">
-                <div className="rounded-xl border p-3">
-                  <div className="font-semibold mb-2">Terms & Conditions (summary)</div>
-                  <label className="block"><input type="checkbox" checked={agree.insurance} onChange={e=>setAgree(a=>({...a,insurance:e.target.checked}))} /> I have appropriate insurance for this charter.</label>
-                  <label className="block"><input type="checkbox" checked={agree.crew} onChange={e=>setAgree(a=>({...a,crew:e.target.checked}))} /> My crew are insured and certified.</label>
-                  <label className="block"><input type="checkbox" checked={agree.cleanFuel} onChange={e=>setAgree(a=>({...a,cleanFuel:e.target.checked}))} /> I will return the vessel cleaned and full of fuel.</label>
-                  <label className="block"><input type="checkbox" checked={agree.damages} onChange={e=>setAgree(a=>({...a,damages:e.target.checked}))} /> I accept liability for damages caused to/by the vessel.</label>
-                  <label className="block"><input type="checkbox" checked={agree.deposit} onChange={e=>setAgree(a=>({...a,deposit:e.target.checked}))} /> I agree to the security deposit.</label>
-                  <div className="text-xs text-neutral-500 mt-2">We store <code>terms_version</code> with the booking.</div>
-                </div>
-              </div>
-
-              {/* 5) Create booking (pending) & 6) Confirm (MVP) */}
-              <div className="p-4 border-t flex gap-2">
-                <button
-                  className="rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
-                  disabled={creating || !date || blockedDays.has(date) || !allAgreed}
-                  onClick={createBooking}
-                >
-                  {creating ? "Creating…" : "Create booking (pending)"}
-                </button>
-
-                <button
-                  className="rounded-full px-4 py-2 border text-sm disabled:opacity-50"
-                  disabled={!charterId || confirming}
-                  onClick={confirmBooking}
-                >
-                  {confirming ? "Confirming…" : "Pay now (confirm)"
-                  }
-                </button>
-
-                {charterId && <span className="text-sm">Booking ID: {charterId}</span>}
-                {msg && <span className="text-sm">{msg}</span>}
-              </div>
+                  </button>
+                );
+              })}
             </section>
-          )}
-        </>
-      )}
-    </div>
+
+            {/* 2) Selected boat hero + details */}
+            {selected && (
+              <section className="rounded-2xl border border-neutral-200 bg-white overflow-hidden shadow-sm">
+                {heroUrl ? (
+                  <img src={heroUrl} alt={selected.vehicle_name} className="w-full max-h-80 object-cover" />
+                ) : (
+                  <div className="w-full h-48 bg-neutral-100" />
+                )}
+
+                <div className="p-4 space-y-2">
+                  <div className="text-xl font-semibold">{selected.vehicle_name}</div>
+                  <div className="text-sm text-neutral-600">
+                    Seats: <b>{selected.seats_capacity ?? "—"}</b>
+                  </div>
+                  {selected.vehicle_description && (
+                    <p className="text-sm">{selected.vehicle_description}</p>
+                  )}
+                  <div className="text-sm">
+                    Day rate: <b>{money(selected.day_rate_cents)}</b> • Deposit: <b>{money(selected.security_deposit_cents)}</b>
+                  </div>
+                </div>
+
+                {/* 3) Availability (date only) + pickup/return rules + blocked days panel */}
+                <div className="p-4 space-y-3 border-t">
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-neutral-600 mb-1">Charter date</label>
+                      <input
+                        type="date"
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                      />
+                      {availMsg && <div className="mt-2 text-sm">{availMsg}</div>}
+                    </div>
+                    <div className="text-sm bg-neutral-50 border rounded-lg p-3">
+                      <div className="font-semibold">Pickup & return</div>
+                      <ul className="list-disc ml-5">
+                        <li>Pickup from <b>{PICKUP_TIME}</b></li>
+                        <li>Return by <b>{RETURN_TIME}</b></li>
+                        <li>Remove all rubbish</li>
+                        <li>Hose down the vessel</li>
+                        <li>Refuel to <b>full</b></li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* blocked days list */}
+                  <div className="rounded-xl border p-3">
+                    <div className="font-semibold mb-2">Unavailable days (next 90 days)</div>
+                    {blockedDays.size === 0 ? (
+                      <div className="text-sm text-neutral-600">No blocked days.</div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {[...blockedDays].sort().map(d => (
+                          <span key={d} className="text-xs px-2 py-1 rounded-full border">{d}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 4) T&Cs — all must be checked */}
+                <div className="p-4 border-t">
+                  <div className="rounded-xl border p-3">
+                    <div className="font-semibold mb-2">Terms & Conditions (summary)</div>
+                    <label className="block"><input type="checkbox" checked={agree.insurance} onChange={e=>setAgree(a=>({...a,insurance:e.target.checked}))} /> I have appropriate insurance for this charter.</label>
+                    <label className="block"><input type="checkbox" checked={agree.crew} onChange={e=>setAgree(a=>({...a,crew:e.target.checked}))} /> My crew are insured and certified.</label>
+                    <label className="block"><input type="checkbox" checked={agree.cleanFuel} onChange={e=>setAgree(a=>({...a,cleanFuel:e.target.checked}))} /> I will return the vessel cleaned and full of fuel.</label>
+                    <label className="block"><input type="checkbox" checked={agree.damages} onChange={e=>setAgree(a=>({...a,damages:e.target.checked}))} /> I accept liability for damages caused to/by the vessel.</label>
+                    <label className="block"><input type="checkbox" checked={agree.deposit} onChange={e=>setAgree(a=>({...a,deposit:e.target.checked}))} /> I agree to the security deposit.</label>
+                    <div className="text-xs text-neutral-500 mt-2">We store <code>terms_version</code> with the booking.</div>
+                  </div>
+                </div>
+
+                {/* 5) Create booking (pending) & 6) Confirm (MVP) */}
+                <div className="p-4 border-t flex gap-2">
+                  <button
+                    className="rounded-full px-4 py-2 bg-black text-white text-sm disabled:opacity-50"
+                    disabled={creating || !date || blockedDays.has(date) || !allAgreed}
+                    onClick={createBooking}
+                  >
+                    {creating ? "Creating…" : "Create booking (pending)"}
+                  </button>
+
+                  <button
+                    className="rounded-full px-4 py-2 border text-sm disabled:opacity-50"
+                    disabled={!charterId || confirming}
+                    onClick={confirmBooking}
+                  >
+                    {confirming ? "Confirming…" : "Pay now (confirm)"}
+                  </button>
+
+                  {charterId && <span className="text-sm">Booking ID: {charterId}</span>}
+                  {msg && <span className="text-sm">{msg}</span>}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
+    </>
   );
 }
