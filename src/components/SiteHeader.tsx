@@ -208,7 +208,7 @@ export default function SiteHeader(): JSX.Element {
       `}</style>
 
       <div className="bar flex items-center justify-between">
-        {/* LEFT: burger (mobile) + centered brand on mobile; desktop unchanged */}
+        {/* LEFT: burger (mobile) + brand; desktop unchanged */}
         <div className="relative flex items-center gap-3 flex-1">
           {/* Role-aware menu:
               - Mobile: burger (inside component: md:hidden)
@@ -225,26 +225,11 @@ export default function SiteHeader(): JSX.Element {
           </div>
         </div>
 
-        {/* RIGHT: Pills (Home always; role pills hidden on mobile; Account/Login always) */}
+        {/* RIGHT: Pills — keep only Home and Account/Login */}
         <nav className="flex items-center gap-2">
           <Link href="/" className="pill active text-sm">
             Home
           </Link>
-
-          {(profile?.operator_admin || profile?.site_admin) ? (
-            <Link
-              href="/operator/admin"
-              className="pill text-sm hidden md:inline-flex"
-            >
-              Operator Admin
-            </Link>
-          ) : null}
-
-          {profile?.site_admin ? (
-            <Link href="/admin" className="pill text-sm hidden md:inline-flex">
-              Admin
-            </Link>
-          ) : null}
 
           {authEmail ? (
             <Link href="/account" className="pill active text-sm" title={authEmail}>
