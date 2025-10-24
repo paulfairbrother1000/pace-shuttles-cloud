@@ -191,56 +191,57 @@ export default function CountryEditPage({
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
   async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!client) return;
-    setErr(null);
-    setUploadMsg(null);
+  if (!client) return;
+  setErr(null);
+  setUploadMsg(null);
 
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const inputEl = e.currentTarget; // <- capture synchronously
+  const file = inputEl.files?.[0];
+  if (!file) return;
 
-    // Basic guards (client-side)
-    const MAX_MB = 8;
-    if (!file.type.startsWith("image/")) {
-      setErr("Please choose an image file.");
-      e.currentTarget.value = ""; // reset input
-      return;
-    }
-    if (file.size > MAX_MB * 1024 * 1024) {
-      setErr(`Image is too large (max ${MAX_MB}MB).`);
-      e.currentTarget.value = ""; // reset input
-      return;
-    }
-
-    try {
-      setUploading(true);
-
-      // Build path: countries/<slug>-<ts>.<ext>
-      const slug = slugify(row.name || "country");
-      const ext = extFromFilename(file.name);
-      const objectPath = `${COUNTRY_DIR}/${slug}-${Date.now()}.${ext}`;
-
-      // Upload
-      const { error: upErr } = await client.storage
-        .from(BUCKET)
-        .upload(objectPath, file, {
-          cacheControl: "3600",
-          upsert: true, // allow replacing if same key (timestamp usually avoids this)
-          contentType: file.type || `image/${ext}`,
-        });
-
-      if (upErr) throw upErr;
-
-      // Persist storage key in form state (exactly like older rows)
-      const storageKey = `${BUCKET}/${objectPath}`;
-      setRow((r) => ({ ...r, picture_url: storageKey }));
-      setUploadMsg("Image uploaded. Preview updated.");
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-    } finally {
-      setUploading(false);
-      e.currentTarget.value = ""; // allow re-selecting same file
-    }
+  // Basic guards (client-side)
+  const MAX_MB = 8;
+  if (!file.type.startsWith("image/")) {
+    setErr("Please choose an image file.");
+    try { inputEl.value = ""; } catch {}
+    return;
   }
+  if (file.size > MAX_MB * 1024 * 1024) {
+    setErr(`Image is too large (max ${MAX_MB}MB).`);
+    try { inputEl.value = ""; } catch {}
+    return;
+  }
+
+  try {
+    setUploading(true);
+
+    // Build path: countries/<slug>-<ts>.<ext>
+    const slug = slugify(row.name || "country");
+    const ext = extFromFilename(file.name);
+    const objectPath = `${COUNTRY_DIR}/${slug}-${Date.now()}.${ext}`;
+
+    // Upload
+    const { error: upErr } = await client.storage
+      .from(BUCKET)
+      .upload(objectPath, file, {
+        cacheControl: "3600",
+        upsert: true,
+        contentType: file.type || `image/${ext}`,
+      });
+    if (upErr) throw upErr;
+
+    // Persist storage key (same format you expect)
+    const storageKey = `${BUCKET}/${objectPath}`;
+    setRow((r) => ({ ...r, picture_url: storageKey }));
+    setUploadMsg("Image uploaded. Preview updated.");
+  } catch (e: any) {
+    setErr(e?.message ?? String(e));
+  } finally {
+    setUploading(false);
+    // Clear input safely (if still mounted)
+    try { inputEl.value = ""; } catch {}
+  }
+}
 
   /* ---------- UI ---------- */
   return (
@@ -372,12 +373,14 @@ export default function CountryEditPage({
                 Cancel
               </button>
               <button
-                className="px-4 py-2 rounded-lg text-white"
-                style={{ backgroundColor: "#2563eb" }}
-                onClick={handleSave}
-              >
-                {isCreate ? "Create Country" : "Save Changes"}
-              </button>
+  className="px-4 py-2 rounded-lg text-white"
+  style={{ backgroundColor: "#2563eb" }}
+  onClick={handleSave}
+  disabled={uploading}
+>
+  {isCreate ? "Create Country" : "Save Changes"}
+</button>
+
             </div>
           </div>
         )}
