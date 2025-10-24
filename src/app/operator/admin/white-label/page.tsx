@@ -1,4 +1,3 @@
-// src/app/operator/admin/white-label/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -244,13 +243,24 @@ export default function OperatorWhiteLabelPage() {
 
   return (
     <div className="max-w-5xl mx-auto p-4 space-y-6">
-      {/* Hide any legacy operator tab bars so only the global header shows */}
+      {/* ✅ Page-local CSS to hide any legacy “operator sections” bar.
+          This mirrors the pattern we used on other pages and only affects this page. */}
       <style jsx global>{`
         #operator-tabs,
         .operator-tabs,
         .operator-section-tabs,
         nav[data-legacy-tabs="true"],
-        nav[aria-label="Operator sections"] {
+        nav[aria-label="Operator sections"],
+        nav[aria-label="Operator Admin sections"],
+        /* Defensive: hide any nav that contains the old operator links */
+        nav:has(a[href*="/operator-admin/staff"]),
+        nav:has(a[href*="/operator-admin/vehicles"]),
+        nav:has(a[href*="/operator-admin/routes"]),
+        nav:has(a[href*="/operator-admin/reports"]),
+        nav:has(a[href*="/operator/admin/staff"]),
+        nav:has(a[href*="/operator/admin/vehicles"]),
+        nav:has(a[href*="/operator/admin/routes"]),
+        nav:has(a[href*="/operator/admin/reports"]) {
           display: none !important;
         }
       `}</style>
@@ -401,7 +411,8 @@ export default function OperatorWhiteLabelPage() {
                   disabled={!charterId || confirming}
                   onClick={confirmBooking}
                 >
-                  {confirming ? "Confirming…" : "Pay now (confirm)"}
+                  {confirming ? "Confirming…" : "Pay now (confirm)"
+                  }
                 </button>
 
                 {charterId && <span className="text-sm">Booking ID: {charterId}</span>}
@@ -414,4 +425,3 @@ export default function OperatorWhiteLabelPage() {
     </div>
   );
 }
-
