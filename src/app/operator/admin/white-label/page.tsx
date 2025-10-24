@@ -1,3 +1,4 @@
+// src/app/operator/admin/white-label/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -243,6 +244,17 @@ export default function OperatorWhiteLabelPage() {
 
   return (
     <div className="max-w-5xl mx-auto p-4 space-y-6">
+      {/* Hide any legacy operator tab bars so only the global header shows */}
+      <style jsx global>{`
+        #operator-tabs,
+        .operator-tabs,
+        .operator-section-tabs,
+        nav[data-legacy-tabs="true"],
+        nav[aria-label="Operator sections"] {
+          display: none !important;
+        }
+      `}</style>
+
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">White Label — Day Charter</h1>
         <p className="text-neutral-600">
