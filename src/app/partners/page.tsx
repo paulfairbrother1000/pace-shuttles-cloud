@@ -40,16 +40,20 @@ function Theme({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------------- Supabase ---------------- */
-const supabase =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      )
-    : null;
+/* ---------------- Supabase (lazy, browser-only) ---------------- */
+function supa() {
+  if (
+    typeof window !== "undefined" &&
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  ) {
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    );
+  }
+  return null;
+}
 
 type Country = { id: string; name: string };
 type TransportType = { id: string; name: string; is_active?: boolean | null };
@@ -101,7 +105,7 @@ export default function PartnersApplyPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submittedId, setSubmittedId] = useState<string | null>(null);
 
-  // ----- (NEW for "Other" country) -----
+  // ----- “Other” country support -----
   const OTHER = "__OTHER__";
   const [otherCountryText, setOtherCountryText] = useState("");
 
@@ -109,15 +113,16 @@ export default function PartnersApplyPage() {
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!supabase) { setLoading(false); setMsg("Supabase not configured."); return; }
+      const client = supa();
+      if (!client) { setLoading(false); setMsg("Supabase not configured."); return; }
       setLoading(true);
       setMsg(null);
 
       try {
         const [c, t, d] = await Promise.all([
-          supabase.from("countries").select("id,name").order("name"),
-          supabase.from("transport_types").select("id,name,is_active").order("name"),
-          supabase.from("destination_types").select("id,name,is_active").order("name"),
+          client.from("countries").select("id,name").order("name"),
+          client.from("transport_types").select("id,name,is_active").order("name"),
+          client.from("destination_types").select("id,name,is_active").order("name"),
         ]);
 
         if (off) return;
@@ -144,9 +149,10 @@ export default function PartnersApplyPage() {
   useEffect(() => {
     let off = false;
     (async () => {
-      if (!supabase) return;
+      const client = supa();
+      if (!client) return;
       if (!transportTypeId) { setPlaces([]); return; }
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("transport_type_places")
         .select("id,name,transport_type_id")
         .eq("transport_type_id", transportTypeId)
@@ -165,9 +171,8 @@ export default function PartnersApplyPage() {
     setSelectedPlaceIds((prev) => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  // ----- (NEW) dynamic label text -----
-  const typeLabel =
-    applicationType === "operator" ? "I am an…" : "I represent a…";
+  // Dynamic label text
+  const typeLabel = applicationType === "operator" ? "I am an…" : "I represent a…";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
