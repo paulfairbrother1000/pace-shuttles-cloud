@@ -157,13 +157,26 @@ export default function SiteHeader(): JSX.Element {
         }
       `}</style>
 
-      <div className="bar flex items-center justify-between">
-        {/* Left: Brand + role-aware nav */}
-        <div className="flex items-center gap-3">
-          <Link href="/" className="brand font-semibold">Pace Shuttles</Link>
-          {/* burger on mobile; inline links on desktop; hides for guests */}
-          <RoleAwareMenu profile={profile} loading={loading} /> {/* ← ADDED */}
-        </div>
+{/* Left: burger (mobile) + centered brand on mobile; desktop layout unchanged */}
+<div className="relative flex items-center gap-3 flex-1">
+  {/* Mobile/desktop-aware role menu:
+      - On mobile this shows the burger (md:hidden inside the component).
+      - On desktop it shows inline links (hidden md:flex inside the component). */}
+  <div className="order-1 md:order-none">
+    <RoleAwareMenu profile={profile} loading={loading} />
+  </div>
+
+  {/* Brand:
+     - Mobile: absolutely centered so it sits between burger (left) and right-side pills.
+     - Desktop: normal/static next to the burger/inline links. */}
+  <Link
+    href="/"
+    className="brand font-semibold absolute left-1/2 -translate-x-1/2 md:static md:transform-none"
+  >
+    Pace Shuttles
+  </Link>
+</div>
+
 
 {/* Right: Pills */}
 <nav className="flex items-center gap-2">
