@@ -1135,7 +1135,8 @@ const unitMinor =
 
               <section className="text-center pt-6">
                 <div className="relative w-full overflow-hidden rounded-2xl tile tile-border">
-                  <div className="aspect-[16/10] md:aspect-[16/8] xl:aspect-[21/9]">
+                  <div className="aspect-[16/10] sm:aspect-[3/2]">
+
   <Image
     src={HERO_IMG_URL}
     alt="Pace Shuttle — luxury transfers"
