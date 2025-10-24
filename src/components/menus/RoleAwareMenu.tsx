@@ -67,7 +67,7 @@ function buildMenu(p: Profile | null): {
       { label: "Staff", href: "/operator-admin/staff" },
       { label: "Types", href: "/admin/transport-types" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
-      { label: "White Label", href: "/operator/admin/white-label" },
+      { label: "White Label", href: "/operator-admin/white-label" },
     ]);
     return { role: "siteadmin", items };
   }
@@ -82,7 +82,7 @@ function buildMenu(p: Profile | null): {
       { label: "Vehicles", href: "/operator-admin/vehicles" },
     ];
     if (p.white_label_member) {
-      base.push({ label: "White Label", href: "/operator/admin/white-label" });
+      base.push({ label: "White Label", href: "/operator-admin/white-label" });
     }
     return { role: "operator", items: alpha(base) };
   }
