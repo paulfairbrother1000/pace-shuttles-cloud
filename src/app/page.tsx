@@ -1135,16 +1135,17 @@ const unitMinor =
 
               <section className="text-center pt-6">
                 <div className="relative w-full overflow-hidden rounded-2xl tile tile-border">
-                  <div className="aspect-[16/10] sm:aspect-[21/9]">
-                    <Image
-                      src={HERO_IMG_URL}
-                      alt="Pace Shuttle — luxury transfers"
-                      fill
-                      priority
-                      className="object-cover"
-                      sizes="100vw"
-                    />
-                  </div>
+                  <div className="aspect-[16/10] md:aspect-[16/8] xl:aspect-[21/9]">
+  <Image
+    src={HERO_IMG_URL}
+    alt="Pace Shuttle — luxury transfers"
+    fill
+    priority
+    className="object-cover md:object-[50%_20%]"
+    sizes="100vw"
+  />
+</div>
+
                 </div>
               </section>
 
