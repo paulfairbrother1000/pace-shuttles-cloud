@@ -460,7 +460,7 @@ function Inner(): JSX.Element {
               </a>{" "}
               and agree to be bound by them.
               <div id="tnc-help" className="text-xs text-neutral-600 mt-1">
-                No cancellations. Reschedule up to <strong>T-72</strong> (subject to availability) within <strong>12 months</strong>.
+               Cancellation can be made more than 3 days in advance of journey time without penalty.
               </div>
             </span>
           </label>
