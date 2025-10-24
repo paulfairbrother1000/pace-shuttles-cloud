@@ -50,6 +50,20 @@ function ensureImageUrl(input?: string | null): string | undefined {
   return `${base}/storage/v1/object/public/${key}`;
 }
 
+/* ---------- Tiny helpers for upload naming (matches vehicles style) ---------- */
+function slugify(s: string) {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+function extFromFilename(name: string) {
+  const m = name.match(/\.([a-z0-9]+)$/i);
+  return (m?.[1] || "jpg").toLowerCase();
+}
+
 export default function CountryEditPage({
   params,
 }: {
@@ -172,8 +186,9 @@ export default function CountryEditPage({
     }
   }
 
-  /* ---------- File upload handling ---------- */
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /* ---------- Upload (vehicles-style: no refs; reset via event) ---------- */
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
   async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
     if (!client) return;
@@ -187,13 +202,12 @@ export default function CountryEditPage({
     const MAX_MB = 8;
     if (!file.type.startsWith("image/")) {
       setErr("Please choose an image file.");
-      // reset input so picking the same file re-fires change
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      e.currentTarget.value = ""; // reset input
       return;
     }
     if (file.size > MAX_MB * 1024 * 1024) {
       setErr(`Image is too large (max ${MAX_MB}MB).`);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      e.currentTarget.value = ""; // reset input
       return;
     }
 
@@ -220,13 +234,11 @@ export default function CountryEditPage({
       const storageKey = `${BUCKET}/${objectPath}`;
       setRow((r) => ({ ...r, picture_url: storageKey }));
       setUploadMsg("Image uploaded. Preview updated.");
-
-      // Reset input so user can pick same file again if needed
-      if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
       setUploading(false);
+      e.currentTarget.value = ""; // allow re-selecting same file
     }
   }
 
@@ -312,7 +324,6 @@ export default function CountryEditPage({
                     </label>
                     <input
                       id="country-file-input"
-                      ref={fileInputRef}
                       type="file"
                       accept="image/*"
                       className="absolute inset-0 w-px h-px opacity-0"
@@ -324,6 +335,10 @@ export default function CountryEditPage({
                     Uploads to <code>{BUCKET}/{COUNTRY_DIR}</code> and fills the field above.
                   </span>
                 </div>
+
+                {uploadMsg && (
+                  <div className="text-xs text-emerald-600">{uploadMsg}</div>
+                )}
 
                 <div className="relative w-full overflow-hidden rounded-lg border bg-neutral-50">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
