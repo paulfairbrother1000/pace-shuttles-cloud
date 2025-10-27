@@ -1,4 +1,3 @@
-// src/app/support/error.tsx
 "use client";
 
 export default function Error({
