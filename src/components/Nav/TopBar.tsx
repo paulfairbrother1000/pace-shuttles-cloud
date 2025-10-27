@@ -1,8 +1,12 @@
-// src/components/Nav/TopBar.tsx  (inside the same file)
+// src/components/Nav/TopBar.tsx
 "use client";
+
+import Link from "next/link";
+import * as React from "react";
 import { useEffect } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
+/** --- your existing hook (unchanged) --- */
 function useHydratePsUserCache() {
   useEffect(() => {
     const supa =
@@ -55,12 +59,11 @@ function useHydratePsUserCache() {
         operator_admin: !!userRow.operator_admin,
         operator_id: userRow.operator_id ?? null,
         operator_name,
-        white_label_member, // <- NEW: used by the menu
+        white_label_member, // <- used by menus
       };
 
       if (!cancelled) {
         localStorage.setItem("ps_user", JSON.stringify(payload));
-        // helpful for the /account page you use for debugging
         window.dispatchEvent(new Event("ps_user:updated"));
       }
     }
@@ -75,7 +78,54 @@ function useHydratePsUserCache() {
   }, []);
 }
 
-export default function TopBar(props: { userName?: string | null; homeHref: string; accountHref: string }) {
-  useHydratePsUserCache();
-  // ...rest of your existing TopBar (unchanged styles/structure)
+/** Signed-in check that matches RoleAwareMenu’s logic */
+function useSignedInFromCache() {
+  const [signedIn, setSignedIn] = React.useState(false);
+  useEffect(() => {
+    const read = () => {
+      try {
+        const raw = localStorage.getItem("ps_user");
+        if (!raw) return false;
+        const u = JSON.parse(raw);
+        return Boolean(u?.id || u?.user_id || u?.email || u?.session || u?.token || u?.role);
+      } catch {
+        return false;
+      }
+    };
+    setSignedIn(read());
+    const onUpd = () => setSignedIn(read());
+    window.addEventListener("ps_user:updated", onUpd);
+    return () => window.removeEventListener("ps_user:updated", onUpd);
+  }, []);
+  return signedIn;
+}
+
+/** Right-side links: Home · (Chat|Support) · (Login|Account) */
+function RightLinks() {
+  const signedIn = useSignedInFromCache();
+  return (
+    <div className="ml-auto flex items-center gap-6">
+      <Link href="/">Home</Link>
+      {signedIn ? <Link href="/support">Support</Link> : <Link href="/chat">Chat</Link>}
+      {signedIn ? <Link href="/account">Account</Link> : <Link href="/login">Login</Link>}
+    </div>
+  );
+}
+
+/** Exported TopBar component */
+export default function TopBar(props: { userName?: string | null; homeHref?: string; accountHref?: string }) {
+  useHydratePsUserCache(); // keep your local cache in sync
+
+  // If your original TopBar had more structure/branding, keep it; we just add RightLinks.
+  return (
+    <header className="w-full border-b border-gray-200">
+      <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-4">
+        {/* Left: brand/whatever you already render */}
+        <Link href="/" className="font-semibold">Pace Shuttles</Link>
+
+        {/* Right: Home · (Chat|Support) · (Login|Account) */}
+        <RightLinks />
+      </nav>
+    </header>
+  );
 }

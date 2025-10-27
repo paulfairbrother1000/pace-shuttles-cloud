@@ -13,7 +13,6 @@ type Profile = {
 };
 
 type Props = {
-  /** If you already pass a profile, we’ll use it; otherwise we read ps_user. */
   profile?: Profile | null;
   loading?: boolean;
 };
@@ -29,7 +28,6 @@ function readPsUserRaw(): any | null {
   }
 }
 
-// Signed-in heuristic for this client-only menu: presence of ps_user with common hints.
 function isSignedInFromCache(): boolean {
   try {
     if (typeof window === "undefined") return false;
@@ -41,7 +39,6 @@ function isSignedInFromCache(): boolean {
   }
 }
 
-// Crew hint (kept from your original logic)
 function isCrewFromCache(): boolean {
   try {
     if (typeof window === "undefined") return false;
@@ -71,21 +68,19 @@ function alpha<T extends { label: string }>(arr: T[]) {
 
 function buildMenu(p: Profile | null): {
   role: "guest" | "client" | "crew" | "operator" | "siteadmin";
-  items: { label: string; href: string }[];
+  burgerItems: { label: string; href: string }[]; // alpha-sorted, includes Chat/Support
 } {
   const signedIn = isSignedInFromCache();
 
-  // For anonymous users: show Chat only (general Q&A)
-  if (!signedIn) {
-    return { role: "guest", items: [{ label: "Chat", href: "/chat" }] };
-  }
-
-  // Common links for any signed-in user: switch Chat → Support
-  const common: { label: string; href: string }[] = [{ label: "Support", href: "/support" }];
+  // Base link: Chat (guest) or Support (signed-in)
+  const base = signedIn
+    ? [{ label: "Support", href: "/support" }]
+    : [{ label: "Chat", href: "/chat" }];
 
   // SITE ADMIN
   if (p?.site_admin) {
     const roleSpecific = [
+      { label: "Admin Support", href: "/admin/support" },
       { label: "Bookings", href: "/operator/admin" },
       { label: "Countries", href: "/admin/countries" },
       { label: "Destinations", href: "/admin/destinations" },
@@ -97,23 +92,22 @@ function buildMenu(p: Profile | null): {
       { label: "Types", href: "/admin/transport-types" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
       { label: "White Label", href: "/operator-admin/white-label" },
-      { label: "Admin Support", href: "/admin/support" },
     ];
-    return { role: "siteadmin", items: [...common, ...alpha(roleSpecific)] };
+    return { role: "siteadmin", burgerItems: alpha([...base, ...roleSpecific]) };
   }
 
   // OPERATOR ADMIN
   if (p?.operator_admin) {
     const roleSpecific = [
       { label: "Bookings", href: "/operator/admin" },
+      { label: "Operator Support", href: "/operator/support" },
       { label: "Reports", href: "/operator/admin/reports" },
       { label: "Routes", href: "/operator-admin/routes" },
       { label: "Staff", href: "/operator-admin/staff" },
       { label: "Vehicles", href: "/operator-admin/vehicles" },
       ...(p.white_label_member ? [{ label: "White Label", href: "/operator-admin/white-label" }] : []),
-      { label: "Operator Support", href: "/operator/support" },
     ];
-    return { role: "operator", items: [...common, ...alpha(roleSpecific)] };
+    return { role: "operator", burgerItems: alpha([...base, ...roleSpecific]) };
   }
 
   // CREW
@@ -122,21 +116,20 @@ function buildMenu(p: Profile | null): {
       { label: "Bookings", href: "/crew/account" },
       { label: "Reports", href: "/crew/reports" }, // placeholder
     ];
-    return { role: "crew", items: [...common, ...alpha(roleSpecific)] };
+    return { role: "crew", burgerItems: alpha([...base, ...roleSpecific]) };
   }
 
-  // Signed-in client (no special role): Support only
-  return { role: "client", items: [...common] };
+  // CLIENT (signed in, no special role) → just Support
+  if (signedIn) {
+    return { role: "client", burgerItems: alpha([...base]) };
+  }
+
+  // Guest → just Chat
+  return { role: "guest", burgerItems: alpha([...base]) };
 }
 
 /* ------------------------------- component ------------------------------- */
 
-/**
- * Renders role-aware nav:
- * - Guests: show Chat (general Q&A).
- * - Signed-in clients: Support (account-aware).
- * - Operator/Site Admin/Crew: Support + their extra links; also Operator/Admin Support pages.
- */
 export default function RoleAwareMenu({ profile, loading }: Props) {
   const [open, setOpen] = React.useState(false);
   const [cache, setCache] = React.useState<Profile | null>(() => profile ?? readPsUser());
@@ -150,94 +143,77 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
   }, [profile]);
 
   const effective = profile ?? cache;
-  const { role, items } = React.useMemo(() => buildMenu(effective), [effective]);
+  const { role, burgerItems } = React.useMemo(() => buildMenu(effective), [effective]);
 
-  if (items.length === 0) return null;
+  // ✅ IMPORTANT: no burger for anonymous users
+  if (role === "guest") return null;
 
-  const roleLabel =
-    loading ? "Loading…" :
-    role === "siteadmin" ? "Site Admin" :
-    role === "operator" ? "Operator Admin" :
-    role === "crew" ? "Crew" :
-    role === "client" ? "Client" :
-    "Guest";
-
+  // Desktop rendering of Chat/Support is handled in TopBar (between Home and Login).
+  // Here we only render the mobile burger.
   return (
-    <>
-      {/* Desktop: inline links */}
-      <nav className="hidden md:flex items-center gap-4">
-        {items.map((it) => (
-          <Link
-            key={`${it.label}-${it.href}`}
-            href={it.href}
-            className="text-sm text-neutral-700 hover:text-black"
+    <div className="md:hidden">
+      {/* If there's only one item, a simple inline link is fine. */}
+      {burgerItems.length <= 1 ? (
+        <Link href={burgerItems[0].href} className="text-sm">
+          {burgerItems[0].label}
+        </Link>
+      ) : (
+        <>
+          <button
+            aria-label="Open menu"
+            onClick={() => setOpen(true)}
+            className="inline-flex items-center justify-center w-9 h-9"
           >
-            {it.label}
-          </Link>
-        ))}
-      </nav>
+            <span
+              aria-hidden
+              className="relative block w-6 h-[2px] bg-current before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-current before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-current after:translate-y-2"
+            />
+          </button>
 
-      {/* Mobile: burger if there are multiple items (roles) — else simple inline link is enough */}
-      <div className="md:hidden">
-        {items.length <= 1 ? (
-          // Just a single link (Chat for guest, Support for simple client)
-          <Link href={items[0].href} className="text-sm">
-            {items[0].label}
-          </Link>
-        ) : (
-          <>
-            <button
-              aria-label="Open menu"
-              onClick={() => setOpen(true)}
-              className="inline-flex items-center justify-center w-9 h-9"
-            >
-              <span
-                aria-hidden
-                className="relative block w-6 h-[2px] bg-current before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-current before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-current after:translate-y-2"
-              />
-            </button>
-
-            {open && (
-              <div className="fixed inset-0 z-[60]">
-                <div
-                  className="absolute inset-0 bg-black/40"
-                  onClick={() => setOpen(false)}
-                  aria-hidden
-                />
-                <aside
-                  className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
-                  role="dialog"
-                  aria-label="Main menu"
-                >
-                  <div className="flex items-center justify-between px-4 py-3 border-b">
-                    <div className="font-medium">{roleLabel}</div>
-                    <button
-                      aria-label="Close menu"
-                      className="w-9 h-9"
-                      onClick={() => setOpen(false)}
-                    >
-                      <span
-                        aria-hidden
-                        className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
-                      />
-                    </button>
+          {open && (
+            <div className="fixed inset-0 z-[60]">
+              <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} aria-hidden />
+              <aside
+                className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
+                role="dialog"
+                aria-label="Main menu"
+              >
+                <div className="flex items-center justify-between px-4 py-3 border-b">
+                  <div className="font-medium">
+                    {loading
+                      ? "Loading…"
+                      : role === "siteadmin"
+                      ? "Site Admin"
+                      : role === "operator"
+                      ? "Operator Admin"
+                      : role === "crew"
+                      ? "Crew"
+                      : role === "client"
+                      ? "Client"
+                      : "Guest"}
                   </div>
+                  <button aria-label="Close menu" className="w-9 h-9" onClick={() => setOpen(false)}>
+                    <span
+                      aria-hidden
+                      className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
+                    />
+                  </button>
+                </div>
 
-                  <nav className="px-5 py-4 space-y-6 text-lg">
-                    {items.map((it) => (
-                      <div key={it.href}>
-                        <Link href={it.href} onClick={() => setOpen(false)}>
-                          {it.label}
-                        </Link>
-                      </div>
-                    ))}
-                  </nav>
-                </aside>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </>
+                <nav className="px-5 py-4 space-y-6 text-lg">
+                  {burgerItems.map((it) => (
+                    <div key={it.href}>
+                      <Link href={it.href} onClick={() => setOpen(false)}>
+                        {it.label}
+                      </Link>
+                    </div>
+                  ))}
+                </nav>
+              </aside>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
