@@ -22,9 +22,7 @@ export default function CreateTicketForm() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setOk(`Created #${data.ticketId}`);
-        setSubject("");
-        setBody("");
-        setBookingRef("");
+        setSubject(""); setBody(""); setBookingRef("");
       } else {
         setOk(data.error || "Failed");
       }
@@ -56,11 +54,7 @@ export default function CreateTicketForm() {
         onChange={(e) => setBookingRef(e.target.value)}
       />
       <div className="flex gap-2 items-center">
-        <Button
-          onClick={submit}
-          disabled={busy}
-          className="bg-[#2a6cd6] text-white hover:opacity-90"
-        >
+        <Button onClick={submit} disabled={busy} className="bg-[#2a6cd6] text-white hover:opacity-90">
           {busy ? "Submitting…" : "Submit"}
         </Button>
         {ok && <span className="text-sm text-[#a3b3cc]">{ok}</span>}
