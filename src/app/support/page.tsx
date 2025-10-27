@@ -3,22 +3,24 @@ import React from "react";
 import { headers } from "next/headers";
 import dynamic from "next/dynamic";
 
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+// ⬅️ Use YOUR existing components path (capital C) to avoid module-not-found
+import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
 
-// ✅ Make these client-only to avoid SSR crashes from browser-only code
+import TicketListWrapperOrig from "@/components/support/TicketListWrapper";
+import ChatPanelWrapperOrig from "@/components/support/ChatPanelWrapper";
+import { getSupabaseServer } from "@/lib/supabaseServer";
+
+export const dynamic = "force-dynamic"; // don't cache, always respect cookies
+
+// ✅ Make wrappers client-only to avoid any SSR-only crashes inside them
 const ChatPanelWrapper = dynamic(
-  () => import("@/components/support/ChatPanelWrapper"),
+  async () => ChatPanelWrapperOrig,
   { ssr: false }
 );
 const TicketListWrapper = dynamic(
-  () => import("@/components/support/TicketListWrapper"),
+  async () => TicketListWrapperOrig,
   { ssr: false }
 );
-
-import { getSupabaseServerSafe } from "@/lib/supabaseServerSafe";
-
-export const dynamic = "force-dynamic"; // always respect cookies
 
 async function fetchTicketsSafe(): Promise<any[]> {
   try {
@@ -33,23 +35,23 @@ async function fetchTicketsSafe(): Promise<any[]> {
     const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
     if (!res.ok) return [];
     return (await res.json()) ?? [];
-  } catch (err) {
-    console.error("tickets/list fetch failed", err);
+  } catch {
     return [];
   }
 }
 
 export default async function Page() {
   // ---- Resolve session safely (never throw)
-  const sb = getSupabaseServerSafe();
   let user: { id: string; email?: string | null } | null = null;
   try {
+    const sb = getSupabaseServer();
     const { data, error } = await sb.auth.getUser();
     if (!error && data?.user) {
       user = { id: data.user.id, email: data.user.email ?? null };
     }
-  } catch (err) {
-    console.error("getUser failed", err);
+  } catch {
+    // treat as signed-out if anything goes wrong resolving session
+    user = null;
   }
 
   // ---- Signed-out view
@@ -139,8 +141,7 @@ function CreateTicketForm() {
       } else {
         setOk(data.error || "Failed");
       }
-    } catch (err) {
-      console.error("create ticket failed", err);
+    } catch {
       setOk("Failed");
     } finally {
       setBusy(false);
