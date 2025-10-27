@@ -1,40 +1,33 @@
 // src/app/support/page.tsx
 
-
-
 import React from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
-import dynamic from "next/dynamic";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
-
 
 async function fetchTickets() {
   try {
     const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
     const res = await fetch(`${base}/api/tickets/list`, {
       cache: "no-store",
-      // Next 13+/15 hint to avoid caching on the server
       next: { revalidate: 0 },
     });
     if (!res.ok) return [];
     return await res.json();
   } catch {
-    // avoid throwing SSR errors on /support
     return [];
   }
 }
 
-export default function Page() {
+export default async function Page() {
   const sb = getSupabaseServer();
   const {
     data: { user },
   } = await sb.auth.getUser();
 
   if (!user) {
-    // Keep your existing signed-out view
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#0f1a2a] text-[#eaf2ff] p-6">
         <div className="max-w-2xl mx-auto">
@@ -66,13 +59,13 @@ export default function Page() {
           </a>
         </div>
 
-        {/* ⬇️ Added: branded chat for signed-in users (no “please sign in” line) */}
-        <ChatPanel mode="signed" />
+        {/* Chat panel (client-only via wrapper) */}
+        <ChatPanelWrapper mode="signed" />
 
-        {/* Your existing tickets list */}
+        {/* Tickets list */}
         <TicketList title="My tickets" tickets={tickets as any[]} />
 
-        {/* Your existing create ticket card */}
+        {/* Create ticket */}
         <CreateTicket />
       </div>
     </main>
@@ -92,7 +85,8 @@ function CreateTicket() {
   );
 }
 
-// client subform
+// NOTE: This inline client component pattern has worked for you previously.
+// If Next ever complains, we can move this into its own file.
 function CreateTicketForm() {
   "use client";
   const [subject, setSubject] = React.useState("");
