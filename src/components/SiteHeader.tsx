@@ -210,14 +210,12 @@ export default function SiteHeader(): JSX.Element {
       <div className="bar flex items-center justify-between">
         {/* LEFT: burger (mobile) + brand; desktop unchanged */}
         <div className="relative flex items-center gap-3 flex-1">
-          {/* Role-aware menu:
-              - Mobile: burger (inside component: md:hidden)
-              - Desktop: inline links (inside component: hidden md:flex) */}
+          {/* Role-aware menu */}
           <div className="shrink-0">
             <RoleAwareMenu profile={profile} loading={loading} />
           </div>
 
-          {/* Brand: absolutely centered on mobile, normal on desktop */}
+          {/* Brand */}
           <div className="absolute left-1/2 -translate-x-1/2 md:static md:translate-x-0">
             <Link href="/" className="brand font-semibold">
               Pace Shuttles
@@ -225,11 +223,22 @@ export default function SiteHeader(): JSX.Element {
           </div>
         </div>
 
-        {/* RIGHT: Pills — keep only Home and Account/Login */}
+        {/* RIGHT: Pills — Home · (Chat|Support) · (Login|Account) */}
         <nav className="flex items-center gap-2">
           <Link href="/" className="pill active text-sm">
             Home
           </Link>
+
+          {/* ⬇️ Added: Chat for anonymous, Support for signed-in */}
+          {authEmail ? (
+            <Link href="/support" className="pill text-sm">
+              Support
+            </Link>
+          ) : (
+            <Link href="/chat" className="pill text-sm">
+              Chat
+            </Link>
+          )}
 
           {authEmail ? (
             <Link href="/account" className="pill active text-sm" title={authEmail}>
