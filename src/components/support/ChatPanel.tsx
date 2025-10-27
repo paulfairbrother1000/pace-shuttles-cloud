@@ -1,93 +1,127 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
 
-type Message = { role: "user" | "agent"; content: string };
+import * as React from "react";
+import Link from "next/link";
 
-export default function ChatPanel({ authed }: { authed: boolean }) {
-  const [messages, setMessages] = useState<Message[]>([
+type Msg = { role: "user" | "assistant"; content: string; at: number };
+
+export default function ChatPanel() {
+  const [messages, setMessages] = React.useState<Msg[]>([
     {
-      role: "agent",
-      content: authed
-        ? "Hi! I can answer general questions and also help with your bookings. How can I help today?"
-        : "Hi! I can answer general questions about routes, journeys, and policies. To discuss your bookings, please sign in.",
+      role: "assistant",
+      content:
+        "Hi! I can answer general questions about routes, journeys, and policies. To discuss your bookings, please sign in.",
+      at: Date.now(),
     },
   ]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  const [input, setInput] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
 
   async function send() {
-    if (!input.trim()) return;
-    const newMsgs = [...messages, { role: "user", content: input } as Message];
-    setMessages(newMsgs);
+    const text = input.trim();
+    if (!text) return;
     setInput("");
+
+    // render user bubble immediately
+    const me: Msg = { role: "user", content: text, at: Date.now() };
+    setMessages((m) => [...m, me]);
+
     setBusy(true);
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: input }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text }),
       });
-      const data = await res.json();
-      const text = data?.content || "Sorry, I didn’t get that.";
-      setMessages([...newMsgs, { role: "agent", content: text }]);
+      const json = await res.json().catch(() => ({}));
+      const assistantText: string =
+        // prefer a helpful reply; do NOT repeat the user’s text
+        json?.content && typeof json.content === "string"
+          ? json.content
+          : "Thanks! I can help with routes, pickup points, booking policies and using the Pace app. If your question is about your bookings or journey history, please sign in first.";
+
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: assistantText, at: Date.now() },
+      ]);
     } catch {
-      setMessages([...newMsgs, { role: "agent", content: "Something went wrong. Please try again." }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content:
+            "Sorry—something went wrong. Please try again, or sign in for booking help.",
+          at: Date.now(),
+        },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!busy) void send();
+    }
+  }
+
   return (
-    <Card className="max-w-3xl w-full mx-auto">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Pace Support</h2>
-          {!authed && (
-            <a href="/login" className="text-sm text-blue-600 hover:underline">
-              Sign in for booking help
-            </a>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3 max-h-[60vh] overflow-auto">
-          {messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`px-3 py-2 rounded-2xl text-sm whitespace-pre-line ${
-                  m.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100"
-                }`}
-              >
-                {m.content}
-              </div>
-            </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
-        <form
-          className="mt-3 flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
+    <div className="w-full max-w-2xl rounded-2xl shadow-md border border-gray-200 overflow-hidden bg-white">
+      {/* Branded header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-[#0f1a2a] text-white">
+        <div className="font-semibold">Pace Support</div>
+        <Link
+          href="/login"
+          className="text-xs underline underline-offset-2 hover:opacity-90"
         >
+          Sign in for booking help
+        </Link>
+      </div>
+
+      {/* Transcript */}
+      <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto bg-[color-mix(in_oklab,_#0f1a2a_3%,_white)]">
+        {messages.map((m) => (
+          <div
+            key={m.at}
+            className={
+              m.role === "user"
+                ? "flex justify-end"
+                : "flex justify-start"
+            }
+          >
+            <div
+              className={
+                m.role === "user"
+                  ? "rounded-full px-3 py-2 text-white bg-[#2a6cd6]"
+                  : "rounded-2xl px-3 py-2 text-gray-800 bg-white border border-gray-100"
+              }
+            >
+              {m.content}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Composer */}
+      <div className="p-4 border-t border-gray-200 bg-white">
+        <div className="flex items-center gap-2">
           <input
-            className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm"
-            placeholder="Type your question…"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKey}
+            placeholder="Type your question…"
+            className="flex-1 rounded-xl px-3 py-2 border border-gray-300 outline-none focus:border-[#2a6cd6] focus:ring-2 focus:ring-[#2a6cd6]/30"
           />
-          <Button type="submit" className="bg-blue-600 text-white border-blue-600 hover:bg-blue-700">
-            {busy ? "Sending…" : "Send"}
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+          <button
+            onClick={send}
+            disabled={busy || !input.trim()}
+            className="rounded-xl px-3 py-2 bg-[#2a6cd6] text-white disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
