@@ -1,20 +1,27 @@
 // src/app/support/page.tsx
 import React from "react";
 import { headers } from "next/headers";
+import dynamic from "next/dynamic";
 
-// ✅ shadcn/ui imports must be lower-case file paths
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-import TicketListWrapper from "@/components/support/TicketListWrapper";
-import { getSupabaseServer } from "@/lib/supabaseServer";
-import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
+// ✅ Make these client-only to avoid SSR crashes from browser-only code
+const ChatPanelWrapper = dynamic(
+  () => import("@/components/support/ChatPanelWrapper"),
+  { ssr: false }
+);
+const TicketListWrapper = dynamic(
+  () => import("@/components/support/TicketListWrapper"),
+  { ssr: false }
+);
 
-export const dynamic = "force-dynamic"; // don't cache, always respect cookies
+import { getSupabaseServerSafe } from "@/lib/supabaseServerSafe";
+
+export const dynamic = "force-dynamic"; // always respect cookies
 
 async function fetchTicketsSafe(): Promise<any[]> {
   try {
-    // Build an absolute URL for server-side fetch (works on Vercel)
     const h = headers();
     const proto = h.get("x-forwarded-proto") || "https";
     const host = h.get("x-forwarded-host") || h.get("host") || "";
@@ -26,23 +33,23 @@ async function fetchTicketsSafe(): Promise<any[]> {
     const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
     if (!res.ok) return [];
     return (await res.json()) ?? [];
-  } catch {
+  } catch (err) {
+    console.error("tickets/list fetch failed", err);
     return [];
   }
 }
 
 export default async function Page() {
-  // ---- Resolve session safely
+  // ---- Resolve session safely (never throw)
+  const sb = getSupabaseServerSafe();
   let user: { id: string; email?: string | null } | null = null;
   try {
-    const sb = getSupabaseServer();
     const { data, error } = await sb.auth.getUser();
     if (!error && data?.user) {
       user = { id: data.user.id, email: data.user.email ?? null };
     }
-  } catch {
-    // treat as signed-out if anything goes wrong resolving session
-    user = null;
+  } catch (err) {
+    console.error("getUser failed", err);
   }
 
   // ---- Signed-out view
@@ -105,7 +112,7 @@ function CreateTicket() {
   );
 }
 
-// Inline client subform (kept as before)
+// Inline client subform
 function CreateTicketForm() {
   "use client";
   const [subject, setSubject] = React.useState("");
@@ -132,7 +139,8 @@ function CreateTicketForm() {
       } else {
         setOk(data.error || "Failed");
       }
-    } catch {
+    } catch (err) {
+      console.error("create ticket failed", err);
       setOk("Failed");
     } finally {
       setBusy(false);
