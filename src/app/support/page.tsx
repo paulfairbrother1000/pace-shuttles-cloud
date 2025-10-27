@@ -1,8 +1,7 @@
 // src/app/support/page.tsx
 
 import React from "react";
-import { Card, CardContent, CardHeader } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
