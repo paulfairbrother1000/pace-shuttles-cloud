@@ -1,7 +1,11 @@
 // src/app/support/page.tsx
 import React from "react";
 import { headers } from "next/headers";
-import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
+
+// ✅ shadcn/ui imports must be lower-case file paths
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
 import TicketListWrapper from "@/components/support/TicketListWrapper";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
@@ -33,7 +37,9 @@ export default async function Page() {
   try {
     const sb = getSupabaseServer();
     const { data, error } = await sb.auth.getUser();
-    if (!error && data?.user) user = { id: data.user.id, email: data.user.email ?? null };
+    if (!error && data?.user) {
+      user = { id: data.user.id, email: data.user.email ?? null };
+    }
   } catch {
     // treat as signed-out if anything goes wrong resolving session
     user = null;
