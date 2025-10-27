@@ -1,31 +1,45 @@
 // src/app/support/page.tsx
-
 import React from "react";
+import { headers } from "next/headers";
 import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
 
-async function fetchTickets() {
+export const dynamic = "force-dynamic"; // don't cache, always respect cookies
+
+async function fetchTicketsSafe(): Promise<any[]> {
   try {
-    const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
-    const res = await fetch(`${base}/api/tickets/list`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    // Build an absolute URL for server-side fetch (works on Vercel)
+    const h = headers();
+    const proto = h.get("x-forwarded-proto") || "https";
+    const host = h.get("x-forwarded-host") || h.get("host") || "";
+    const base =
+      process.env.NEXT_PUBLIC_BASE_URL?.trim() ||
+      (host ? `${proto}://${host}` : "");
+    const url = `${base}/api/tickets/list`;
+
+    const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
     if (!res.ok) return [];
-    return await res.json();
+    return (await res.json()) ?? [];
   } catch {
     return [];
   }
 }
 
 export default async function Page() {
-  const sb = getSupabaseServer();
-  const {
-    data: { user },
-  } = await sb.auth.getUser();
+  // ---- Resolve session safely
+  let user: { id: string; email?: string | null } | null = null;
+  try {
+    const sb = getSupabaseServer();
+    const { data, error } = await sb.auth.getUser();
+    if (!error && data?.user) user = { id: data.user.id, email: data.user.email ?? null };
+  } catch {
+    // treat as signed-out if anything goes wrong resolving session
+    user = null;
+  }
 
+  // ---- Signed-out view
   if (!user) {
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#0f1a2a] text-[#eaf2ff] p-6">
@@ -46,7 +60,8 @@ export default async function Page() {
     );
   }
 
-  const tickets = await fetchTickets();
+  // ---- Signed-in view
+  const tickets = await fetchTicketsSafe();
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-[#0f1a2a] text-[#eaf2ff] p-4 md:p-6">
@@ -58,7 +73,7 @@ export default async function Page() {
           </a>
         </div>
 
-        {/* Chat panel (client-only via wrapper) */}
+        {/* Client-only chat */}
         <ChatPanelWrapper mode="signed" />
 
         {/* Tickets list */}
@@ -84,7 +99,7 @@ function CreateTicket() {
   );
 }
 
-// Inline client subform
+// Inline client subform (kept as before)
 function CreateTicketForm() {
   "use client";
   const [subject, setSubject] = React.useState("");
