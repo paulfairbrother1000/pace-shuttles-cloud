@@ -16,18 +16,14 @@
     "isolatedModules": true,
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
-
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],          // preferred form
-      "@/src/*": ["src/*"],      // backward-compat for imports like "@/src/components/..."
-      "@/lib/*": ["lib/*"],      // your root-level lib/
-      "@/src/lib/*": ["lib/*"]   // backward-compat for "@/src/lib/supabaseServer"
+      "@/*": ["src/*"],
+      "@/src/*": ["src/*"]   // optional; safe to keep or remove
     },
-
     "types": ["node"],
     "plugins": [{ "name": "next" }]
   },
-  "include": ["next-env.d.ts", "src/**/*", "lib/**/*", ".next/types/**/*.ts"],
+  "include": ["next-env.d.ts", "src/**/*", ".next/types/**/*.ts"],
   "exclude": ["node_modules", ".next", "dist"]
 }
