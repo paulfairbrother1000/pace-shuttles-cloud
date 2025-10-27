@@ -1,14 +1,34 @@
 // src/app/support/page.tsx
 import React from "react";
-import dynamic from "next/dynamic";
+import nextDynamic from "next/dynamic"; // ← renamed to avoid clashing with export const dynamic
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 
-export const dynamic = "force-dynamic"; // always respect cookies
+export const dynamic = "force-dynamic"; // route option (ok now, no name clash)
 
 // Client-only components so SSR never executes browser code
-const ChatPanelWrapper = dynamic(() => import("@/components/support/ChatPanelWrapper"), { ssr: false });
-const TicketListWrapper = dynamic(() => import("@/components/support/TicketListWrapper"), { ssr: false });
-const CreateTicketForm = dynamic(() => import("@/components/support/CreateTicketForm"), { ssr: false });
+const ChatPanelWrapper = nextDynamic(
+  () =>
+    import("@/components/support/ChatPanelWrapper").then(
+      (m) => m.default ?? m.ChatPanelWrapper
+    ),
+  { ssr: false }
+);
+
+const TicketListWrapper = nextDynamic(
+  () =>
+    import("@/components/support/TicketListWrapper").then(
+      (m) => m.default ?? m.TicketListWrapper
+    ),
+  { ssr: false }
+);
+
+const CreateTicketForm = nextDynamic(
+  () =>
+    import("@/components/support/CreateTicketForm").then(
+      (m) => m.default ?? m.CreateTicketForm
+    ),
+  { ssr: false }
+);
 
 export default async function Page() {
   // 🔑 Import the Supabase helper lazily to avoid module-init side effects
