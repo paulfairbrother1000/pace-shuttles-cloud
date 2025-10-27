@@ -1,4 +1,8 @@
 // src/app/support/page.tsx
+
+"use client";
+
+
 import React from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,7 +27,7 @@ async function fetchTickets() {
   }
 }
 
-export default async function Page() {
+export default function Page() {
   const sb = getSupabaseServer();
   const {
     data: { user },
