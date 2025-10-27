@@ -7,20 +7,25 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "moduleDetection": "force",
     "jsx": "preserve",
+    "verbatimModuleSyntax": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
+
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@/lib/*": ["lib/*"]        // <— lets you import "@/lib/supabaseServer" from /lib
     },
+
     "types": ["node"],
     "plugins": [{ "name": "next" }]
   },
-  "include": ["next-env.d.ts", "src/**/*", ".next/types/**/*.ts"],
+  "include": ["next-env.d.ts", "src/**/*", "lib/**/*", ".next/types/**/*.ts"],
   "exclude": ["node_modules", ".next", "dist"]
 }

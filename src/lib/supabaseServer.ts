@@ -59,3 +59,6 @@ export function supabaseService(): SupabaseClient {
 
 /** Optional convenience export for places that just need the admin client. */
 // export const sbAdmin = supabaseService();
+
+// at the bottom of /lib/supabaseServer.ts (or src/lib/supabaseServer.ts)
+export const getSupabaseServer = supabaseServer;
