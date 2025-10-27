@@ -3,11 +3,11 @@ import React from "react";
 import { headers } from "next/headers";
 import dynamic from "next/dynamic";
 
-// Keep YOUR existing capitalised UI paths (your repo has Card.tsx/Button.tsx)
-import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
+// Keep YOUR existing path/casing for the shared UI file
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
+// ⬆️ Note: We intentionally do NOT import Button here to avoid any circular re-exports
 
-// ❌ Do NOT import the wrappers at top-level (that can pull client code into SSR)
-// ✅ Dynamic imports ensure they only run on the client
+// Load wrappers client-side only to prevent SSR from touching browser-only code
 const ChatPanelWrapper = dynamic(
   () => import("@/components/support/ChatPanelWrapper"),
   { ssr: false }
@@ -19,7 +19,7 @@ const TicketListWrapper = dynamic(
 
 import { getSupabaseServer } from "@/lib/supabaseServer";
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic"; // respect cookies; no static caching
 
 async function fetchTicketsSafe(): Promise<any[]> {
   try {
@@ -41,7 +41,7 @@ async function fetchTicketsSafe(): Promise<any[]> {
 }
 
 export default async function Page() {
-  // ---- Resolve session safely (never throw)
+  // Resolve session safely; never throw during SSR
   let user: { id: string; email?: string | null } | null = null;
   try {
     const sb = getSupabaseServer();
@@ -54,7 +54,7 @@ export default async function Page() {
     user = null;
   }
 
-  // ---- Signed-out view
+  // Signed-out view
   if (!user) {
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#0f1a2a] text-[#eaf2ff] p-6">
@@ -75,7 +75,7 @@ export default async function Page() {
     );
   }
 
-  // ---- Signed-in view
+  // Signed-in view
   const tickets = await fetchTicketsSafe();
 
   return (
@@ -170,12 +170,13 @@ function CreateTicketForm() {
         onChange={(e) => setBookingRef(e.target.value)}
       />
       <div className="flex gap-2 items-center">
-        <Button
+        <button
           onClick={submit}
-          className="bg-[#2a6cd6] text-white border-[#2a6cd6] hover:bg-[#2a6cd6]/90"
+          disabled={busy}
+          className="px-4 py-2 rounded-lg border bg-[#2a6cd6] text-white hover:opacity-90 disabled:opacity-60"
         >
           {busy ? "Submitting…" : "Submit"}
-        </Button>
+        </button>
         {ok && <span className="text-sm text-[#a3b3cc]">{ok}</span>}
       </div>
     </div>
