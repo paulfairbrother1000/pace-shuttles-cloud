@@ -1,43 +1,35 @@
-// src/app/support/SupportClient.tsx
 "use client";
 
 import dynamic from "next/dynamic";
 import React from "react";
 
-// Robust to default OR named exports; no ssr flag needed in a client component
+// Import the *shim* files dynamically (they always default-export a component)
 const ChatPanelWrapper = dynamic(
-  () =>
-    import("@/components/support/ChatPanelWrapper").then(
-      (m) => m.default ?? m.ChatPanelWrapper
-    )
+  () => import("@/components/support/dynamic/ChatPanelWrapper.dynamic"),
+  { loading: () => <div className="opacity-70 text-sm">Loading chat…</div> }
 );
+
 const TicketListWrapper = dynamic(
-  () =>
-    import("@/components/support/TicketListWrapper").then(
-      (m) => m.default ?? m.TicketListWrapper
-    )
+  () => import("@/components/support/dynamic/TicketListWrapper.dynamic"),
+  { loading: () => <div className="opacity-70 text-sm">Loading tickets…</div> }
 );
+
 const CreateTicketForm = dynamic(
-  () =>
-    import("@/components/support/CreateTicketForm").then(
-      (m) => m.default ?? m.CreateTicketForm
-    )
+  () => import("@/components/support/dynamic/CreateTicketForm.dynamic"),
+  { loading: () => <div className="opacity-70 text-sm">Loading form…</div> }
 );
 
 export default function SupportClient() {
   return (
     <>
-      {/* Client-only chat */}
       <div className="mt-4">
         <ChatPanelWrapper mode="signed" />
       </div>
 
-      {/* Tickets list (fetch inside the wrapper client-side) */}
       <div className="mt-4">
         <TicketListWrapper title="My tickets" tickets={[]} />
       </div>
 
-      {/* Create ticket */}
       <div id="create" className="mt-4">
         <CreateTicketForm />
       </div>
