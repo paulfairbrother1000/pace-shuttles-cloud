@@ -55,6 +55,7 @@ export default function SiteHeader(): JSX.Element {
         | null
     ) => {
       if (!supabase) {
+        localStorage.removeItem("ps_user");
         setAuthEmail(null);
         setProfile(null);
         setLoading(false);
@@ -131,6 +132,7 @@ export default function SiteHeader(): JSX.Element {
     (async () => {
       setLoading(true);
       if (!supabase) {
+        localStorage.removeItem("ps_user");
         setAuthEmail(null);
         setProfile(null);
         setLoading(false);
@@ -159,6 +161,10 @@ export default function SiteHeader(): JSX.Element {
     profile?.first_name?.trim() ||
     (authEmail ? authEmail.split("@")[0] : "") ||
     "";
+
+  // ✅ single source of truth for role presence
+  const hasRole =
+    !!profile?.site_admin || !!profile?.operator_admin || !!profile?.operator_id;
 
   return (
     <header className="ps-header">
@@ -208,11 +214,20 @@ export default function SiteHeader(): JSX.Element {
       `}</style>
 
       <div className="bar flex items-center justify-between">
-        {/* LEFT: burger (mobile) + brand; desktop unchanged */}
+        {/* LEFT: burger (mobile) + brand; desktop shows role bar */}
         <div className="relative flex items-center gap-3 flex-1">
-          {/* Role-aware menu */}
-          <div className="shrink-0">
-            <RoleAwareMenu profile={profile} loading={loading} />
+          {/* Mobile burger: only when roles exist, and only after loading */}
+          <div className="shrink-0 md:hidden">
+            {!loading && hasRole ? (
+              <RoleAwareMenu profile={profile} loading={loading} />
+            ) : null}
+          </div>
+
+          {/* Desktop role bar: show on md+ when roles exist */}
+          <div className="hidden md:block">
+            {!loading && hasRole ? (
+              <RoleAwareMenu profile={profile} loading={loading} />
+            ) : null}
           </div>
 
           {/* Brand */}
@@ -223,31 +238,44 @@ export default function SiteHeader(): JSX.Element {
           </div>
         </div>
 
-        {/* RIGHT: Pills — Home · (Chat|Support) · (Login|Account) */}
+        {/* RIGHT: Pills */}
         <nav className="flex items-center gap-2">
-          <Link href="/" className="pill active text-sm">
-            Home
-          </Link>
-
-          {/* ⬇️ Added: Chat for anonymous, Support for signed-in */}
-          {authEmail ? (
-            <Link href="/support" className="pill text-sm">
-              Support
-            </Link>
+          {/* While loading, avoid flashing the client menu */}
+          {loading ? null : hasRole ? (
+            // When user has roles, keep the right side minimal (Support + Account)
+            <>
+              <Link href="/support" className="pill text-sm">
+                Support
+              </Link>
+              <Link href="/account" className="pill active text-sm" title={authEmail ?? ""}>
+                {firstName || "Account"}
+              </Link>
+            </>
           ) : (
-            <Link href="/chat" className="pill text-sm">
-              Chat
-            </Link>
-          )}
-
-          {authEmail ? (
-            <Link href="/account" className="pill active text-sm" title={authEmail}>
-              {firstName || "Account"}
-            </Link>
-          ) : (
-            <Link href="/login" className="pill active text-sm">
-              Login
-            </Link>
+            // Client-only (no roles): Home + Chat/Support + Login/Account
+            <>
+              <Link href="/" className="pill active text-sm">
+                Home
+              </Link>
+              {authEmail ? (
+                <Link href="/support" className="pill text-sm">
+                  Support
+                </Link>
+              ) : (
+                <Link href="/chat" className="pill text-sm">
+                  Chat
+                </Link>
+              )}
+              {authEmail ? (
+                <Link href="/account" className="pill active text-sm" title={authEmail}>
+                  {firstName || "Account"}
+                </Link>
+              ) : (
+                <Link href="/login" className="pill active text-sm">
+                  Login
+                </Link>
+              )}
+            </>
           )}
         </nav>
       </div>
