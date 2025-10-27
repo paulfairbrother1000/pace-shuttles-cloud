@@ -101,13 +101,32 @@ function useSignedInFromCache() {
 }
 
 /** Right-side links: Home · (Chat|Support) · (Login|Account) */
-function RightLinks() {
+function RightLinks({
+  homeHref = "/",
+  accountHref = "/account",
+}: {
+  homeHref?: string;
+  accountHref?: string;
+}) {
   const signedIn = useSignedInFromCache();
+
   return (
     <div className="ml-auto flex items-center gap-6">
-      <Link href="/">Home</Link>
-      {signedIn ? <Link href="/support">Support</Link> : <Link href="/chat">Chat</Link>}
-      {signedIn ? <Link href="/account">Account</Link> : <Link href="/login">Login</Link>}
+      <Link href={homeHref}>Home</Link>
+
+      {/* Chat when anonymous; Support when signed in */}
+      {signedIn ? (
+        <Link href="/support">Support</Link>
+      ) : (
+        <Link href="/chat">Chat</Link>
+      )}
+
+      {/* Login when anonymous; Account when signed in */}
+      {signedIn ? (
+        <Link href={accountHref}>Account</Link>
+      ) : (
+        <Link href="/login">Login</Link>
+      )}
     </div>
   );
 }
@@ -116,15 +135,17 @@ function RightLinks() {
 export default function TopBar(props: { userName?: string | null; homeHref?: string; accountHref?: string }) {
   useHydratePsUserCache(); // keep your local cache in sync
 
-  // If your original TopBar had more structure/branding, keep it; we just add RightLinks.
+  // Keep your existing structure; we only render the right-side trio.
   return (
     <header className="w-full border-b border-gray-200">
       <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-4">
-        {/* Left: brand/whatever you already render */}
-        <Link href="/" className="font-semibold">Pace Shuttles</Link>
+        {/* Left: brand (unchanged) */}
+        <Link href="/" className="font-semibold">
+          Pace Shuttles
+        </Link>
 
         {/* Right: Home · (Chat|Support) · (Login|Account) */}
-        <RightLinks />
+        <RightLinks homeHref={props.homeHref} accountHref={props.accountHref} />
       </nav>
     </header>
   );
