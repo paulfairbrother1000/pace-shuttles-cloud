@@ -1,6 +1,5 @@
 // src/app/support/page.tsx
 
-"use client";
 
 
 import React from "react";
@@ -9,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import dynamic from "next/dynamic";
-const ChatPanel = dynamic(() => import("@/components/support/ChatPanel"), { ssr: false });
+import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
+
 
 async function fetchTickets() {
   try {
