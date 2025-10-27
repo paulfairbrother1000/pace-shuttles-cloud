@@ -3,24 +3,23 @@ import React from "react";
 import { headers } from "next/headers";
 import dynamic from "next/dynamic";
 
-// ⬅️ Use YOUR existing components path (capital C) to avoid module-not-found
+// Keep YOUR existing capitalised UI paths (your repo has Card.tsx/Button.tsx)
 import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
 
-import TicketListWrapperOrig from "@/components/support/TicketListWrapper";
-import ChatPanelWrapperOrig from "@/components/support/ChatPanelWrapper";
-import { getSupabaseServer } from "@/lib/supabaseServer";
-
-export const dynamic = "force-dynamic"; // don't cache, always respect cookies
-
-// ✅ Make wrappers client-only to avoid any SSR-only crashes inside them
+// ❌ Do NOT import the wrappers at top-level (that can pull client code into SSR)
+// ✅ Dynamic imports ensure they only run on the client
 const ChatPanelWrapper = dynamic(
-  async () => ChatPanelWrapperOrig,
+  () => import("@/components/support/ChatPanelWrapper"),
   { ssr: false }
 );
 const TicketListWrapper = dynamic(
-  async () => TicketListWrapperOrig,
+  () => import("@/components/support/TicketListWrapper"),
   { ssr: false }
 );
+
+import { getSupabaseServer } from "@/lib/supabaseServer";
+
+export const dynamic = "force-dynamic";
 
 async function fetchTicketsSafe(): Promise<any[]> {
   try {
@@ -35,7 +34,8 @@ async function fetchTicketsSafe(): Promise<any[]> {
     const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
     if (!res.ok) return [];
     return (await res.json()) ?? [];
-  } catch {
+  } catch (err) {
+    console.error("tickets/list fetch failed", err);
     return [];
   }
 }
@@ -49,8 +49,8 @@ export default async function Page() {
     if (!error && data?.user) {
       user = { id: data.user.id, email: data.user.email ?? null };
     }
-  } catch {
-    // treat as signed-out if anything goes wrong resolving session
+  } catch (err) {
+    console.error("getUser failed", err);
     user = null;
   }
 
@@ -141,7 +141,8 @@ function CreateTicketForm() {
       } else {
         setOk(data.error || "Failed");
       }
-    } catch {
+    } catch (err) {
+      console.error("create ticket failed", err);
       setOk("Failed");
     } finally {
       setBusy(false);
