@@ -1,8 +1,8 @@
 // src/app/support/page.tsx
 
 import React from "react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
@@ -85,8 +85,7 @@ function CreateTicket() {
   );
 }
 
-// NOTE: This inline client component pattern has worked for you previously.
-// If Next ever complains, we can move this into its own file.
+// Inline client subform
 function CreateTicketForm() {
   "use client";
   const [subject, setSubject] = React.useState("");
