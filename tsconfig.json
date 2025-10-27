@@ -19,8 +19,10 @@
 
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@/lib/*": ["lib/*"]        // <— lets you import "@/lib/supabaseServer" from /lib
+      "@/*": ["src/*"],          // preferred form
+      "@/src/*": ["src/*"],      // backward-compat for imports like "@/src/components/..."
+      "@/lib/*": ["lib/*"],      // your root-level lib/
+      "@/src/lib/*": ["lib/*"]   // backward-compat for "@/src/lib/supabaseServer"
     },
 
     "types": ["node"],
