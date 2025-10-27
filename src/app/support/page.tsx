@@ -1,9 +1,11 @@
 // src/app/support/page.tsx
 import React from "react";
-import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { TicketList } from "@/components/support/TicketList";
 import { getSupabaseServer } from "@/lib/supabaseServer";
-import ChatPanel from "@/components/support/ChatPanel"; // ⬅️ added
+import dynamic from "next/dynamic";
+const ChatPanel = dynamic(() => import("@/components/support/ChatPanel"), { ssr: false });
 
 async function fetchTickets() {
   try {

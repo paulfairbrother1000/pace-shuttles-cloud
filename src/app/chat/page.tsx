@@ -1,14 +1,69 @@
 // src/app/chat/page.tsx
-import ChatPanel from "@/components/support/ChatPanel";
+"use client";
+
+export const dynamic = "force-dynamic";
+
+import * as React from "react";
+
+function readPsUser() {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = localStorage.getItem("ps_user");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function ChatPage() {
+  const [psUser, setPsUser] = React.useState<any | null>(null);
+  const [ready, setReady] = React.useState(false);
+
+  React.useEffect(() => {
+    setPsUser(readPsUser());
+    setReady(true);
+    const onUpd = () => setPsUser(readPsUser());
+    window.addEventListener("ps_user:updated", onUpd);
+    return () => window.removeEventListener("ps_user:updated", onUpd);
+  }, []);
+
+  const name =
+    psUser?.first_name ||
+    (psUser?.email ? String(psUser.email).split("@")[0] : "") ||
+    "Guest";
+
+  // OPTIONAL: if you later wire Zammad Widget/Embed, gate by env vars here
+  const zammadUrl = process.env.NEXT_PUBLIC_ZAMMAD_URL;
+  const hasEmbed = !!zammadUrl; // or any condition you need
+
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-[#0f1a2a] text-[#eaf2ff]">
-      <section className="mx-auto max-w-4xl px-4 py-8">
-        <h1 className="text-2xl font-semibold mb-4">Chat</h1>
-        {/* Paragraph removed per request */}
-        <ChatPanel mode="anon" />
-      </section>
+    <main className="ps-theme min-h-screen bg-app text-app">
+      <div className="mx-auto max-w-3xl px-6 py-8">
+        <h1 className="text-3xl font-extrabold">Chat</h1>
+        <p className="mt-2 text-sm opacity-80">
+          {ready ? `Signed in as ${name}` : "Loading…"}
+        </p>
+
+        <div className="mt-6">
+          {hasEmbed ? (
+            // TODO: drop your real chat embed/widget here (client only)
+            <div className="rounded-xl border border-neutral-800 p-4">
+              Your chat widget goes here (Zammad/…).
+            </div>
+          ) : (
+            // Safe fallback so the page NEVER crashes
+            <div className="rounded-xl border border-neutral-800 p-4">
+              <p className="mb-3">
+                Live chat isn’t configured right now. Please email{" "}
+                <a className="underline" href="mailto:hello@paceshuttles.com">
+                  hello@paceshuttles.com
+                </a>{" "}
+                or use <a className="underline" href="/support">Support</a>.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
     </main>
   );
 }
