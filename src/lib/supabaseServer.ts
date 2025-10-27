@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+
+
 /**
  * RLS-aware Supabase client (uses the user's cookies).
  * Call this inside Route Handlers / Server Components per request.
@@ -62,3 +64,4 @@ export function supabaseService(): SupabaseClient {
 
 // at the bottom of /lib/supabaseServer.ts (or src/lib/supabaseServer.ts)
 export const getSupabaseServer = supabaseServer;
+
