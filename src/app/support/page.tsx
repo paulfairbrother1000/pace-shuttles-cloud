@@ -2,7 +2,7 @@
 import React from "react";
 import { headers } from "next/headers";
 import { Card, CardContent, CardHeader, Button } from "@/components/ui/Card";
-import { TicketList } from "@/components/support/TicketList";
+import TicketListWrapper from "@/components/support/TicketListWrapper";
 import { getSupabaseServer } from "@/lib/supabaseServer";
 import ChatPanelWrapper from "@/components/support/ChatPanelWrapper";
 
@@ -77,7 +77,7 @@ export default async function Page() {
         <ChatPanelWrapper mode="signed" />
 
         {/* Tickets list */}
-        <TicketList title="My tickets" tickets={tickets as any[]} />
+        <TicketListWrapper title="My tickets" tickets={tickets as any[]} />
 
         {/* Create ticket */}
         <CreateTicket />
