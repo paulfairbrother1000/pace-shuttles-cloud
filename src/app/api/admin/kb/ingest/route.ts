@@ -1,4 +1,3 @@
-// src/app/api/admin/kb/ingest/route.ts
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
 // Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
@@ -58,17 +57,37 @@ async function walk(dir: string): Promise<string[]> {
   return files;
 }
 
-/** Extract text from a PDF (Node-safe) using pdf-parse */
-async function extractPdfText(absPath: string): Promise<string> {
+/** Extract text from a PDF (Node-safe) using pdf-parse with strong guards */
+async function extractPdfText(absPath: string, relNameForError: string): Promise<string> {
   // Lazy import so it never bundles into the client
   const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
-  const result = await pdfParse(buf);
-  // normalise whitespace to help scoring & chunking
-  return String(result.text || "")
-    .replace(/\u0000/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+
+  if (!buf || buf.length === 0) {
+    throw new Error(`file is empty: ${relNameForError}`);
+  }
+
+  try {
+    const result = await pdfParse(buf);
+    const text = String(result?.text || "")
+      .replace(/\u0000/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!text) {
+      // Likely an image-only (scanned) PDF without OCR text layer
+      throw new Error("no extractable text (image-only PDF?)");
+    }
+
+    return text;
+  } catch (e: any) {
+    const msg = String(e?.message || e || "pdf-parse failure");
+    // Avoid confusing node_modules' internal fallback test path in error output
+    if (msg.includes("test/data/05-versions-space.pdf")) {
+      throw new Error(`pdf-parse could not read a valid buffer for ${relNameForError}`);
+    }
+    throw new Error(`${msg} [${relNameForError}]`);
+  }
 }
 
 /** Use your OpenAI helper directly */
@@ -76,7 +95,7 @@ async function embed(texts: string[]): Promise<number[][]> {
   return await embedDirect(texts);
 }
 
-async function doIngest(_baseUrl: string) {
+async function doIngest(_origin: string) {
   const kbRoot = path.join(process.cwd(), "public", "knowledge");
   await fs.access(kbRoot).catch(() => {
     throw new Error("Folder public/knowledge not found");
@@ -153,7 +172,7 @@ async function doIngest(_baseUrl: string) {
     let rawText = "";
     try {
       if (ext === ".pdf") {
-        rawText = await extractPdfText(abs);
+        rawText = await extractPdfText(abs, rel);
       } else {
         rawText = await fs.readFile(abs, "utf8");
         // .md/.txt are JSON blobs in this repo; flatten if possible
@@ -175,7 +194,7 @@ async function doIngest(_baseUrl: string) {
       }
     } catch (e: any) {
       skipped.push({ file: rel, reason: e?.message ?? "text extraction failed" });
-      // don’t crash the whole run; continue to next file
+      // continue to next file
       continue;
     }
 
