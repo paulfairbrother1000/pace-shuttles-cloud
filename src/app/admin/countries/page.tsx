@@ -41,7 +41,7 @@ function ensureImageUrl(input?: string | null): string | undefined {
   const key = raw.replace(/^\/+/, "");
   return `${base}/storage/v1/object/public/${key}`;
 }
-
+ 
 function truncate(s: string, n = 120) {
   if (!s) return "";
   return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
