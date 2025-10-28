@@ -1,7 +1,7 @@
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
 // Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
-// Matches your schema: kb_docs(url,  doc_key, source_id, title), kb_chunks(url, ...).
+// Matches your schema: kb_docs(url, doc_key, source_id, title), kb_chunks(url, ...).
 
 import { NextResponse } from "next/server";
 import path from "node:path";
@@ -59,10 +59,10 @@ async function walk(dir: string): Promise<string[]> {
 
 /** Extract text from a PDF (Node-safe) using pdf-parse with strong guards */
 async function extractPdfText(absPath: string, relNameForError: string): Promise<string> {
-  // Lazy import so it never bundles into the client
   const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
 
+  // CRITICAL: guard against empty/undefined buffers (prevents pdf-parse fallback)
   if (!buf || buf.length === 0) {
     throw new Error(`file is empty: ${relNameForError}`);
   }
@@ -75,16 +75,15 @@ async function extractPdfText(absPath: string, relNameForError: string): Promise
       .trim();
 
     if (!text) {
-      // Likely an image-only (scanned) PDF without OCR text layer
+      // Likely a scanned (image-only) PDF without an OCR text layer
       throw new Error("no extractable text (image-only PDF?)");
     }
-
     return text;
   } catch (e: any) {
     const msg = String(e?.message || e || "pdf-parse failure");
-    // Avoid confusing node_modules' internal fallback test path in error output
+    // Clean up confusing internal fallback path from pdf-parse
     if (msg.includes("test/data/05-versions-space.pdf")) {
-      throw new Error(`pdf-parse could not read a valid buffer for ${relNameForError}`);
+      throw new Error(`pdf-parse did not receive a valid PDF buffer for ${relNameForError}`);
     }
     throw new Error(`${msg} [${relNameForError}]`);
   }
@@ -138,8 +137,8 @@ async function doIngest(_origin: string) {
       abs.split(path.join("public", "knowledge") + path.sep)[1] ??
       path.basename(abs);
 
-    const urlPath = `/knowledge/${rel}`; // stored in kb_docs.url & kb_chunks.url
-    const docKey = sha1(urlPath); // stable unique key
+    const urlPath = `/knowledge/${rel}`;
+    const docKey = sha1(urlPath);
     const ext = path.extname(rel).toLowerCase();
 
     // Upsert doc row by doc_key (idempotent)
@@ -175,7 +174,7 @@ async function doIngest(_origin: string) {
         rawText = await extractPdfText(abs, rel);
       } else {
         rawText = await fs.readFile(abs, "utf8");
-        // .md/.txt are JSON blobs in this repo; flatten if possible
+        // In your repo, .md/.txt often contain JSON; flatten if possible
         try {
           const json = JSON.parse(rawText);
           const textBlobs: string[] = [];
@@ -194,7 +193,6 @@ async function doIngest(_origin: string) {
       }
     } catch (e: any) {
       skipped.push({ file: rel, reason: e?.message ?? "text extraction failed" });
-      // continue to next file
       continue;
     }
 
