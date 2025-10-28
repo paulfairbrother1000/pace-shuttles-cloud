@@ -1,3 +1,7 @@
+// src/app/api/tools/searchPublicKB/route.ts
+export const runtime = "nodejs";              // ensure FS access in serverless
+export const dynamic = "force-dynamic";       // no caching of KB lookups
+
 import { NextResponse } from "next/server";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +15,7 @@ type Match = {
 };
 
 function textify(json: any): { title: string; chunks: { section: string | null; text: string }[] } {
+  // paceshuttles-overview.public.md shape
   if (json?.knowledge_base_entry) {
     const title = json.knowledge_base_entry.title ?? "Knowledge";
     const sections = json.knowledge_base_entry.sections ?? {};
@@ -30,6 +35,7 @@ function textify(json: any): { title: string; chunks: { section: string | null; 
     return { title, chunks };
   }
 
+  // faqs.public.md shape
   if (Array.isArray(json?.faqs)) {
     const title = json?.title ?? "FAQs";
     const chunks = json.faqs.map((f: any) => ({
@@ -39,6 +45,7 @@ function textify(json: any): { title: string; chunks: { section: string | null; 
     return { title, chunks };
   }
 
+  // client terms.public.md shape
   if (Array.isArray(json?.sections)) {
     const title = json?.title ?? "Terms";
     const chunks = json.sections.flatMap((s: any) => {
@@ -72,45 +79,74 @@ function score(query: string, text: string): number {
   const t = text.toLowerCase();
   let s = 0;
   for (const term of q) {
-    const m = t.match(new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"));
+    const re = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+    const m = t.match(re);
     s += m ? m.length : 0;
   }
+  // length-normalised so huge sections don’t dominate
   return s > 0 ? s / Math.sqrt(Math.max(100, text.length)) : 0;
 }
 
+async function findMatches(query: string, topK = 8): Promise<Match[]> {
+  const kbDir = path.join(process.cwd(), "public", "knowledge");
+  const files = await fs.readdir(kbDir).catch(() => []);
+  const candidates = files.filter(f => f.endsWith(".public.md"));
+
+  const matches: Match[] = [];
+
+  for (const file of candidates) {
+    const raw = await fs.readFile(path.join(kbDir, file), "utf8").catch(() => "");
+    if (!raw) continue;
+
+    // files are JSON stored with .md extension
+    let json: any;
+    try { json = JSON.parse(raw); } catch { continue; }
+
+    const { title, chunks } = textify(json);
+    for (const ch of chunks) {
+      const sc = score(query, ch.text);
+      if (sc > 0) {
+        matches.push({
+          title,
+          section: ch.section,
+          snippet: ch.text.slice(0, 600),
+          url: null,
+          score: sc,
+        });
+      }
+    }
+  }
+
+  matches.sort((a, b) => b.score - a.score);
+  return matches.slice(0, topK);
+}
+
+// --- GET: handy for quick manual tests in the browser -----------------------
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const q = url.searchParams.get("q");
+  if (!q) {
+    return NextResponse.json({
+      ok: true,
+      hint: "POST { query } to this endpoint, or GET with ?q=your+question for a quick check.",
+      example: "/api/tools/searchPublicKB?q=cancellation",
+    });
+  }
+  const matches = await findMatches(q, 8);
+  return NextResponse.json({ matches });
+}
+
+// --- POST: used by /api/agent ------------------------------------------------
 export async function POST(req: Request) {
   try {
     const { query, topK = 8 } = await req.json();
     if (!query) return NextResponse.json({ matches: [] });
-
-    const kbDir = path.join(process.cwd(), "public", "knowledge");
-    const files = await fs.readdir(kbDir);
-    const candidates = files.filter(f => f.endsWith(".public.md"));
-
-    const matches: Match[] = [];
-
-    for (const file of candidates) {
-      const raw = await fs.readFile(path.join(kbDir, file), "utf8");
-      const json = JSON.parse(raw);
-      const { title, chunks } = textify(json);
-
-      for (const ch of chunks) {
-        const sc = score(query, ch.text);
-        if (sc > 0) {
-          matches.push({
-            title,
-            section: ch.section,
-            snippet: ch.text.slice(0, 500),
-            url: null,
-            score: sc,
-          });
-        }
-      }
-    }
-
-    matches.sort((a, b) => b.score - a.score);
-    return NextResponse.json({ matches: matches.slice(0, topK) });
+    const matches = await findMatches(String(query), Number(topK));
+    return NextResponse.json({ matches });
   } catch (e: any) {
-    return NextResponse.json({ matches: [], error: e?.message ?? "Search error" }, { status: 500 });
+    return NextResponse.json(
+      { matches: [], error: e?.message ?? "Search error" },
+      { status: 500 }
+    );
   }
 }
