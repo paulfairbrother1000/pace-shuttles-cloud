@@ -46,22 +46,21 @@ export default function ChatClient() {
   }
 
   return (
-    <div className="rounded-xl border border-neutral-800">
+    <div className="rounded-xl border border-neutral-300 bg-white text-neutral-900">
       <div className="max-h-[50vh] overflow-y-auto p-4 space-y-3">
         {turns.length === 0 ? (
-          <p className="opacity-75">Ask me about destinations, routes, pickups, or how Pace Shuttles works.</p>
+          <p className="opacity-75">
+            Ask me about destinations, pricing rules, cancellation policy, or how Pace Shuttles works.
+          </p>
         ) : (
           turns.map((t, i) => (
-            <div
-              key={i}
-              className={t.role === "user" ? "text-right" : "text-left"}
-            >
+            <div key={i} className={t.role === "user" ? "text-right" : "text-left"}>
               <div
                 className={
                   "inline-block rounded-xl px-3 py-2 " +
                   (t.role === "user"
                     ? "bg-blue-600 text-white"
-                    : "bg-neutral-900 text-neutral-100")
+                    : "bg-neutral-100 text-neutral-900 border border-neutral-200")
                 }
               >
                 {t.content}
@@ -71,9 +70,9 @@ export default function ChatClient() {
         )}
       </div>
 
-      <div className="flex gap-2 p-3 border-t border-neutral-800">
+      <div className="flex gap-2 p-3 border-t border-neutral-200 bg-neutral-50">
         <input
-          className="flex-1 rounded-lg bg-neutral-900 px-3 py-2 outline-none"
+          className="flex-1 rounded-lg bg-white text-black placeholder-neutral-500 border border-neutral-300 px-3 py-2 outline-none"
           placeholder="Type your question…"
           value={input}
           onChange={e => setInput(e.target.value)}
