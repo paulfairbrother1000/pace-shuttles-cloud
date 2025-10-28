@@ -29,6 +29,7 @@ function detectIntent(q: string) {
     wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
     wantsRouteInfo: /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
     wantsMyStuff: /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
+    wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s), // concierge path
   };
 }
 
@@ -51,6 +52,36 @@ async function searchPublicFiles(q: string, k: number) {
   }));
 }
 
+/* ── Concierge helpers (keeps docs as source of truth) ── */
+function findISOInText(text: string): string | null {
+  const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
+  return m ? m[0] : null;
+}
+function extractCutoffsFromSnippet(snippet: string) {
+  const t = (snippet || "").toLowerCase();
+  const has72 = /72\s*hour|72\s*hrs|3\+?\s*days/.test(t);
+  const has24 = /24\s*hour|24\s*hrs|1\s*day/.test(t);
+  return { cutoffFullRefundH: has72 ? 72 : 72, cutoffHalfRefundH: has24 ? 24 : 24 };
+}
+type RefundBand = "FULL_MINUS_FEES" | "FIFTY_PERCENT" | "NO_REFUND";
+function evaluateRefundBand(departureISO: string, now = new Date(), cut = { cutoffFullRefundH:72, cutoffHalfRefundH:24 }) {
+  const dep = new Date(departureISO);
+  const ms = dep.getTime() - now.getTime();
+  const totalHours = Math.ceil(ms / (1000 * 60 * 60));
+  let band: RefundBand;
+  if (totalHours >= cut.cutoffFullRefundH) band = "FULL_MINUS_FEES";
+  else if (totalHours >= cut.cutoffHalfRefundH) band = "FIFTY_PERCENT";
+  else band = "NO_REFUND";
+  return { band, totalHours, departureLocal: dep.toLocaleString() };
+}
+function friendlyBand(band: RefundBand) {
+  return band === "FULL_MINUS_FEES"
+    ? "a full refund minus any bank fees charged to Pace Shuttles"
+    : band === "FIFTY_PERCENT"
+    ? "a 50% refund of the booking value"
+    : "no refund (no-shows or late arrivals are treated as travelled)";
+}
+
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const q = String(body?.message || body?.text || "").trim();
@@ -62,6 +93,45 @@ export async function POST(req: Request) {
   const k = 8;
   let snippets: any[] = [];
 
+  /* ── Concierge: cancellations & refunds ── */
+  if (intent.wantsCancel) {
+    const iso = findISOInText(q);
+    const hasRef = /\b[A-Z0-9]{6,}\b/.test(q); // simple booking-ref heuristic
+
+    if (hasRef && !signedIn) {
+      return NextResponse.json({
+        content:
+          "I can help with that. To protect your privacy, please **sign in** before I open your booking. " +
+          "This ensures only the traveller can view or change bookings. Once signed in, paste your booking reference here and I’ll check your options.",
+        requireLogin: true,
+      });
+    }
+
+    if (iso) {
+      const policySnips = await searchPublicFiles("client cancellations rescheduling refunds policy Pace Shuttles", 4);
+      const best = policySnips.find(s => /cancel|refund|resched/i.test(`${s.title} ${s.section} ${s.content}`)) || policySnips[0];
+      const cut = extractCutoffsFromSnippet(best?.content ?? "");
+      const evaln = evaluateRefundBand(iso, new Date(), cut);
+
+      const msg = [
+        `Based on the date you provided (${evaln.departureLocal}), you are **${evaln.totalHours} hours** before departure.`,
+        `Under the current policy this means **${friendlyBand(evaln.band)}**.`,
+        `If you’d prefer not to cancel, I can look for **alternative dates** on the same route (rescheduling within 6 months, subject to seats). Would you like me to check?`,
+        best ? `\n(From: ${best.title}${best.section ? " › " + best.section : ""})` : "",
+      ].join("\n\n");
+
+      return NextResponse.json({ content: msg });
+    }
+
+    return NextResponse.json({
+      content:
+        "I can help with cancellations and refunds. To work out your options I’ll need your **journey date/time**. " +
+        "If you prefer, share your **booking reference**—I can check it for you.\n\n" +
+        "_Note: for booking lookups you’ll be asked to **sign in** so we keep your information private._",
+    });
+  }
+  /* ─────────────────────────────────────── */
+
   // 1) Try vector RAG (public view for anon)
   try {
     snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
@@ -72,7 +142,7 @@ export async function POST(req: Request) {
     snippets = await searchPublicFiles(q, k);
   }
 
-  // 3) Only deflect if it's clearly account-specific AND we don't have a public answer
+  // 3) Deflect only if account-specific AND we have no public answer
   if (!signedIn && intent.wantsMyStuff && snippets.length === 0) {
     const gate = preflightGate(q, { signedIn });
     if (gate.action === "deflect" || gate.action === "deny") {
@@ -80,7 +150,7 @@ export async function POST(req: Request) {
     }
   }
 
-  // Build context
+  // Build context for the model
   const contextBlock =
     snippets.length > 0
       ? snippets.map((s: any, i: number) => {
@@ -103,6 +173,8 @@ export async function POST(req: Request) {
     signedIn
       ? `User is signed in: you may reference their own bookings/balance/tickets via approved tools only.`
       : `User is anonymous: answer only from public knowledge and public data.`,
+    // concierge guidance for other sensitive flows
+    `For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).`,
   ].join("\n");
 
   const userPrompt = [
