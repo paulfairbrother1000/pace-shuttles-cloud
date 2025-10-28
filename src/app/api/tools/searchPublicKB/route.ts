@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createServerClient } from "@supabase/ssr";
+import { embed as embedDirect } from "@/lib/ai";
 
 type Match = {
   title: string;
@@ -83,7 +84,6 @@ function score(query: string, text: string): number {
   const t = text.toLowerCase();
   let s = 0;
   for (const term of q) {
-    // FIX: proper template string + escaping
     const re = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
     const m = t.match(re);
     s += m ? m.length : 0;
@@ -133,23 +133,11 @@ async function findMatchesFromFiles(query: string, topK = 8): Promise<Match[]> {
 /* ---------------------------- vector search (DB) ---------------------------- */
 
 async function findMatchesFromDB(query: string, topK = 8): Promise<Match[]> {
-  // Build absolute base URL for /api/ai/embed call
-  const base = process.env.NEXT_PUBLIC_BASE_URL
-    ? process.env.NEXT_PUBLIC_BASE_URL.replace(/\/$/, "")
-    : "";
-
-  // 1) get embedding for the query
+  // 1) get embedding for the query (direct call to OpenAI via your lib)
   let qvec: number[] | null = null;
   try {
-    const res = await fetch(`${base}/api/ai/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: [query] }),
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    const { embeddings } = await res.json();
-    qvec = embeddings?.[0] ?? null;
+    const [vec] = await embedDirect([query]);
+    qvec = vec ?? null;
   } catch {
     qvec = null;
   }

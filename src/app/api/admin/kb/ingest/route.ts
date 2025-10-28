@@ -9,6 +9,9 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { supabaseService } from "@/lib/supabaseServer";
+// ADD THIS at the top with your other imports
+import { embed as embedDirect } from "@/lib/ai";
+
 
 export const runtime = "nodejs"; // needs fs
 
@@ -94,21 +97,13 @@ async function doIngest(baseUrl: string) {
   let docs = 0;
   let chunks = 0;
 
-  // Helper to call your embedding API (same origin)
-  async function embed(texts: string[]): Promise<number[][]> {
-    const res = await fetch(`${baseUrl}/api/ai/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts }),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => String(res.status));
-      throw new Error(`Embedding API failed: ${res.status} ${msg}`);
-    }
-    const j = (await res.json()) as { embeddings: number[][] };
-    return j.embeddings;
-  }
+// REPLACE your helper that was calling fetch(`${baseUrl}/api/ai/embed`, …)
+// with this direct call. Keep the function name the same so the rest of your file is unchanged.
+
+async function embed(texts: string[]): Promise<number[][]> {
+  // Uses your src/lib/ai.ts OpenAI client
+  return await embedDirect(texts);
+}
 
   for (const abs of files) {
     const rel =
