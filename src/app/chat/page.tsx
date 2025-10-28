@@ -4,10 +4,10 @@
 export const dynamic = "force-dynamic";
 
 import * as React from "react";
-import dynamic from "next/dynamic";
+import NextDynamic from "next/dynamic";
 
 // Load lightweight client chat ONLY on the client (when no external embed)
-const ChatClient = dynamic(() => import("@/components/chat/ChatClient"), { ssr: false });
+const ChatClient = NextDynamic(() => import("@/components/chat/ChatClient"), { ssr: false });
 
 function readPsUser() {
   try {
