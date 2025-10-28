@@ -58,13 +58,12 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-// --- PDF text extraction (Node-safe via pdf-parse v1.1.1) ---
+/** Extract text from a PDF using pdf-parse (Node-safe). */
 async function extractPdfText(absPath: string): Promise<string> {
-  // pdf-parse@1.1.1 exposes a CJS default export; dynamic import works in Node.
-  const { default: pdfParse } = await import("pdf-parse");
+  // IMPORTANT: we import inside this function so it only bundles on the server build.
+  const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
   const result = await pdfParse(buf);
-  // Normalize whitespace to help scoring & chunking
   return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
 }
 
@@ -105,9 +104,7 @@ async function doIngest(_baseUrl: string) {
   if (!sourceId) throw new Error("Could not create/find kb_sources row");
 
   // 3) collect files (md/markdown/txt/pdf)
-  const files = (await walk(kbRoot)).filter((f) =>
-    /\.(md|markdown|txt|pdf)$/i.test(f)
-  );
+  const files = (await walk(kbRoot)).filter((f) => /\.(md|markdown|txt|pdf)$/i.test(f));
 
   let docs = 0;
   let chunks = 0;
@@ -148,10 +145,9 @@ async function doIngest(_baseUrl: string) {
       rawText = await extractPdfText(abs);
     } else {
       rawText = await fs.readFile(abs, "utf8");
-      // .md/.txt in your repo are JSON blobs stored as ".md" — parse if possible, otherwise index raw
+      // .md/.txt in your repo are often JSON blobs stored as ".md" — parse & flatten if possible
       try {
         const json = JSON.parse(rawText);
-        // Flatten typical JSON knowledge shapes into one string; fall back to raw
         const textBlobs: string[] = [];
         const stack: any[] = [json];
         while (stack.length) {
@@ -165,8 +161,6 @@ async function doIngest(_baseUrl: string) {
         // keep rawText as-is (plain text markdown)
       }
     }
-
-    if (!rawText) continue;
 
     // 7) Chunk & embed
     const chunksToEmbed = chunkText(rawText, 1200);
@@ -192,10 +186,8 @@ async function doIngest(_baseUrl: string) {
 
 // Convenience wrappers so you can click or POST
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "GET", ...result });
   } catch (e: any) {
     return NextResponse.json(
@@ -206,10 +198,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "POST", ...result });
   } catch (e: any) {
     return NextResponse.json(
