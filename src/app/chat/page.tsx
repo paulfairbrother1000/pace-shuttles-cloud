@@ -4,6 +4,10 @@
 export const dynamic = "force-dynamic";
 
 import * as React from "react";
+import dynamic from "next/dynamic";
+
+// Load lightweight client chat ONLY on the client (when no external embed)
+const ChatClient = dynamic(() => import("@/components/chat/ChatClient"), { ssr: false });
 
 function readPsUser() {
   try {
@@ -51,16 +55,8 @@ export default function ChatPage() {
               Your chat widget goes here (Zammad/…).
             </div>
           ) : (
-            // Safe fallback so the page NEVER crashes
-            <div className="rounded-xl border border-neutral-800 p-4">
-              <p className="mb-3">
-                Live chat isn’t configured right now. Please email{" "}
-                <a className="underline" href="mailto:hello@paceshuttles.com">
-                  hello@paceshuttles.com
-                </a>{" "}
-                or use <a className="underline" href="/support">Support</a>.
-              </p>
-            </div>
+            // Minimal fallback chat UI that posts to /api/agent and uses your RAG + guardrails
+            <ChatClient />
           )}
         </div>
       </div>
