@@ -1,7 +1,7 @@
 // src/app/api/admin/kb/ingest/route.ts
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
-// Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
+// Calls OpenAI  embeddings via src/lib/ai.ts (embedDirect).
 // Matches your schema: kb_docs(url, doc_key, source_id, title), kb_chunks(url, ...).
 
 import { NextResponse } from "next/server";
