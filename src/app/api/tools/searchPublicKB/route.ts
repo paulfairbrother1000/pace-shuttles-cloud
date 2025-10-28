@@ -11,7 +11,6 @@ type Match = {
 };
 
 function textify(json: any): { title: string; chunks: { section: string | null; text: string }[] } {
-  // Handles the three shapes you shared (terms, faqs, overview)
   if (json?.knowledge_base_entry) {
     const title = json.knowledge_base_entry.title ?? "Knowledge";
     const sections = json.knowledge_base_entry.sections ?? {};
@@ -76,7 +75,6 @@ function score(query: string, text: string): number {
     const m = t.match(new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"));
     s += m ? m.length : 0;
   }
-  // length-normalised boost
   return s > 0 ? s / Math.sqrt(Math.max(100, text.length)) : 0;
 }
 
@@ -93,7 +91,6 @@ export async function POST(req: Request) {
 
     for (const file of candidates) {
       const raw = await fs.readFile(path.join(kbDir, file), "utf8");
-      // The files are JSON stored in .md — parse safely
       const json = JSON.parse(raw);
       const { title, chunks } = textify(json);
 
@@ -103,7 +100,7 @@ export async function POST(req: Request) {
           matches.push({
             title,
             section: ch.section,
-            snippet: ch.text.slice(0, 400),
+            snippet: ch.text.slice(0, 500),
             url: null,
             score: sc,
           });
