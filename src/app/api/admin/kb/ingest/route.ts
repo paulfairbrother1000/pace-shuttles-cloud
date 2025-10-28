@@ -1,7 +1,7 @@
 // src/app/api/admin/kb/ingest/route.ts
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
-// Calls OpenAI  embeddings via src/lib/ai.ts (embedDirect).
+// Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
 // Matches your schema: kb_docs(url, doc_key, source_id, title), kb_chunks(url, ...).
 
 import { NextResponse } from "next/server";
@@ -58,14 +58,16 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-// --- PDF text extraction (Node-safe via pdf-parse v1.1.1) ---
+/** Extract text from a PDF using pdf-parse (Node-safe). */
 async function extractPdfText(absPath: string): Promise<string> {
-  // NOTE: make sure package.json has "pdf-parse": "1.1.1"
-  // and NOT the newer v2.x that depends on DOM APIs.
-  const { default: pdfParse } = await import("pdf-parse"); // CJS default export
-  const buf = await fs.readFile(absPath);
-  const result = await pdfParse(buf);
-  return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+  try {
+    const { default: pdfParse } = await import("pdf-parse"); // CJS default export
+    const buf = await fs.readFile(absPath);
+    const result = await pdfParse(buf);
+    return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+  } catch (e: any) {
+    throw new Error(`PDF extraction failed: ${e?.message || e}`);
+  }
 }
 
 // Use your OpenAI helper directly
@@ -166,6 +168,8 @@ async function doIngest(_baseUrl: string) {
       }
     }
 
+    if (!rawText) continue;
+
     // 7) Chunk & embed
     const chunksToEmbed = chunkText(rawText, 1200);
     if (chunksToEmbed.length === 0) continue;
@@ -190,10 +194,8 @@ async function doIngest(_baseUrl: string) {
 
 // Convenience wrappers so you can click or POST
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "GET", ...result });
   } catch (e: any) {
     return NextResponse.json(
@@ -204,10 +206,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "POST", ...result });
   } catch (e: any) {
     return NextResponse.json(
