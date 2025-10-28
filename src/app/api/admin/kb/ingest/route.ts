@@ -57,15 +57,33 @@ async function walk(dir: string): Promise<string[]> {
   return files;
 }
 
-/** Extract text from a PDF (Node-safe) using pdf-parse with strong guards */
-async function extractPdfText(absPath: string, relNameForError: string): Promise<string> {
-  const { default: pdfParse } = await import("pdf-parse"); // CJS default export
+/** Extract text from a PDF (Node-safe) using pdf-parse with a strict data arg */
+async function extractPdfText(absPath: string): Promise<string> {
+  // 1) Read file as a real Buffer
   const buf = await fs.readFile(absPath);
-
-  // CRITICAL: guard against empty/undefined buffers (prevents pdf-parse fallback)
   if (!buf || buf.length === 0) {
-    throw new Error(`file is empty: ${relNameForError}`);
+    throw new Error(`Empty PDF: ${absPath}`);
   }
+
+  // 2) Import in a way that works with both CJS/ESM bundles
+  const mod: any = await import("pdf-parse");
+  const pdfParse: (input: any) => Promise<any> = mod?.default ?? mod;
+  if (typeof pdfParse !== "function") {
+    throw new Error("pdf-parse import failed (no callable export)");
+  }
+
+  // 3) Force the “data” shape so pdf-parse never tries its test fallback path
+  //    (the './test/data/05-versions-space.pdf' you keep seeing)
+  const result = await pdfParse({ data: new Uint8Array(buf) });
+
+  const text = String(result?.text ?? "")
+    .replace(/\u0000/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) throw new Error("No text extracted from PDF");
+  return text;
+}
 
   try {
     const result = await pdfParse(buf);
