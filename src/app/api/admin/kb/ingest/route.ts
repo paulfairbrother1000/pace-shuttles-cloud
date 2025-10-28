@@ -1,18 +1,20 @@
 // src/app/api/admin/kb/ingest/route.ts
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
-// Reads knowledge files under /public/knowledge/** (md/markdown/txt).
-// Requires your /api/ai/embed endpoint to return embeddings: number[][].
+// Reads JSON-in-.md files under /public/knowledge/** (md/markdown/txt).
+// Calls /api/ai/embed to embed chunks.
+// Matches your schema: kb_docs(url, doc_key, source_id, title), kb_chunks(url, ...).
 
 import { NextResponse } from "next/server";
 import path from "node:path";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { supabaseService } from "@/lib/supabaseServer";
 
-export const runtime = "nodejs"; // needs fs access
+export const runtime = "nodejs"; // needs fs
 
 type Chunk = { section: string | null; content: string };
 
-/** Naive Markdown chunker: splits on headings and size */
+/** Naive Markdown/JSON chunker: splits on headings and size */
 function chunkText(input: string, max = 1200): Chunk[] {
   const lines = input.split(/\r?\n/);
   const out: Chunk[] = [];
@@ -51,6 +53,10 @@ async function walk(dir: string): Promise<string[]> {
   return files;
 }
 
+function sha1(s: string) {
+  return crypto.createHash("sha1").update(s).digest("hex");
+}
+
 async function doIngest(baseUrl: string) {
   // 0) locate knowledge root
   const kbRoot = path.join(process.cwd(), "public", "knowledge");
@@ -61,7 +67,7 @@ async function doIngest(baseUrl: string) {
   // 1) server-only Supabase (SERVICE ROLE) so inserts bypass RLS
   const sb = supabaseService();
 
-  // 2) ensure a default source exists
+  // 2) ensure a default source exists (uuid id)
   let sourceId: string | null = null;
   {
     const { data } = await sb
@@ -110,40 +116,73 @@ async function doIngest(baseUrl: string) {
       path.basename(abs);
 
     const urlPath = `/knowledge/${rel}`; // stored in kb_docs.url & kb_chunks.url
+    const docKey = sha1(urlPath);        // stable unique key required by your schema
     const raw = await fs.readFile(abs, "utf8");
 
-    // 4) idempotency: remove any prior doc with same url
-    await sb.from("kb_docs").delete().eq("url", urlPath);
-
-    // 5) insert doc row
+    // 4) upsert doc row by doc_key (idempotent re-ingest)
     const title = path
       .basename(rel)
       .replace(/\.(md|markdown|txt)$/i, "")
       .replace(/[-_]/g, " ");
-    const { data: docRow, error: docErr } = await sb
+
+    // If doc_key has a UNIQUE index, onConflict will replace old row's values.
+    // If not, we still set it so NOT NULL constraint is satisfied.
+    const up = await sb
       .from("kb_docs")
-      .insert({ source_id: sourceId, url: urlPath, title })
+      .upsert(
+        { source_id: sourceId, url: urlPath, title, doc_key: docKey },
+        { onConflict: "doc_key" }
+      )
       .select("id")
       .single();
-    if (docErr || !docRow?.id) throw docErr ?? new Error("Failed to insert kb_docs");
+
+    if (up.error || !up.data?.id) throw up.error ?? new Error("Failed to upsert kb_docs");
+    const docId = up.data.id; // bigint in your schema
     docs += 1;
 
-    // 6) chunk + embed + insert chunks
-    const parts = chunkText(raw, 1200);
-    if (parts.length === 0) continue;
+    // 5) (re)place chunks for this doc: delete then insert fresh
+    await sb.from("kb_chunks").delete().eq("doc_id", docId);
 
-    const vectors = await embed(parts.map((p) => p.content));
+    // Files in /public/knowledge are JSON (despite .md extension)
+    let json: any = null;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      // If it isn't JSON, index the raw text as a single chunk
+      json = { _text: raw };
+    }
 
-    const rows = parts.map((p, i) => ({
-      doc_id: docRow.id,     // bigint in your schema is fine; supabase-js will cast
+    const chunksToEmbed: Chunk[] = [];
+    if (json && typeof json === "object" && !json._text) {
+      // simple flatten for common shapes
+      const textBlobs: string[] = [];
+      const stack: any[] = [json];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (typeof cur === "string") textBlobs.push(cur);
+        else if (Array.isArray(cur)) stack.push(...cur);
+        else if (cur && typeof cur === "object") stack.push(...Object.values(cur));
+      }
+      const joined = textBlobs.join(" ").replace(/\s+/g, " ").trim();
+      const parts = chunkText(joined || raw, 1200);
+      chunksToEmbed.push(...parts);
+    } else {
+      chunksToEmbed.push(...chunkText(String(json?._text ?? raw), 1200));
+    }
+
+    if (chunksToEmbed.length === 0) continue;
+
+    const vectors = await embed(chunksToEmbed.map((p) => p.content));
+    const rows = chunksToEmbed.map((p, i) => ({
+      doc_id: docId,          // bigint
       section: p.section,
       content: p.content,
-      url: urlPath,          // your kb_chunks has a url column
-      embedding: vectors[i], // public.vector accepts float[] from supabase-js
+      url: urlPath,           // kb_chunks.url exists in your schema
+      embedding: vectors[i],  // public.vector accepts float[]
     }));
 
-    const { error: insErr } = await sb.from("kb_chunks").insert(rows);
-    if (insErr) throw insErr;
+    const ins = await sb.from("kb_chunks").insert(rows);
+    if (ins.error) throw ins.error;
 
     chunks += rows.length;
   }
