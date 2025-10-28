@@ -58,58 +58,14 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-<<<<<<< HEAD
 // --- PDF text extraction (Node-safe via pdf-parse v1.1.1) ---
-=======
-/** Extract text from a PDF using pdfjs-dist CJS build (Node-safe). */
->>>>>>> 3efbda623485aa607265e453764d978351a12587
 async function extractPdfText(absPath: string): Promise<string> {
-<<<<<<< HEAD
+  // NOTE: make sure package.json has "pdf-parse": "1.1.1"
+  // and NOT the newer v2.x that depends on DOM APIs.
   const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
   const result = await pdfParse(buf);
   return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
-=======
-  // Minimal shim to avoid “DOMMatrix is not defined” in Node
-  if (typeof (globalThis as any).DOMMatrix === "undefined") {
-    (globalThis as any).DOMMatrix = class { constructor(..._args: any[]) {} };
-  }
-
-  // CJS build path that exists in pdfjs-dist 2.12.313
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const pdfjsLib: any = await import("pdfjs-dist/build/pdf.js");
-
-  const getDocument =
-    (pdfjsLib as any).getDocument ||
-    ((pdfjsLib as any).default && (pdfjsLib as any).default.getDocument);
-
-  if (!getDocument) {
-    throw new Error("pdfjs getDocument not found (check pdfjs-dist version).");
-  }
-
-  const buf = await fs.readFile(absPath);
-  const loadingTask = getDocument({
-    data: new Uint8Array(buf),
-    disableWorker: true,
-    isEvalSupported: false,
-    useSystemFonts: true,
-    stopAtErrors: false,
-  });
-
-  const pdf = await loadingTask.promise;
-  const parts: string[] = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const content = await page.getTextContent();
-    const text = (content.items as any[])
-      .map((it) => (it && typeof it.str === "string" ? it.str : ""))
-      .join(" ");
-    parts.push(text);
-  }
-
-  return parts.join("\n").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
->>>>>>> 3efbda623485aa607265e453764d978351a12587
 }
 
 // Use your OpenAI helper directly
@@ -195,6 +151,7 @@ async function doIngest(_baseUrl: string) {
       // .md/.txt in your repo are JSON blobs stored as ".md" — parse if possible, otherwise index raw
       try {
         const json = JSON.parse(rawText);
+        // Flatten typical JSON knowledge shapes into one string; fall back to raw
         const textBlobs: string[] = [];
         const stack: any[] = [json];
         while (stack.length) {
@@ -215,11 +172,11 @@ async function doIngest(_baseUrl: string) {
 
     const vectors = await embed(chunksToEmbed.map((p) => p.content));
     const rows = chunksToEmbed.map((p, i) => ({
-      doc_id: docId,
+      doc_id: docId,          // bigint
       section: p.section,
       content: p.content,
-      url: urlPath,
-      embedding: vectors[i],
+      url: urlPath,           // kb_chunks.url exists in your schema
+      embedding: vectors[i],  // public.vector accepts float[]
     }));
 
     const ins = await sb.from("kb_chunks").insert(rows);
@@ -233,8 +190,10 @@ async function doIngest(_baseUrl: string) {
 
 // Convenience wrappers so you can click or POST
 export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(new URL(req.url).origin);
+    const result = await doIngest(base);
     return NextResponse.json({ ok: true, method: "GET", ...result });
   } catch (e: any) {
     return NextResponse.json(
@@ -245,8 +204,10 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const url = new URL(req.url);
+  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(new URL(req.url).origin);
+    const result = await doIngest(base);
     return NextResponse.json({ ok: true, method: "POST", ...result });
   } catch (e: any) {
     return NextResponse.json(
