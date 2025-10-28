@@ -15,7 +15,11 @@ export const runtime = "nodejs"; // needs fs
 
 type Chunk = { section: string | null; content: string };
 
-/** Naive Markdown/JSON chunker: splits on headings and size */
+function sha1(s: string) {
+  return crypto.createHash("sha1").update(s).digest("hex");
+}
+
+/** Simple chunker: split on markdown headings & size limit */
 function chunkText(input: string, max = 1200): Chunk[] {
   const lines = input.split(/\r?\n/);
   const out: Chunk[] = [];
@@ -54,36 +58,33 @@ async function walk(dir: string): Promise<string[]> {
   return files;
 }
 
-function sha1(s: string) {
-  return crypto.createHash("sha1").update(s).digest("hex");
-}
-
-/** Extract text from a PDF using pdf-parse (Node-safe). */
-/** Extract text from a PDF using pdf-parse (Node-safe). */
+/** Extract text from a PDF (Node-safe) using pdf-parse */
 async function extractPdfText(absPath: string): Promise<string> {
+  // Lazy import so it never bundles into the client
   const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
   const result = await pdfParse(buf);
-  return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+  // normalise whitespace to help scoring & chunking
+  return String(result.text || "")
+    .replace(/\u0000/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-
-// Use your OpenAI helper directly
+/** Use your OpenAI helper directly */
 async function embed(texts: string[]): Promise<number[][]> {
   return await embedDirect(texts);
 }
 
 async function doIngest(_baseUrl: string) {
-  // 0) locate knowledge root
   const kbRoot = path.join(process.cwd(), "public", "knowledge");
   await fs.access(kbRoot).catch(() => {
     throw new Error("Folder public/knowledge not found");
   });
 
-  // 1) server-only Supabase (SERVICE ROLE) so inserts bypass RLS
   const sb = supabaseService();
 
-  // 2) ensure a default source exists (uuid id)
+  // Ensure a default source
   let sourceId: string | null = null;
   {
     const { data } = await sb
@@ -104,11 +105,14 @@ async function doIngest(_baseUrl: string) {
   }
   if (!sourceId) throw new Error("Could not create/find kb_sources row");
 
-  // 3) collect files (md/markdown/txt/pdf)
-  const files = (await walk(kbRoot)).filter((f) => /\.(md|markdown|txt|pdf)$/i.test(f));
+  // Collect candidate files
+  const files = (await walk(kbRoot))
+    .filter((f) => /\.(md|markdown|txt|pdf)$/i.test(f))
+    .sort();
 
   let docs = 0;
   let chunks = 0;
+  const skipped: { file: string; reason: string }[] = [];
 
   for (const abs of files) {
     const rel =
@@ -116,10 +120,10 @@ async function doIngest(_baseUrl: string) {
       path.basename(abs);
 
     const urlPath = `/knowledge/${rel}`; // stored in kb_docs.url & kb_chunks.url
-    const docKey = sha1(urlPath);        // stable unique key required by your schema
+    const docKey = sha1(urlPath); // stable unique key
     const ext = path.extname(rel).toLowerCase();
 
-    // 4) upsert doc row by doc_key (idempotent re-ingest)
+    // Upsert doc row by doc_key (idempotent)
     const title = path
       .basename(rel)
       .replace(/\.(md|markdown|txt|pdf)$/i, "")
@@ -133,59 +137,84 @@ async function doIngest(_baseUrl: string) {
       )
       .select("id")
       .single();
-    if (up.error || !up.data?.id) throw up.error ?? new Error("Failed to upsert kb_docs");
-    const docId = up.data.id; // bigint
-    docs += 1;
 
-    // 5) (re)place chunks for this doc: delete then insert fresh
-    await sb.from("kb_chunks").delete().eq("doc_id", docId);
-
-    // 6) Extract text depending on file type
-    let rawText = "";
-    if (ext === ".pdf") {
-      rawText = await extractPdfText(abs);
-    } else {
-      rawText = await fs.readFile(abs, "utf8");
-      // .md/.txt in your repo are often JSON blobs stored as ".md" — parse & flatten if possible
-      try {
-        const json = JSON.parse(rawText);
-        const textBlobs: string[] = [];
-        const stack: any[] = [json];
-        while (stack.length) {
-          const cur = stack.pop();
-          if (typeof cur === "string") textBlobs.push(cur);
-          else if (Array.isArray(cur)) stack.push(...cur);
-          else if (cur && typeof cur === "object") stack.push(...Object.values(cur));
-        }
-        rawText = (textBlobs.join(" ").trim() || rawText);
-      } catch {
-        // keep rawText as-is (plain text markdown)
-      }
+    if (up.error || !up.data?.id) {
+      skipped.push({ file: rel, reason: up.error?.message ?? "kb_docs upsert failed" });
+      continue;
     }
 
-    // 7) Chunk & embed
-    const chunksToEmbed = chunkText(rawText, 1200);
-    if (chunksToEmbed.length === 0) continue;
+    const docId = up.data.id as number;
+    docs += 1;
 
-    const vectors = await embed(chunksToEmbed.map((p) => p.content));
+    // Replace chunks for this doc
+    await sb.from("kb_chunks").delete().eq("doc_id", docId);
+
+    // Extract text
+    let rawText = "";
+    try {
+      if (ext === ".pdf") {
+        rawText = await extractPdfText(abs);
+      } else {
+        rawText = await fs.readFile(abs, "utf8");
+        // .md/.txt are JSON blobs in this repo; flatten if possible
+        try {
+          const json = JSON.parse(rawText);
+          const textBlobs: string[] = [];
+          const stack: any[] = [json];
+          while (stack.length) {
+            const cur = stack.pop();
+            if (typeof cur === "string") textBlobs.push(cur);
+            else if (Array.isArray(cur)) stack.push(...cur);
+            else if (cur && typeof cur === "object") stack.push(...Object.values(cur));
+          }
+          const flat = textBlobs.join(" ").trim();
+          if (flat) rawText = flat;
+        } catch {
+          // plain markdown text; keep as-is
+        }
+      }
+    } catch (e: any) {
+      skipped.push({ file: rel, reason: e?.message ?? "text extraction failed" });
+      // don’t crash the whole run; continue to next file
+      continue;
+    }
+
+    // Chunk & embed
+    const chunksToEmbed = chunkText(rawText, 1200);
+    if (chunksToEmbed.length === 0) {
+      skipped.push({ file: rel, reason: "no extractable text" });
+      continue;
+    }
+
+    let vectors: number[][];
+    try {
+      vectors = await embed(chunksToEmbed.map((p) => p.content));
+    } catch (e: any) {
+      skipped.push({ file: rel, reason: e?.message ?? "embedding failed" });
+      continue;
+    }
+
     const rows = chunksToEmbed.map((p, i) => ({
-      doc_id: docId,          // bigint
+      doc_id: docId,
       section: p.section,
       content: p.content,
-      url: urlPath,           // kb_chunks.url exists in your schema
-      embedding: vectors[i],  // public.vector accepts float[]
+      url: urlPath,
+      embedding: vectors[i],
     }));
 
     const ins = await sb.from("kb_chunks").insert(rows);
-    if (ins.error) throw ins.error;
+    if (ins.error) {
+      skipped.push({ file: rel, reason: ins.error.message });
+      continue;
+    }
 
     chunks += rows.length;
   }
 
-  return { docs, chunks };
+  return { docs, chunks, skipped };
 }
 
-// Convenience wrappers so you can click or POST
+// === HTTP handlers ===
 export async function GET(req: Request) {
   try {
     const result = await doIngest(new URL(req.url).origin);
