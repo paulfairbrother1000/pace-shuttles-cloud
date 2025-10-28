@@ -2,56 +2,34 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-/**
- * Environment-driven switches/creds:
- * - ENABLE_BASIC_AUTH: "true" (default) or "false" to disable the prompt.
- * - BASIC_AUTH_USER:   username (default "dev")
- * - BASIC_AUTH_PASS:   password (default "99")
- * - BASIC_AUTH_REALM:  realm string (default "Development Site")
- *
- * Tip: If your browser seems stuck rejecting creds, change BASIC_AUTH_REALM to force a fresh prompt.
- */
-
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // 1) Never serve raw knowledge files from /public/knowledge/*
-  //    (The ingest script reads from disk, this only blocks HTTP access.)
+  //    (ingest reads from disk; this only blocks HTTP access)
   if (pathname.startsWith("/knowledge/")) {
     return new NextResponse("Not Found", { status: 404 });
   }
 
-  // 2) Allow Next internals & API without auth (double-safety; matcher also exempts most)
-  if (
-    pathname.startsWith("/_next/") ||
-    pathname.startsWith("/api/") ||
-    pathname === "/favicon.ico" ||
-    pathname === "/robots.txt"
-  ) {
-    return NextResponse.next();
-  }
-
-  // 3) Basic Auth gate (env-toggleable)
+  // 2) Optional: Basic Auth gate for the whole site (except exempted paths)
+  //    Toggle with env ENABLE_BASIC_AUTH=true|false (default true)
   const enableAuth =
     (process.env.ENABLE_BASIC_AUTH ?? "true").toLowerCase() !== "false";
+
   if (!enableAuth) {
     return NextResponse.next();
   }
 
+  const basicAuth = req.headers.get("authorization");
   const USER = process.env.BASIC_AUTH_USER ?? "dev";
-  const PASS = process.env.BASIC_AUTH_PASS ?? "99";
-  const REALM = process.env.BASIC_AUTH_REALM ?? "Development Site";
+  const PASS = process.env.BASIC_AUTH_PASS ?? "99"; // change in env for security
 
-  const header = req.headers.get("authorization");
-  if (header) {
-    const [scheme, encoded] = header.split(" ");
+  if (basicAuth) {
+    const [scheme, encoded] = basicAuth.split(" ");
     if (scheme === "Basic" && encoded) {
       try {
-        // Edge runtime provides atob
         const decoded = atob(encoded);
-        const sep = decoded.indexOf(":");
-        const user = sep >= 0 ? decoded.slice(0, sep) : decoded;
-        const pass = sep >= 0 ? decoded.slice(sep + 1) : "";
+        const [user, pass] = decoded.split(":");
         if (user === USER && pass === PASS) {
           return NextResponse.next();
         }
@@ -64,13 +42,13 @@ export function middleware(req: NextRequest) {
   return new NextResponse("Authentication required", {
     status: 401,
     headers: {
-      "WWW-Authenticate": `Basic realm="${REALM}"`,
+      "WWW-Authenticate": 'Basic realm="Development Site"',
     },
   });
 }
 
-// Exempt Next internals, API routes, and basic assets via matcher.
-// NOTE: /knowledge/* is intentionally NOT exempted (blocked above).
+// Exempt Next internals, API routes, basic assets.
+// NOTE: /knowledge/* is NOT exempted (intentionally blocked above).
 export const config = {
   matcher: ["/((?!_next|api|favicon.ico|robots.txt).*)"],
 };
