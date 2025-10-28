@@ -58,22 +58,27 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-/**
- * Extract text from a PDF using pdfjs-dist legacy build (Node-safe).
- * No workers, no DOMMatrix requirement.
- */
+/** Extract text from a PDF using pdfjs-dist CJS build (Node-safe). */
 async function extractPdfText(absPath: string): Promise<string> {
-  // Dynamic import keeps this server-only
-  // Ensure package.json has:  "pdfjs-dist": "2.12.313"
-  // (we use the legacy build specifically to avoid DOM APIs)
-  // @ts-ignore
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.js");
+  // Minimal shim to avoid “DOMMatrix is not defined” in Node
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class { constructor(..._args: any[]) {} };
+  }
 
-  // Read the file as a Node buffer
+  // CJS build path that exists in pdfjs-dist 2.12.313
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pdfjsLib: any = await import("pdfjs-dist/build/pdf.js");
+
+  const getDocument =
+    (pdfjsLib as any).getDocument ||
+    ((pdfjsLib as any).default && (pdfjsLib as any).default.getDocument);
+
+  if (!getDocument) {
+    throw new Error("pdfjs getDocument not found (check pdfjs-dist version).");
+  }
+
   const buf = await fs.readFile(absPath);
-
-  // Run without workers to avoid workerSrc config
-  const loadingTask = pdfjsLib.getDocument({
+  const loadingTask = getDocument({
     data: new Uint8Array(buf),
     disableWorker: true,
     isEvalSupported: false,
@@ -93,7 +98,6 @@ async function extractPdfText(absPath: string): Promise<string> {
     parts.push(text);
   }
 
-  // Normalise whitespace to help scoring & chunking
   return parts.join("\n").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
 }
 
@@ -180,7 +184,6 @@ async function doIngest(_baseUrl: string) {
       // .md/.txt in your repo are JSON blobs stored as ".md" — parse if possible, otherwise index raw
       try {
         const json = JSON.parse(rawText);
-        // Flatten typical JSON knowledge shapes into one string; fall back to raw
         const textBlobs: string[] = [];
         const stack: any[] = [json];
         while (stack.length) {
@@ -201,11 +204,11 @@ async function doIngest(_baseUrl: string) {
 
     const vectors = await embed(chunksToEmbed.map((p) => p.content));
     const rows = chunksToEmbed.map((p, i) => ({
-      doc_id: docId,          // bigint
+      doc_id: docId,
       section: p.section,
       content: p.content,
-      url: urlPath,           // kb_chunks.url exists in your schema
-      embedding: vectors[i],  // public.vector accepts float[]
+      url: urlPath,
+      embedding: vectors[i],
     }));
 
     const ins = await sb.from("kb_chunks").insert(rows);
