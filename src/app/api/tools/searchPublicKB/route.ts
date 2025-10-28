@@ -5,14 +5,17 @@ export const dynamic = "force-dynamic";       // no caching of KB lookups
 import { NextResponse } from "next/server";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createServerClient } from "@supabase/ssr";
 
 type Match = {
   title: string;
   section: string | null;
   snippet: string;
   url: string | null;
-  score: number;
+  score: number; // higher = better
 };
+
+/* ------------------------- file-based parsing helpers ------------------------- */
 
 function textify(json: any): { title: string; chunks: { section: string | null; text: string }[] } {
   // paceshuttles-overview.public.md shape
@@ -45,7 +48,7 @@ function textify(json: any): { title: string; chunks: { section: string | null; 
     return { title, chunks };
   }
 
-  // client terms.public.md shape
+  // client-terms.public.md shape
   if (Array.isArray(json?.sections)) {
     const title = json?.title ?? "Terms";
     const chunks = json.sections.flatMap((s: any) => {
@@ -71,6 +74,7 @@ function textify(json: any): { title: string; chunks: { section: string | null; 
     return { title, chunks };
   }
 
+  // fallback: stringify JSON
   return { title: "Knowledge", chunks: [{ section: null, text: JSON.stringify(json) }] };
 }
 
@@ -79,6 +83,7 @@ function score(query: string, text: string): number {
   const t = text.toLowerCase();
   let s = 0;
   for (const term of q) {
+    // FIX: proper template string + escaping
     const re = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
     const m = t.match(re);
     s += m ? m.length : 0;
@@ -87,10 +92,10 @@ function score(query: string, text: string): number {
   return s > 0 ? s / Math.sqrt(Math.max(100, text.length)) : 0;
 }
 
-async function findMatches(query: string, topK = 8): Promise<Match[]> {
+async function findMatchesFromFiles(query: string, topK = 8): Promise<Match[]> {
   const kbDir = path.join(process.cwd(), "public", "knowledge");
   const files = await fs.readdir(kbDir).catch(() => []);
-  const candidates = files.filter(f => f.endsWith(".public.md"));
+  const candidates = files.filter((f) => f.endsWith(".public.md"));
 
   const matches: Match[] = [];
 
@@ -100,7 +105,11 @@ async function findMatches(query: string, topK = 8): Promise<Match[]> {
 
     // files are JSON stored with .md extension
     let json: any;
-    try { json = JSON.parse(raw); } catch { continue; }
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      continue;
+    }
 
     const { title, chunks } = textify(json);
     for (const ch of chunks) {
@@ -121,28 +130,94 @@ async function findMatches(query: string, topK = 8): Promise<Match[]> {
   return matches.slice(0, topK);
 }
 
-// --- GET: handy for quick manual tests in the browser -----------------------
+/* ---------------------------- vector search (DB) ---------------------------- */
+
+async function findMatchesFromDB(query: string, topK = 8): Promise<Match[]> {
+  // Build absolute base URL for /api/ai/embed call
+  const base = process.env.NEXT_PUBLIC_BASE_URL
+    ? process.env.NEXT_PUBLIC_BASE_URL.replace(/\/$/, "")
+    : "";
+
+  // 1) get embedding for the query
+  let qvec: number[] | null = null;
+  try {
+    const res = await fetch(`${base}/api/ai/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texts: [query] }),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const { embeddings } = await res.json();
+    qvec = embeddings?.[0] ?? null;
+  } catch {
+    qvec = null;
+  }
+  if (!qvec) return [];
+
+  // 2) call your kb_public_search RPC (anon read-enabled by your policies)
+  try {
+    const sb = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { cookies: { get() {}, set() {}, remove() {} } }
+    );
+
+    const { data, error } = await sb.rpc("kb_public_search", {
+      query_embedding: qvec as any,
+      match_count: topK,
+    });
+
+    if (error || !Array.isArray(data)) return [];
+    const matches: Match[] = data.map((r: any) => ({
+      title: r.doc_title ?? "Knowledge",
+      section: r.section ?? null,
+      snippet: (r.content ?? "").slice(0, 600),
+      url: r.url ?? null,
+      score: typeof r.similarity === "number" ? r.similarity : 0,
+    }));
+    // Sort by score desc just in case
+    matches.sort((a, b) => b.score - a.score);
+    return matches.slice(0, topK);
+  } catch {
+    return [];
+  }
+}
+
+/* --------------------------------- ROUTES ---------------------------------- */
+
+// GET: handy for manual testing in the browser
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = url.searchParams.get("q");
   if (!q) {
     return NextResponse.json({
       ok: true,
-      hint: "POST { query } to this endpoint, or GET with ?q=your+question for a quick check.",
+      hint:
+        "POST { query } to this endpoint, or GET with ?q=your+question for a quick check.",
       example: "/api/tools/searchPublicKB?q=cancellation",
     });
   }
-  const matches = await findMatches(q, 8);
-  return NextResponse.json({ matches });
+
+  // Try DB vector search first; fall back to file search
+  const db = await findMatchesFromDB(q, 8);
+  if (db.length > 0) return NextResponse.json({ matches: db });
+
+  const fsMatches = await findMatchesFromFiles(q, 8);
+  return NextResponse.json({ matches: fsMatches });
 }
 
-// --- POST: used by /api/agent ------------------------------------------------
+// POST: used by /api/agent
 export async function POST(req: Request) {
   try {
     const { query, topK = 8 } = await req.json();
     if (!query) return NextResponse.json({ matches: [] });
-    const matches = await findMatches(String(query), Number(topK));
-    return NextResponse.json({ matches });
+
+    const db = await findMatchesFromDB(String(query), Number(topK));
+    if (db.length > 0) return NextResponse.json({ matches: db });
+
+    const fsMatches = await findMatchesFromFiles(String(query), Number(topK));
+    return NextResponse.json({ matches: fsMatches });
   } catch (e: any) {
     return NextResponse.json(
       { matches: [], error: e?.message ?? "Search error" },
