@@ -2,7 +2,7 @@
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
 // Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
-// Matches your schema: kb_docs(url, doc_key, source_id, title),  kb_chunks(url, ...).
+// Matches your schema: kb_docs(url, doc_key, source_id, title), kb_chunks(url, ...).
 
 import { NextResponse } from "next/server";
 import path from "node:path";
@@ -15,7 +15,7 @@ export const runtime = "nodejs"; // needs fs
 
 type Chunk = { section: string | null; content: string };
 
-/** Naive Markdown/JSON chunker: splits on headings and size  */
+/** Naive Markdown/JSON chunker: splits on headings and size */
 function chunkText(input: string, max = 1200): Chunk[] {
   const lines = input.split(/\r?\n/);
   const out: Chunk[] = [];
@@ -58,13 +58,43 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-// Lazy-import pdf-parse only when needed (keeps edge bundles slimmer)
+/**
+ * Extract text from a PDF using pdfjs-dist legacy build (Node-safe).
+ * No workers, no DOMMatrix requirement.
+ */
 async function extractPdfText(absPath: string): Promise<string> {
+  // Dynamic import keeps this server-only
+  // Ensure package.json has:  "pdfjs-dist": "2.12.313"
+  // (we use the legacy build specifically to avoid DOM APIs)
+  // @ts-ignore
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.js");
+
+  // Read the file as a Node buffer
   const buf = await fs.readFile(absPath);
-  const { default: pdfParse } = await import("pdf-parse");
-  const result = await pdfParse(buf);
+
+  // Run without workers to avoid workerSrc config
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(buf),
+    disableWorker: true,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    stopAtErrors: false,
+  });
+
+  const pdf = await loadingTask.promise;
+  const parts: string[] = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const text = (content.items as any[])
+      .map((it) => (it && typeof it.str === "string" ? it.str : ""))
+      .join(" ");
+    parts.push(text);
+  }
+
   // Normalise whitespace to help scoring & chunking
-  return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+  return parts.join("\n").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
 }
 
 // Use your OpenAI helper directly
@@ -189,10 +219,8 @@ async function doIngest(_baseUrl: string) {
 
 // Convenience wrappers so you can click or POST
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "GET", ...result });
   } catch (e: any) {
     return NextResponse.json(
@@ -203,10 +231,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const url = new URL(req.url);
-  const base = `${url.protocol}//${url.host}`;
   try {
-    const result = await doIngest(base);
+    const result = await doIngest(new URL(req.url).origin);
     return NextResponse.json({ ok: true, method: "POST", ...result });
   } catch (e: any) {
     return NextResponse.json(
