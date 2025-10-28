@@ -59,13 +59,14 @@ function sha1(s: string) {
 }
 
 /** Extract text from a PDF using pdf-parse (Node-safe). */
+/** Extract text from a PDF using pdf-parse (Node-safe). */
 async function extractPdfText(absPath: string): Promise<string> {
-  // IMPORTANT: we import inside this function so it only bundles on the server build.
   const { default: pdfParse } = await import("pdf-parse"); // CJS default export
   const buf = await fs.readFile(absPath);
   const result = await pdfParse(buf);
   return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
 }
+
 
 // Use your OpenAI helper directly
 async function embed(texts: string[]): Promise<number[][]> {
