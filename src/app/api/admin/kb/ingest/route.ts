@@ -15,7 +15,7 @@ export const runtime = "nodejs"; // needs fs
 
 type Chunk = { section: string | null; content: string };
 
-/** Naive Markdown/JSON chunker: splits on headings and size */
+/** Naive Markdown/JSON chunker: splits on headings and size  */
 function chunkText(input: string, max = 1200): Chunk[] {
   const lines = input.split(/\r?\n/);
   const out: Chunk[] = [];
