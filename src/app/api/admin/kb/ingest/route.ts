@@ -58,8 +58,18 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
+<<<<<<< HEAD
+// --- PDF text extraction (Node-safe via pdf-parse v1.1.1) ---
+=======
 /** Extract text from a PDF using pdfjs-dist CJS build (Node-safe). */
+>>>>>>> 3efbda623485aa607265e453764d978351a12587
 async function extractPdfText(absPath: string): Promise<string> {
+<<<<<<< HEAD
+  const { default: pdfParse } = await import("pdf-parse"); // CJS default export
+  const buf = await fs.readFile(absPath);
+  const result = await pdfParse(buf);
+  return String(result.text || "").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+=======
   // Minimal shim to avoid “DOMMatrix is not defined” in Node
   if (typeof (globalThis as any).DOMMatrix === "undefined") {
     (globalThis as any).DOMMatrix = class { constructor(..._args: any[]) {} };
@@ -99,6 +109,7 @@ async function extractPdfText(absPath: string): Promise<string> {
   }
 
   return parts.join("\n").replace(/\u0000/g, "").replace(/\s+/g, " ").trim();
+>>>>>>> 3efbda623485aa607265e453764d978351a12587
 }
 
 // Use your OpenAI helper directly
