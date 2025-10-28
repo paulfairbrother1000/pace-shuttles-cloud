@@ -1,3 +1,4 @@
+// src/app/api/admin/kb/ingest/route.ts
 // Trigger by visiting /api/admin/kb/ingest (GET) or POSTing to it.
 // Reads JSON-in-.md files and PDFs under /public/knowledge/** (md/markdown/txt/pdf).
 // Calls OpenAI embeddings via src/lib/ai.ts (embedDirect).
@@ -57,37 +58,25 @@ async function walk(dir: string): Promise<string[]> {
   return files;
 }
 
-/** Extract text from a PDF (Node-safe) using pdf-parse with a strict data arg */
-async function extractPdfText(absPath: string): Promise<string> {
-  // 1) Read file as a real Buffer
+/** Extract text from a PDF (Node-safe) using pdf-parse with a strict {data} arg */
+async function extractPdfText(absPath: string, relNameForError?: string): Promise<string> {
+  // Read the file
   const buf = await fs.readFile(absPath);
   if (!buf || buf.length === 0) {
-    throw new Error(`Empty PDF: ${absPath}`);
+    throw new Error(`Empty PDF: ${relNameForError || absPath}`);
   }
 
-  // 2) Import in a way that works with both CJS/ESM bundles
+  // Import that works with CJS/ESM variants
   const mod: any = await import("pdf-parse");
   const pdfParse: (input: any) => Promise<any> = mod?.default ?? mod;
   if (typeof pdfParse !== "function") {
     throw new Error("pdf-parse import failed (no callable export)");
   }
 
-  // 3) Force the “data” shape so pdf-parse never tries its test fallback path
-  //    (the './test/data/05-versions-space.pdf' you keep seeing)
-  const result = await pdfParse({ data: new Uint8Array(buf) });
-
-  const text = String(result?.text ?? "")
-    .replace(/\u0000/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!text) throw new Error("No text extracted from PDF");
-  return text;
-}
-
   try {
-    const result = await pdfParse(buf);
-    const text = String(result?.text || "")
+    // Force the strict data shape so pdf-parse never tries its internal test fallback path
+    const result = await pdfParse({ data: new Uint8Array(buf) });
+    const text = String(result?.text ?? "")
       .replace(/\u0000/g, "")
       .replace(/\s+/g, " ")
       .trim();
@@ -96,14 +85,13 @@ async function extractPdfText(absPath: string): Promise<string> {
       // Likely a scanned (image-only) PDF without an OCR text layer
       throw new Error("no extractable text (image-only PDF?)");
     }
+
     return text;
   } catch (e: any) {
     const msg = String(e?.message || e || "pdf-parse failure");
-    // Clean up confusing internal fallback path from pdf-parse
-    if (msg.includes("test/data/05-versions-space.pdf")) {
-      throw new Error(`pdf-parse did not receive a valid PDF buffer for ${relNameForError}`);
-    }
-    throw new Error(`${msg} [${relNameForError}]`);
+    // Make the error message useful and remove the confusing test path if present
+    const cleaned = msg.replace("./test/data/05-versions-space.pdf", "(pdf-parse test path)");
+    throw new Error(`${cleaned} [${relNameForError || absPath}]`);
   }
 }
 
@@ -112,7 +100,7 @@ async function embed(texts: string[]): Promise<number[][]> {
   return await embedDirect(texts);
 }
 
-async function doIngest(_origin: string) {
+async function doIngest(_baseUrl: string) {
   const kbRoot = path.join(process.cwd(), "public", "knowledge");
   await fs.access(kbRoot).catch(() => {
     throw new Error("Folder public/knowledge not found");
@@ -155,8 +143,8 @@ async function doIngest(_origin: string) {
       abs.split(path.join("public", "knowledge") + path.sep)[1] ??
       path.basename(abs);
 
-    const urlPath = `/knowledge/${rel}`;
-    const docKey = sha1(urlPath);
+    const urlPath = `/knowledge/${rel}`; // stored in kb_docs.url & kb_chunks.url
+    const docKey = sha1(urlPath); // stable unique key
     const ext = path.extname(rel).toLowerCase();
 
     // Upsert doc row by doc_key (idempotent)
@@ -192,7 +180,7 @@ async function doIngest(_origin: string) {
         rawText = await extractPdfText(abs, rel);
       } else {
         rawText = await fs.readFile(abs, "utf8");
-        // In your repo, .md/.txt often contain JSON; flatten if possible
+        // .md/.txt may be JSON blobs in this repo; flatten if possible
         try {
           const json = JSON.parse(rawText);
           const textBlobs: string[] = [];
@@ -206,7 +194,7 @@ async function doIngest(_origin: string) {
           const flat = textBlobs.join(" ").trim();
           if (flat) rawText = flat;
         } catch {
-          // plain markdown text; keep as-is
+          // plain markdown; keep as-is
         }
       }
     } catch (e: any) {
