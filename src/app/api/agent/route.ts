@@ -22,8 +22,10 @@ Pace Shuttles public data tools
   • Journeys: /api/public/journeys  (prefer date=YYYY-MM-DD; journeys are volatile)
   • Vehicle Types: /api/public/vehicle-types
 
-- Revenue model (must state if asked): Operators receive ride revenue; destinations do NOT.
-  Pace Shuttles earns a commission from operators.
+- Coverage precedence: if a document (RAG) disagrees with the APIs about where/when we operate,
+  treat the APIs as the source of truth and say so briefly.
+
+- Revenue model: Operators receive ride revenue; destinations do NOT. Pace Shuttles earns a commission from operators.
 
 - Environmental note: Pace Shuttles contributes to environmental charities in the regions it operates.
   For country specifics, read charity fields from /api/public/countries.
@@ -31,6 +33,7 @@ Pace Shuttles public data tools
 - Do not invent data. If a field is missing say “not published yet.”
 - Prefer small result sets (limit ≤ 20). For “today/this week” questions, call /api/public/journeys with an explicit date (UTC window).
 - “What do you have in <country>?” → list pickups + destinations (names + directions links); then suggest journeys for a date.
+- Never contradict yourself across turns. If new data changes an answer, acknowledge and correct.
 `;
 
 /* ──────────────────────────────────────────────────────────────
@@ -64,7 +67,22 @@ function getBaseUrl() {
    2) Intent + concierge helpers
    ────────────────────────────────────────────────────────────── */
 
-function detectIntent(q: string) {
+type Intent = {
+  wantsQuote: boolean;
+  wantsRouteInfo: boolean;
+  wantsMyStuff: boolean;
+  wantsCancel: boolean;
+
+  wantsCountryList: boolean;
+  wantsDestinations: boolean;
+  wantsRegionsNext: boolean;
+  wantsOperateInCountry: boolean;
+  wantsTransportTypes: boolean;
+  wantsCharities: boolean;
+  wantsRoutesOverview: boolean;
+};
+
+function detectIntent(q: string): Intent {
   const s = q.toLowerCase();
 
   const wantsCountryList =
@@ -94,7 +112,6 @@ function detectIntent(q: string) {
     wantsMyStuff: /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
     wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
 
-    // NEW intents aligned to your table
     wantsCountryList,
     wantsDestinations,
     wantsRegionsNext,
@@ -106,7 +123,7 @@ function detectIntent(q: string) {
 }
 
 function guessCountryName(q: string): string | null {
-  // crude heuristic: capture words after "in" ending at punctuation
+  // crude heuristic: capture words after "in/for/at"
   const m = q.match(/\b(?:in|for|at)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
   return m ? m[1].trim() : null;
 }
@@ -115,21 +132,23 @@ function askedForRoadmap(q: string): boolean {
   return /\b(road\s*map|roadmap|future|next)\b/i.test(q);
 }
 
-function buildClarifyingQuestion(intent: ReturnType<typeof detectIntent>, q: string) {
+type Clarify = { text: string; expect: keyof Intent } | null;
+
+function buildClarifyingQuestion(intent: Intent, q: string): Clarify {
   if (intent.wantsCountryList && !askedForRoadmap(q)) {
-    return "Do you want **countries we operate in today**, or our **future roadmap**?";
+    return { text: "Do you want **countries we operate in today**, or our **future roadmap**?", expect: "wantsCountryList" };
   }
   if (intent.wantsDestinations) {
-    return "Would you like **all destinations**, or destinations in a **particular country or region**?";
+    return { text: "Would you like **all destinations**, or destinations in a **particular country or region**?", expect: "wantsDestinations" };
   }
   if (intent.wantsOperateInCountry && !guessCountryName(q)) {
-    return "Which **country** did you have in mind?";
+    return { text: "Which **country** did you have in mind?", expect: "wantsOperateInCountry" };
   }
   if (intent.wantsRoutesOverview) {
-    return "Are you interested in **routes for a specific country**, a **journey type**, or **all routes**?";
+    return { text: "Are you interested in **routes for a specific country**, a **journey type**, or **all routes**?", expect: "wantsRoutesOverview" };
   }
   if (intent.wantsCharities) {
-    return "Would you like **all charities by country**, or the charity for a **specific country**?";
+    return { text: "Would you like **all charities by country**, or the charity for a **specific country**?", expect: "wantsCharities" };
   }
   return null;
 }
@@ -191,19 +210,20 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
-async function pullPublicDataForQuestion(q: string, intent: ReturnType<typeof detectIntent>) {
+async function pullPublicDataForQuestion(q: string, intent: Intent) {
   const iso = findISOInText(q);
   const countryHint = guessCountryName(q);
   const roadmap = askedForRoadmap(q);
+  const wantsAll = /\ball (countries|places|destinations)\b/i.test(q);
 
   // Countries: list active now vs roadmap (inactive)
   const countriesParams = intent.wantsCountryList
     ? { active: !roadmap }           // true => current; false => roadmap
     : { q, active: true };
 
-  // Destinations: global unless they asked for a country
-  const destinationsParams = countryHint
-    ? { q: countryHint, active: true }
+  // Destinations: global unless they asked for a country or said “all countries”
+  const destinationsParams = (countryHint || wantsAll)
+    ? { q: countryHint ?? "", active: true }
     : { q, active: true };
 
   const [countries, destinations, pickups, journeys, vehicleTypes] = await Promise.all([
@@ -282,12 +302,32 @@ export async function POST(req: Request) {
   if (!q) return NextResponse.json({ content: "Please enter a question." });
 
   const signedIn = await isSignedInFromCookies();
-  const intent = detectIntent(q);
+
+  // Detect from message
+  let intent = detectIntent(q);
+
+  // If the client echoes back a prior clarifier expectation, honor it
+  const expected = body?.expectedIntent as keyof Intent | undefined;
+  if (expected && expected in intent) {
+    // pin the expected path to avoid intent drift
+    (intent as any)[expected] = true;
+    // special case: user reply like “all countries” → still destinations, not countries
+    if (expected === "wantsDestinations" && /\ball (countries|places|destinations)\b/i.test(q)) {
+      intent.wantsDestinations = true;
+      intent.wantsCountryList = false;
+    }
+  } else {
+    // Heuristic if UI hasn't been wired yet:
+    if (intent.wantsDestinations && /\ball (countries|places|destinations)\b/i.test(q)) {
+      intent.wantsCountryList = false;
+      intent.wantsDestinations = true;
+    }
+  }
 
   // Ask one targeted clarifier first (when appropriate)
   const clarify = buildClarifyingQuestion(intent, q);
   if (clarify) {
-    return NextResponse.json({ content: clarify, meta: { clarify: true } });
+    return NextResponse.json({ content: clarify.text, meta: { clarify: true, expect: clarify.expect } });
   }
 
   const k = 8;
@@ -413,6 +453,10 @@ export async function POST(req: Request) {
   return NextResponse.json({
     content,
     sources,
-    meta: { mode: signedIn ? "signed" : "anon", usedSnippets: Math.min(snippets.length, k), summary },
+    meta: {
+      mode: signedIn ? "signed" : "anon",
+      usedSnippets: Math.min(snippets.length, k),
+      summary,
+    },
   });
 }
