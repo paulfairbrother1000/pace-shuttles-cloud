@@ -19,7 +19,7 @@ Pace Shuttles public data tools
   • Countries: /api/public/countries  (includes charity_name, charity_url, charity_description)
   • Destinations: /api/public/destinations  (filter with country_id if provided; else use q=)
   • Pickups: /api/public/pickups  (includes directions_url)
-  • Journeys: /api/public/journeys  (prefer date=YYYY-MM-DD; journeys are volatile)
+  • Journeys: /api/public/journeys  (prefer date=YYYY-MM-DD; you may also send date_from/date_to for ranges)
   • Vehicle Types: /api/public/vehicle-types
 
 - Coverage precedence: if a document (RAG) disagrees with the APIs about where/when we operate,
@@ -31,13 +31,13 @@ Pace Shuttles public data tools
   For country specifics, read charity fields from /api/public/countries.
 
 - Do not invent data. If a field is missing say “not published yet.”
-- Prefer small result sets (limit ≤ 20). For “today/this week” questions, call /api/public/journeys with an explicit date (UTC window).
+- Prefer small result sets (limit ≤ 20). For “today/this week/month” questions, call /api/public/journeys with an explicit date (or date range).
 - “What do you have in <country>?” → list pickups + destinations (names + directions links); then suggest journeys for a date.
 - Never contradict yourself across turns. If new data changes an answer, acknowledge and correct.
 `;
 
 /* ──────────────────────────────────────────────────────────────
-   1) Session helpers
+   1) Session + URL helpers
    ────────────────────────────────────────────────────────────── */
 async function isSignedInFromCookies(): Promise<boolean> {
   try {
@@ -55,7 +55,6 @@ async function isSignedInFromCookies(): Promise<boolean> {
   } catch { return false; }
 }
 
-// Absolute base URL (works on Vercel + local dev)
 function getBaseUrl() {
   const h = headers();
   const proto = h.get("x-forwarded-proto") ?? "https";
@@ -66,7 +65,6 @@ function getBaseUrl() {
 /* ──────────────────────────────────────────────────────────────
    2) Intent + concierge helpers
    ────────────────────────────────────────────────────────────── */
-
 type Intent = {
   wantsQuote: boolean;
   wantsRouteInfo: boolean;
@@ -108,7 +106,7 @@ function detectIntent(q: string): Intent {
 
   return {
     wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
-    wantsRouteInfo: /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
+    wantsRouteInfo: /route|pickup|destination|depart|when|schedule|how long|duration|\bjourney\b|\bjourneys\b/i.test(s),
     wantsMyStuff: /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
     wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
 
@@ -144,8 +142,8 @@ function buildClarifyingQuestion(intent: Intent, q: string): Clarify {
   if (intent.wantsOperateInCountry && !guessCountryName(q)) {
     return { text: "Which **country** did you have in mind?", expect: "wantsOperateInCountry" };
   }
-  if (intent.wantsRoutesOverview) {
-    return { text: "Are you interested in **routes for a specific country**, a **journey type**, or **all routes**?", expect: "wantsRoutesOverview" };
+  if (intent.wantsRoutesOverview || intent.wantsRouteInfo) {
+    return { text: "I can check live availability. Which **country** and **date**?", expect: "wantsRouteInfo" };
   }
   if (intent.wantsCharities) {
     return { text: "Would you like **all charities by country**, or the charity for a **specific country**?", expect: "wantsCharities" };
@@ -157,6 +155,27 @@ function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
 }
+
+/* Month name → date range (current or upcoming year) */
+function parseMonthRange(text: string): { start: string; end: string } | null {
+  const months = [
+    "january","february","march","april","may","june",
+    "july","august","september","october","november","december"
+  ];
+  const s = text.toLowerCase();
+  const idx = months.findIndex(m => new RegExp(`\\b${m}\\b`).test(s));
+  if (idx === -1) return null;
+
+  const now = new Date();
+  const year = (idx >= now.getMonth()) ? now.getFullYear() : now.getFullYear() + 1;
+  const start = new Date(Date.UTC(year, idx, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(year, idx + 1, 0, 23, 59, 59));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const startISO = `${year}-${pad(idx+1)}-01`;
+  const endISO = `${year}-${pad(idx+1)}-${pad(end.getUTCDate())}`;
+  return { start: startISO, end: endISO };
+}
+
 function extractCutoffsFromSnippet(snippet: string) {
   const t = (snippet || "").toLowerCase();
   const has72 = /72\s*hour|72\s*hrs|3\+?\s*days/.test(t);
@@ -212,6 +231,7 @@ type JourneyRow = {
 
 async function pullPublicDataForQuestion(q: string, intent: Intent) {
   const iso = findISOInText(q);
+  const monthRange = parseMonthRange(q); // NEW: “in November”
   const countryHint = guessCountryName(q);
   const roadmap = askedForRoadmap(q);
   const wantsAll = /\ball (countries|places|destinations)\b/i.test(q);
@@ -226,26 +246,37 @@ async function pullPublicDataForQuestion(q: string, intent: Intent) {
     ? { q: countryHint ?? "", active: true }
     : { q, active: true };
 
+  // Journeys: accept single date or a month range
+  const journeyParams: Record<string, any> = { q: countryHint ?? q, active: true };
+  if (iso) journeyParams.date = iso;
+  if (monthRange) {
+    journeyParams.date_from = monthRange.start;
+    journeyParams.date_to = monthRange.end;
+  }
+
   const [countries, destinations, pickups, journeys, vehicleTypes] = await Promise.all([
     fetchJson<CountryRow>("/api/public/countries", countriesParams),
     fetchJson<DestinationRow>("/api/public/destinations", destinationsParams),
     fetchJson<PickupRow>("/api/public/pickups", { q: countryHint ?? q, active: true }),
-    fetchJson<JourneyRow>("/api/public/journeys", { q: countryHint ?? q, date: iso ?? undefined, active: true }),
+    fetchJson<JourneyRow>("/api/public/journeys", journeyParams),
     fetchJson<{ name: string; description?: string; slug?: string }>("/api/public/vehicle-types", { active: true }),
   ]);
 
   const blocks: string[] = [];
 
+  // Countries (explicit ask)
   if (intent.wantsCountryList && countries.length) {
     const lines = countries.map(c =>
       `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}` : ""}${c.charity_url ? ` (${c.charity_url})` : ""}`
     );
     blocks.push(`${roadmap ? "COUNTRIES (roadmap)" : "COUNTRIES (current)"}\n${lines.join("\n")}`);
   } else if (!intent.wantsCountryList && countries.length) {
+    // soft sample to ground the model without spamming
     const lines = countries.slice(0, 6).map(c => `• ${c.name}`);
     blocks.push(`COUNTRIES (sample)\n${lines.join("\n")}`);
   }
 
+  // Destinations (explicit ask)
   if (intent.wantsDestinations && destinations.length) {
     const lines = destinations.slice(0, 20).map(d =>
       `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`
@@ -253,11 +284,13 @@ async function pullPublicDataForQuestion(q: string, intent: Intent) {
     blocks.push(`DESTINATIONS\n${lines.join("\n")}`);
   }
 
+  // Transport types (explicit ask)
   if (intent.wantsTransportTypes && vehicleTypes.length) {
     const lines = vehicleTypes.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
     blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
   }
 
+  // Charities (explicit ask)
   if (intent.wantsCharities && countries.length) {
     const lines = countries
       .filter(c => c.charity_name)
@@ -265,11 +298,16 @@ async function pullPublicDataForQuestion(q: string, intent: Intent) {
     if (lines.length) blocks.push(`CHARITIES BY COUNTRY\n${lines.join("\n")}`);
   }
 
+  // Journeys (explicit ask or overview)
   if ((intent.wantsRouteInfo || intent.wantsRoutesOverview) && journeys.length) {
+    const dateLabel =
+      monthRange ? ` in ${new Date(monthRange.start + "T00:00:00Z").toLocaleString("en-GB", { month: "long" })}`
+      : iso ? ` on ${iso}`
+      : "";
     const lines = journeys.slice(0, 20).map(j =>
       `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`
     );
-    blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}\n${lines.join("\n")}`);
+    blocks.push(`JOURNEYS${dateLabel}\n${lines.join("\n")}`);
   }
 
   return blocks.join("\n\n");
@@ -309,7 +347,6 @@ export async function POST(req: Request) {
   // If the client echoes back a prior clarifier expectation, honor it
   const expected = body?.expectedIntent as keyof Intent | undefined;
   if (expected && expected in intent) {
-    // pin the expected path to avoid intent drift
     (intent as any)[expected] = true;
     // special case: user reply like “all countries” → still destinations, not countries
     if (expected === "wantsDestinations" && /\ball (countries|places|destinations)\b/i.test(q)) {
