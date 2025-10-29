@@ -1,0 +1,68 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Pace Shuttles Public API", "version": "1.0.0" },
+  "servers": [{ "url": "https://www.paceshuttles.com" }],
+  "paths": {
+    "/api/public/countries": {
+      "get": {
+        "summary": "List countries (with charity info)",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "active", "in": "query", "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "maximum": 500 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/public/destinations": {
+      "get": {
+        "summary": "List destinations (optionally by country)",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "country_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "active", "in": "query", "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "maximum": 500 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/public/pickups": {
+      "get": {
+        "summary": "List pickup points (optionally by country)",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "country_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "active", "in": "query", "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "maximum": 500 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/public/vehicle-types": {
+      "get": {
+        "summary": "List vehicle/transport types",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "active", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/public/journeys": {
+      "get": {
+        "summary": "List upcoming journeys (supports date filter)",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "date", "in": "query", "schema": { "type": "string", "example": "2025-12-22" } },
+          { "name": "active", "in": "query", "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "maximum": 500 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

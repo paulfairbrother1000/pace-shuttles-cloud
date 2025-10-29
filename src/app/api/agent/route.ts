@@ -7,6 +7,33 @@ import { chatComplete } from "@/lib/ai";
 import { preflightGate, systemGuardrails } from "@/lib/guardrails";
 import { retrieveSimilar } from "@/lib/rag";
 
+/* ──────────────────────────────────────────────────────────────
+   0) Policy: how the agent should think + key business truths
+   ────────────────────────────────────────────────────────────── */
+const PACE_PUBLIC_POLICY = `
+Pace Shuttles public data tools
+
+- Use these endpoints for facts. They return clean data (no UUIDs in payloads):
+  • Countries: /api/public/countries  (includes charity_name, charity_url, charity_description)
+  • Destinations: /api/public/destinations  (filter with country_id if provided; else use q=)
+  • Pickups: /api/public/pickups  (includes directions_url)
+  • Journeys: /api/public/journeys  (prefer date=YYYY-MM-DD; journeys are volatile)
+  • Vehicle Types: /api/public/vehicle-types
+
+- Revenue model (must state if asked): Operators receive ride revenue; destinations do NOT.
+  Pace Shuttles earns a commission from operators.
+
+- Environmental note: Pace Shuttles contributes to environmental charities in the regions it operates.
+  For country specifics, read charity fields from /api/public/countries.
+
+- Do not invent data. If a field is missing say “not published yet.”
+- Prefer small result sets (limit ≤ 20). For “today/this week” questions, call /api/public/journeys with an explicit date (UTC window).
+- “What do you have in <country>?” → list pickups + destinations (names + directions links); then suggest journeys for a date.
+`;
+
+/* ──────────────────────────────────────────────────────────────
+   1) Session helpers
+   ────────────────────────────────────────────────────────────── */
 async function isSignedInFromCookies(): Promise<boolean> {
   try {
     const cookieStore = cookies();
@@ -23,36 +50,27 @@ async function isSignedInFromCookies(): Promise<boolean> {
   } catch { return false; }
 }
 
+// Absolute base URL (works on Vercel + local dev)
+function getBaseUrl() {
+  const h = headers();
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? process.env.VERCEL_URL ?? "localhost:3000";
+  return `${proto}://${host}`;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   2) Intent + concierge helpers
+   ────────────────────────────────────────────────────────────── */
 function detectIntent(q: string) {
   const s = q.toLowerCase();
   return {
     wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
     wantsRouteInfo: /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
     wantsMyStuff: /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
-    wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s), // concierge path
+    wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
   };
 }
 
-// absolute URL helper for internal fetch
-async function searchPublicFiles(q: string, k: number) {
-  const h = headers();
-  const proto = h.get("x-forwarded-proto") ?? "https";
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? process.env.VERCEL_URL ?? "localhost:3000";
-  const base = `${proto}://${host}`;
-  const res = await fetch(`${base}/api/tools/searchPublicKB`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query: q, topK: k }),
-    cache: "no-store",
-  }).catch(() => null);
-  if (!res || !res.ok) return [];
-  const data = await res.json().catch(() => ({ matches: [] }));
-  return (data?.matches ?? []).map((m: any) => ({
-    title: m.title, section: m.section ?? null, content: m.snippet ?? "", url: m.url ?? null,
-  }));
-}
-
-/* ── Concierge helpers (keeps docs as source of truth) ── */
 function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
@@ -82,6 +100,96 @@ function friendlyBand(band: RefundBand) {
     : "no refund (no-shows or late arrivals are treated as travelled)";
 }
 
+/* ──────────────────────────────────────────────────────────────
+   3) Public data fetchers (your new endpoints)
+   ────────────────────────────────────────────────────────────── */
+async function fetchJson<T>(path: string, params: Record<string, any> = {}, max = 20): Promise<T[]> {
+  const base = getBaseUrl();
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    usp.set(k, String(v));
+  }
+  // default small page
+  if (!usp.has("limit")) usp.set("limit", String(max));
+  const url = `${base}${path}${usp.toString() ? `?${usp.toString()}` : ""}`;
+  const res = await fetch(url, { headers: { "accept": "application/json" }, cache: "no-store" });
+  if (!res.ok) return [];
+  const json = await res.json().catch(() => ({ rows: [] }));
+  return (json?.rows ?? []) as T[];
+}
+
+type CountryRow = {
+  name: string; description?: string; charity_name?: string; charity_url?: string; charity_description?: string; active?: boolean;
+};
+type DestinationRow = { name: string; country_name?: string; town?: string; region?: string; website_url?: string; directions_url?: string; description?: string; active?: boolean; };
+type PickupRow = { name: string; country_name?: string; town?: string; region?: string; directions_url?: string; description?: string; active?: boolean; };
+type JourneyRow = {
+  pickup_name: string; destination_name: string; country_name: string; route_name?: string;
+  starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
+};
+
+async function pullPublicDataForQuestion(q: string) {
+  const iso = findISOInText(q);
+  const [countries, destinations, pickups, journeys] = await Promise.all([
+    fetchJson<CountryRow>("/api/public/countries", { q }),
+    fetchJson<DestinationRow>("/api/public/destinations", { q, active: true }),
+    fetchJson<PickupRow>("/api/public/pickups", { q, active: true }),
+    fetchJson<JourneyRow>("/api/public/journeys", { q, date: iso ?? undefined, active: true }),
+  ]);
+
+  // Convert rows to short, readable bullets for grounding
+  const blocks: string[] = [];
+
+  if (countries.length) {
+    const lines = countries.slice(0, 8).map(c =>
+      `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}` : ""}${c.charity_url ? ` (${c.charity_url})` : ""}`
+    );
+    blocks.push(`COUNTRIES\n${lines.join("\n")}`);
+  }
+  if (destinations.length) {
+    const lines = destinations.slice(0, 10).map(d =>
+      `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`
+    );
+    blocks.push(`DESTINATIONS\n${lines.join("\n")}`);
+  }
+  if (pickups.length) {
+    const lines = pickups.slice(0, 10).map(p =>
+      `• ${p.name}${p.country_name ? ` — ${p.country_name}` : ""}${p.town ? `, ${p.town}` : ""}${p.directions_url ? ` (directions: ${p.directions_url})` : ""}`
+    );
+    blocks.push(`PICKUPS\n${lines.join("\n")}`);
+  }
+  if (journeys.length) {
+    const lines = journeys.slice(0, 10).map(j =>
+      `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`
+    );
+    blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}\n${lines.join("\n")}`);
+  }
+
+  return blocks.join("\n\n");
+}
+
+/* ──────────────────────────────────────────────────────────────
+   4) Public KB search (files) — unchanged
+   ────────────────────────────────────────────────────────────── */
+async function searchPublicFiles(q: string, k: number) {
+  const base = getBaseUrl();
+  const res = await fetch(`${base}/api/tools/searchPublicKB`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query: q, topK: k }),
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res || !res.ok) return [];
+  const data = await res.json().catch(() => ({ matches: [] }));
+  return (data?.matches ?? []).map((m: any) => ({
+    title: m.title, section: m.section ?? null, content: m.snippet ?? "", url: m.url ?? null,
+  }));
+}
+
+/* ──────────────────────────────────────────────────────────────
+   5) Main handler
+   ────────────────────────────────────────────────────────────── */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const q = String(body?.message || body?.text || "").trim();
@@ -93,7 +201,7 @@ export async function POST(req: Request) {
   const k = 8;
   let snippets: any[] = [];
 
-  /* ── Concierge: cancellations & refunds ── */
+  /* Concierge: cancellations & refunds */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
     const hasRef = /\b[A-Z0-9]{6,}\b/.test(q); // simple booking-ref heuristic
@@ -130,20 +238,22 @@ export async function POST(req: Request) {
         "_Note: for booking lookups you’ll be asked to **sign in** so we keep your information private._",
     });
   }
-  /* ─────────────────────────────────────── */
 
-  // 1) Try vector RAG (public view for anon)
+  // 1) Vector RAG
   try {
     snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
   } catch { snippets = []; }
 
-  // 2) Fallback to file-based public KB
+  // 2) Public KB fallback
   if (!snippets || snippets.length === 0) {
     snippets = await searchPublicFiles(q, k);
   }
 
-  // 3) Deflect only if account-specific AND we have no public answer
-  if (!signedIn && intent.wantsMyStuff && snippets.length === 0) {
+  // 3) Public DATA (live) from your APIs — NEW
+  const dataBlock = await pullPublicDataForQuestion(q);
+
+  // 4) Deflect only if account-specific AND we have no public answer
+  if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
     const gate = preflightGate(q, { signedIn });
     if (gate.action === "deflect" || gate.action === "deny") {
       return NextResponse.json({ content: gate.message, sources: [], meta: { signedIn, gate: gate.action } });
@@ -152,13 +262,16 @@ export async function POST(req: Request) {
 
   // Build context for the model
   const contextBlock =
-    snippets.length > 0
-      ? snippets.map((s: any, i: number) => {
-          const title = s.title || s.doc_title || "Knowledge";
-          const section = s.section || null;
-          return `【${i + 1}】 (${title}${section ? " › " + section : ""})\n${(s.content || "").trim()}`;
-        }).join("\n\n")
-      : "No relevant snippets found.";
+    [
+      snippets.length > 0
+        ? snippets.map((s: any, i: number) => {
+            const title = s.title || s.doc_title || "Knowledge";
+            const section = s.section || null;
+            return `【${i + 1}】 (${title}${section ? " › " + section : ""})\n${(s.content || "").trim()}`;
+          }).join("\n\n")
+        : "No relevant KB snippets found.",
+      dataBlock ? `\nPUBLIC DATA (live):\n${dataBlock}` : ""
+    ].join("\n\n");
 
   const sources = snippets.map((s: any) => ({
     title: s.title || s.doc_title || "Knowledge",
@@ -168,19 +281,19 @@ export async function POST(req: Request) {
 
   const sys = [
     systemGuardrails({ signedIn }),
-    `Tone: warm, concise, pragmatic. Lead with the answer, then a short explanation.`,
-    `Use brief bullets when helpful. Avoid marketing fluff.`,
+    "Tone: warm, concise, pragmatic. Lead with the answer, then a short explanation.",
+    "Use brief bullets when helpful. Avoid marketing fluff.",
     signedIn
-      ? `User is signed in: you may reference their own bookings/balance/tickets via approved tools only.`
-      : `User is anonymous: answer only from public knowledge and public data.`,
-    // concierge guidance for other sensitive flows
-    `For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).`,
+      ? "User is signed in: you may reference their own bookings/balance/tickets via approved tools only."
+      : "User is anonymous: answer only from public knowledge and public data.",
+    "For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).",
+    PACE_PUBLIC_POLICY, // ← inject the how-to-think policy
   ].join("\n");
 
   const userPrompt = [
     `User question:\n${q}`,
     ``,
-    `Use the following context snippets if relevant:`,
+    `Use the following context (KB + live data) if relevant:`,
     contextBlock,
     ``,
     `Guidelines:`,
