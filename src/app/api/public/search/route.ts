@@ -1,67 +1,63 @@
+// src/app/api/public/search/route.ts
 import { NextResponse } from "next/server";
 import { supaAnon } from "../_lib/db";
-
 export const runtime = "edge";
 
-// NOTE: We call the SECURITY DEFINER function directly (rpc), then filter in code.
-// This side-steps any view/rls quirks and will return rows as long as the GRANT EXECUTE exists.
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const activeParam = url.searchParams.get("active");       // "true" | "false" | null
-  const date = url.searchParams.get("date");                // YYYY-MM-DD
-  const q = (url.searchParams.get("q") || "").trim();       // free-text on names
-  const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10), 500);
-  const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10), 0);
+  const q = (url.searchParams.get("q") || "").trim();
+  const includes = new Set((url.searchParams.get("include") || "countries,destinations,pickups,vehicle-types,journeys")
+    .split(",").map(s => s.trim()).filter(Boolean));
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "10", 10), 20);
 
   const supa = supaAnon();
+  const safe = q.replace(/[%_]/g, m => `\\${m}`);
 
-  // 1) Fetch raw rows from the definer function (bypasses RLS on base tables)
-  // Function returns: ids + names + starts_at + duration + currency + price + active, etc.
-  const { data, error } = await supa.rpc("ps_public_journeys_fn");
+  const tasks: Promise<any>[] = [];
+  const out: any = {};
 
-  if (error) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  }
-
-  let rows = (data ?? []) as any[];
-
-  // 2) Apply filters in code (cheap at ~hundreds of rows)
-  if (activeParam !== null) {
-    const want = activeParam === "true";
-    rows = rows.filter(r => r.active === want);
-  }
-
-  if (date) {
-    const start = new Date(`${date}T00:00:00Z`).getTime();
-    const end   = new Date(`${date}T23:59:59.999Z`).getTime();
-    rows = rows.filter(r => {
-      const t = new Date(r.starts_at).getTime();
-      return t >= start && t <= end;
-    });
-  }
-
-  if (q) {
-    const s = q.toLowerCase();
-    rows = rows.filter(r =>
-      String(r.pickup_name || "").toLowerCase().includes(s) ||
-      String(r.destination_name || "").toLowerCase().includes(s) ||
-      String(r.country_name || "").toLowerCase().includes(s) ||
-      String(r.route_name || "").toLowerCase().includes(s)
-    );
-  }
-
-  // 3) Sort & paginate
-  rows.sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime());
-  const count = rows.length;
-  rows = rows.slice(offset, offset + limit);
-
-  // 4) Strip internal IDs before returning
-  const clean = rows.map(
-    ({ id, route_id, country_id, pickup_id, destination_id, base_price_cents, ...rest }) => rest
+  if (includes.has("countries")) tasks.push(
+    supa.from("ps_public_countries_v").select("*", { count: "exact" })
+      .or(q ? `name.ilike.%${safe}%,description.ilike.%${safe}%` : undefined as any)
+      .order("name", { ascending: true }).limit(limit)
+      .then(({ data, count }) => out.countries = { rows: (data??[]).map(({id,code,...r})=>r), count: count??0 })
   );
 
+  if (includes.has("destinations")) tasks.push(
+    supa.from("ps_public_destinations_v").select("*", { count: "exact" })
+      .or(q ? `name.ilike.%${safe}%,description.ilike.%${safe}%` : undefined as any)
+      .order("name", { ascending: true }).limit(limit)
+      .then(({ data, count }) => out.destinations = { rows: (data??[]).map(({id,country_id,...r})=>r), count: count??0 })
+  );
+
+  if (includes.has("pickups")) tasks.push(
+    supa.from("ps_public_pickups_v").select("*", { count: "exact" })
+      .or(q ? `name.ilike.%${safe}%,town.ilike.%${safe}%` : undefined as any)
+      .order("name", { ascending: true }).limit(limit)
+      .then(({ data, count }) => out.pickups = { rows: (data??[]).map(({id,country_id,transport_type_id,transport_type_place_id,...r})=>r), count: count??0 })
+  );
+
+  if (includes.has("vehicle-types")) tasks.push(
+    supa.from("ps_public_vehicle_types_v").select("*", { count: "exact" })
+      .or(q ? `name.ilike.%${safe}%,description.ilike.%${safe}%` : undefined as any)
+      .order("sort_order", { ascending: true }).order("name", { ascending: true }).limit(limit)
+      .then(({ data, count }) => out.vehicle_types = { rows: (data??[]).map(({id,...r})=>r), count: count??0 })
+  );
+
+  if (includes.has("journeys")) tasks.push(
+    supa.from("ps_public_journeys_v").select("*", { count: "exact" })
+      // Don’t filter by q unless you intend to (names already exposed)
+      .order("starts_at", { ascending: true }).limit(limit)
+      .then(({ data, count }) => {
+        const rows = (data??[]).map(({ id, route_id, country_id, pickup_id, destination_id, base_price_cents, ...rest }) => rest);
+        out.journeys = { rows, count: count??0 };
+      })
+  );
+
+  await Promise.all(tasks);
+
   return NextResponse.json(
-    { ok: true, rows: clean, count },
-    { headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=3600" } }
+    { ok: true, ...out },
+    { headers: { "Cache-Control": "s-maxage=60, stale-while-revalidate=600" } }
   );
 }
