@@ -26,7 +26,7 @@ export default function AgentChat({
   title?: string;
 }) {
   const [messages, setMessages] = useState<Msg[]>([
-    { role: "agent", content: "Hi! Ask me about countries, destinations, journeys, or vehicle types." },
+    { role: "agent", content: "Hi! How can I help?" },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);

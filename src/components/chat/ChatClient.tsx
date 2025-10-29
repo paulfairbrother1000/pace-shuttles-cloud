@@ -50,7 +50,7 @@ export default function ChatClient() {
       <div className="max-h-[50vh] overflow-y-auto p-4 space-y-3">
         {turns.length === 0 ? (
           <p className="opacity-75">
-            Ask me about destinations, pricing rules, cancellation policy, or how Pace Shuttles works.
+            Hi. How can I help?
           </p>
         ) : (
           turns.map((t, i) => (
