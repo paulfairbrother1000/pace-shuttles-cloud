@@ -7,6 +7,8 @@ import { chatComplete } from "@/lib/ai";
 import { preflightGate, systemGuardrails } from "@/lib/guardrails";
 import { retrieveSimilar } from "@/lib/rag";
 
+export const runtime = "nodejs";
+
 /* ──────────────────────────────────────────────────────────────
    0) Policy: how the agent should think + key business truths
    ────────────────────────────────────────────────────────────── */
@@ -61,14 +63,75 @@ function getBaseUrl() {
 /* ──────────────────────────────────────────────────────────────
    2) Intent + concierge helpers
    ────────────────────────────────────────────────────────────── */
+
 function detectIntent(q: string) {
   const s = q.toLowerCase();
+
+  const wantsCountryList =
+    /(which|what)\s+countries\b|countries\s+(do you|d’you)?\s*(operate|serve)|\boperate in which countries\b/.test(s);
+
+  const wantsDestinations =
+    /\b(what|which)\s+(destinations|places)\b|\bdestinations?\s+do (you|u)\s+(visit|serve|go)\b/.test(s);
+
+  const wantsRegionsNext =
+    /\b(what|which)\s+regions\b.*(next|future|road\s*map|roadmap)|\bwhere.*(next|future)\b/.test(s);
+
+  const wantsOperateInCountry =
+    /\bdo (you|u)\s+operate\s+in\b|\boperate in\s+[a-z]/.test(s);
+
+  const wantsTransportTypes =
+    /\b(what|which)\s+(modes|mode|transport|vehicle types?|boats?|helicopters?)\b|\btransport[-\s]?types?\b/.test(s);
+
+  const wantsCharities =
+    /\b(what|which)\s+charit(y|ies)\b|\bcharit(y|ies)\s+do (you|u)\s+(support|donate)\b/.test(s);
+
+  const wantsRoutesOverview =
+    /\b(tell me about|what about)\s+(your )?routes\b|\broutes?\s+overview\b/.test(s);
+
   return {
     wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
     wantsRouteInfo: /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
     wantsMyStuff: /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
     wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
+
+    // NEW intents aligned to your table
+    wantsCountryList,
+    wantsDestinations,
+    wantsRegionsNext,
+    wantsOperateInCountry,
+    wantsTransportTypes,
+    wantsCharities,
+    wantsRoutesOverview,
   };
+}
+
+function guessCountryName(q: string): string | null {
+  // crude heuristic: capture words after "in" ending at punctuation
+  const m = q.match(/\b(?:in|for|at)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
+  return m ? m[1].trim() : null;
+}
+
+function askedForRoadmap(q: string): boolean {
+  return /\b(road\s*map|roadmap|future|next)\b/i.test(q);
+}
+
+function buildClarifyingQuestion(intent: ReturnType<typeof detectIntent>, q: string) {
+  if (intent.wantsCountryList && !askedForRoadmap(q)) {
+    return "Do you want **countries we operate in today**, or our **future roadmap**?";
+  }
+  if (intent.wantsDestinations) {
+    return "Would you like **all destinations**, or destinations in a **particular country or region**?";
+  }
+  if (intent.wantsOperateInCountry && !guessCountryName(q)) {
+    return "Which **country** did you have in mind?";
+  }
+  if (intent.wantsRoutesOverview) {
+    return "Are you interested in **routes for a specific country**, a **journey type**, or **all routes**?";
+  }
+  if (intent.wantsCharities) {
+    return "Would you like **all charities by country**, or the charity for a **specific country**?";
+  }
+  return null;
 }
 
 function findISOInText(text: string): string | null {
@@ -110,10 +173,9 @@ async function fetchJson<T>(path: string, params: Record<string, any> = {}, max 
     if (v === undefined || v === null || v === "") continue;
     usp.set(k, String(v));
   }
-  // default small page
   if (!usp.has("limit")) usp.set("limit", String(max));
   const url = `${base}${path}${usp.toString() ? `?${usp.toString()}` : ""}`;
-  const res = await fetch(url, { headers: { "accept": "application/json" }, cache: "no-store" });
+  const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
   if (!res.ok) return [];
   const json = await res.json().catch(() => ({ rows: [] }));
   return (json?.rows ?? []) as T[];
@@ -129,38 +191,62 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
-async function pullPublicDataForQuestion(q: string) {
+async function pullPublicDataForQuestion(q: string, intent: ReturnType<typeof detectIntent>) {
   const iso = findISOInText(q);
-  const [countries, destinations, pickups, journeys] = await Promise.all([
-    fetchJson<CountryRow>("/api/public/countries", { q }),
-    fetchJson<DestinationRow>("/api/public/destinations", { q, active: true }),
-    fetchJson<PickupRow>("/api/public/pickups", { q, active: true }),
-    fetchJson<JourneyRow>("/api/public/journeys", { q, date: iso ?? undefined, active: true }),
+  const countryHint = guessCountryName(q);
+  const roadmap = askedForRoadmap(q);
+
+  // Countries: list active now vs roadmap (inactive)
+  const countriesParams = intent.wantsCountryList
+    ? { active: !roadmap }           // true => current; false => roadmap
+    : { q, active: true };
+
+  // Destinations: global unless they asked for a country
+  const destinationsParams = countryHint
+    ? { q: countryHint, active: true }
+    : { q, active: true };
+
+  const [countries, destinations, pickups, journeys, vehicleTypes] = await Promise.all([
+    fetchJson<CountryRow>("/api/public/countries", countriesParams),
+    fetchJson<DestinationRow>("/api/public/destinations", destinationsParams),
+    fetchJson<PickupRow>("/api/public/pickups", { q: countryHint ?? q, active: true }),
+    fetchJson<JourneyRow>("/api/public/journeys", { q: countryHint ?? q, date: iso ?? undefined, active: true }),
+    fetchJson<{ name: string; description?: string; slug?: string }>("/api/public/vehicle-types", { active: true }),
   ]);
 
-  // Convert rows to short, readable bullets for grounding
   const blocks: string[] = [];
 
-  if (countries.length) {
-    const lines = countries.slice(0, 8).map(c =>
+  if (intent.wantsCountryList && countries.length) {
+    const lines = countries.map(c =>
       `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}` : ""}${c.charity_url ? ` (${c.charity_url})` : ""}`
     );
-    blocks.push(`COUNTRIES\n${lines.join("\n")}`);
+    blocks.push(`${roadmap ? "COUNTRIES (roadmap)" : "COUNTRIES (current)"}\n${lines.join("\n")}`);
+  } else if (!intent.wantsCountryList && countries.length) {
+    const lines = countries.slice(0, 6).map(c => `• ${c.name}`);
+    blocks.push(`COUNTRIES (sample)\n${lines.join("\n")}`);
   }
-  if (destinations.length) {
-    const lines = destinations.slice(0, 10).map(d =>
+
+  if (intent.wantsDestinations && destinations.length) {
+    const lines = destinations.slice(0, 20).map(d =>
       `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`
     );
     blocks.push(`DESTINATIONS\n${lines.join("\n")}`);
   }
-  if (pickups.length) {
-    const lines = pickups.slice(0, 10).map(p =>
-      `• ${p.name}${p.country_name ? ` — ${p.country_name}` : ""}${p.town ? `, ${p.town}` : ""}${p.directions_url ? ` (directions: ${p.directions_url})` : ""}`
-    );
-    blocks.push(`PICKUPS\n${lines.join("\n")}`);
+
+  if (intent.wantsTransportTypes && vehicleTypes.length) {
+    const lines = vehicleTypes.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
+    blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
   }
-  if (journeys.length) {
-    const lines = journeys.slice(0, 10).map(j =>
+
+  if (intent.wantsCharities && countries.length) {
+    const lines = countries
+      .filter(c => c.charity_name)
+      .map(c => `• ${c.name}: ${c.charity_name}${c.charity_url ? ` (${c.charity_url})` : ""}`);
+    if (lines.length) blocks.push(`CHARITIES BY COUNTRY\n${lines.join("\n")}`);
+  }
+
+  if ((intent.wantsRouteInfo || intent.wantsRoutesOverview) && journeys.length) {
+    const lines = journeys.slice(0, 20).map(j =>
       `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`
     );
     blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}\n${lines.join("\n")}`);
@@ -170,7 +256,7 @@ async function pullPublicDataForQuestion(q: string) {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   4) Public KB search (files) — unchanged
+   4) Public KB search (files)
    ────────────────────────────────────────────────────────────── */
 async function searchPublicFiles(q: string, k: number) {
   const base = getBaseUrl();
@@ -198,13 +284,19 @@ export async function POST(req: Request) {
   const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
+  // Ask one targeted clarifier first (when appropriate)
+  const clarify = buildClarifyingQuestion(intent, q);
+  if (clarify) {
+    return NextResponse.json({ content: clarify, meta: { clarify: true } });
+  }
+
   const k = 8;
   let snippets: any[] = [];
 
   /* Concierge: cancellations & refunds */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
-    const hasRef = /\b[A-Z0-9]{6,}\b/.test(q); // simple booking-ref heuristic
+    const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
 
     if (hasRef && !signedIn) {
       return NextResponse.json({
@@ -249,8 +341,8 @@ export async function POST(req: Request) {
     snippets = await searchPublicFiles(q, k);
   }
 
-  // 3) Public DATA (live) from your APIs — NEW
-  const dataBlock = await pullPublicDataForQuestion(q);
+  // 3) Public DATA (live) from your APIs — intent-aware
+  const dataBlock = await pullPublicDataForQuestion(q, intent);
 
   // 4) Deflect only if account-specific AND we have no public answer
   if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
@@ -287,7 +379,7 @@ export async function POST(req: Request) {
       ? "User is signed in: you may reference their own bookings/balance/tickets via approved tools only."
       : "User is anonymous: answer only from public knowledge and public data.",
     "For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).",
-    PACE_PUBLIC_POLICY, // ← inject the how-to-think policy
+    PACE_PUBLIC_POLICY,
   ].join("\n");
 
   const userPrompt = [
