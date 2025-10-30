@@ -12,21 +12,22 @@ import { retrieveSimilar } from "@/lib/rag";
    ────────────────────────────────────────────────────────────── */
 const PACE_PUBLIC_POLICY = `
 Facts & tools (public, anon-safe):
-• Countries: /api/public/countries  (charity_name/url/description; use for metadata)
+• Countries: /api/public/countries  (includes charity_name, charity_url, charity_description; filter active=true)
 • Destinations: /api/public/destinations  (q=, country filter via name)
 • Pickups: /api/public/pickups          (q=, includes directions_url)
-• Journeys: /api/public/journeys        (date=YYYY-MM-DD strongly preferred) ← SOURCE OF TRUTH for "operational today"
+• Journeys: /api/public/journeys        (date=YYYY-MM-DD strongly preferred)
 • Vehicle Types: /api/public/vehicle-types
 
-Definitions:
-• "Operate today / current": countries that have at least one journey for the given day.
-• "Roadmap": active countries that currently have no journeys (no vehicles/routes live today).
+Revenue model (must be accurate):
+• Operators receive the ride revenue; destinations do NOT receive revenue.
+• Pace Shuttles earns a commission from operators.
 
-Revenue model:
-• Operators receive ride revenue; destinations do NOT. Pace Shuttles earns a commission from operators.
+Environmental note:
+• Pace Shuttles contributes to environmental charities in the regions it operates.
+• Retrieve charity fields from /api/public/countries when asked.
 
 General:
-• Never invent data. If a field is missing, say “not published yet.”
+• Do not invent data. If a field is missing, say “not published yet.”
 • Prefer small result sets (limit ≤ 20).
 `;
 
@@ -116,7 +117,7 @@ function askedForRoadmap(q: string) {
   return /\b(road\s*map|roadmap|future|next|coming|planned|expanding)\b/i.test(q);
 }
 function guessCountryName(q: string): string | null {
-  const m = q.match(/\b(?:in|for|at)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
+  const m = q.match(/\b(?:in|for|at|of)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
   return m ? m[1].trim() : null;
 }
 
@@ -131,7 +132,8 @@ function buildClarifyingQuestion(intent: ReturnType<typeof detectIntent>, q: str
   if (intent.wantsCountryList && !askedForRoadmap(q)) {
     return { question: "Do you want **countries we operate in today**, or our **future roadmap**?", expect: "wantsCountryList" };
   }
-  if (intent.wantsDestinations) {
+  // Only clarify for destinations if NO country was mentioned
+  if (intent.wantsDestinations && !guessCountryName(q)) {
     return { question: "Would you like **all destinations**, or destinations in a **particular country or region**?", expect: "wantsDestinations" };
   }
   if (intent.wantsRoutesOverview) {
@@ -174,6 +176,22 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
+/* Rolling 30-day window: countries considered "operational" if any journey exists
+   today..+30d (sampled every 5 days to keep calls light) */
+async function getOperationalCountriesRollingWindow(): Promise<string[]> {
+  const base = new Date();
+  const names = new Set<string>();
+
+  for (let offset = 0; offset <= 30; offset += 5) {
+    const dt = new Date(base.getTime() + offset * 86400000);
+    const iso = dt.toISOString().slice(0, 10);
+    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: iso, active: true }, 200);
+    for (const j of journeys) if (j.country_name) names.add(j.country_name);
+  }
+
+  return [...names];
+}
+
 function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
@@ -209,65 +227,39 @@ async function pullPublicDataForQuestion(
   intent: ReturnType<typeof detectIntent>,
   opts?: { forceCountryList?: "current" | "roadmap" }
 ) {
-  const iso = findISOInText(q) ?? new Date().toISOString().slice(0, 10); // default: today
+  const iso = findISOInText(q);
   const countryHint = guessCountryName(q);
 
-  // Helper: distinct country names from journeys (operational today)
-  async function getOperationalCountries(dateISO: string): Promise<string[]> {
-    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: dateISO, active: true }, 200);
-    const set = new Set<string>();
-    for (const j of journeys) {
-      if (j.country_name) set.add(j.country_name);
-    }
-    return [...set];
-  }
+  // Parameters for other endpoints
+  const destinationsParams = countryHint ? { q: countryHint, active: true } : { q, active: true };
 
-  // Helper: active countries (catalog)
-  async function getActiveCountriesCatalog(): Promise<CountryRow[]> {
-    return await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
-  }
-
+  // For country listing we switch to "journeys in next 30 days" = operational
   const blocks: string[] = [];
 
-  // Countries: "current" vs "roadmap"
   if (intent.wantsCountryList || opts?.forceCountryList) {
-    const choice = opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current");
+    const opNames = await getOperationalCountriesRollingWindow();
 
-    const [operationalToday, activeCatalog] = await Promise.all([
-      getOperationalCountries(iso),
-      getActiveCountriesCatalog(),
-    ]);
-
-    if (choice === "current") {
-      // Show only countries that have journeys today
-      if (operationalToday.length > 0) {
-        const lines = operationalToday.sort().map(c => `• ${c}`);
-        blocks.push(`COUNTRIES WE OPERATE IN TODAY\n${lines.join("\n")}`);
+    if ((opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current")) === "current") {
+      if (opNames.length) {
+        blocks.push(`COUNTRIES (current)\n${opNames.map(n => `• ${n}`).join("\n")}`);
       } else {
-        blocks.push(`COUNTRIES WE OPERATE IN TODAY\n(no journeys published for today)`);
+        blocks.push("COUNTRIES (current)\n• Not published yet.");
       }
     } else {
-      // roadmap = active catalog MINUS operationalToday
-      const roadmap = activeCatalog
-        .map(c => c.name)
-        .filter(name => !operationalToday.includes(name))
-        .sort();
-      if (roadmap.length > 0) {
-        const lines = roadmap.map(c => `• ${c}`);
-        blocks.push(`FUTURE / ROADMAP COUNTRIES (active but no journeys today)\n${lines.join("\n")}`);
+      // roadmap = active countries that are NOT operational
+      const countries = await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
+      const road = countries.map(c => c.name).filter(n => !opNames.includes(n));
+      if (road.length) {
+        blocks.push(`COUNTRIES (roadmap)\n${road.map(n => `• ${n}`).join("\n")}`);
       } else {
-        blocks.push(`FUTURE / ROADMAP COUNTRIES\n(none to show)`);
+        blocks.push("COUNTRIES (roadmap)\n• Not published yet.");
       }
     }
   }
 
-  // Destinations (scoped by country if hinted)
+  // Other lookups
   if (intent.wantsDestinations) {
-    const destinations = await fetchJson<DestinationRow>(
-      "/api/public/destinations",
-      countryHint ? { q: countryHint, active: true } : { active: true },
-      50,
-    );
+    const destinations = await fetchJson<DestinationRow>("/api/public/destinations", destinationsParams);
     if (destinations.length) {
       const lines = destinations.slice(0, 20).map(d =>
         `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
@@ -276,31 +268,25 @@ async function pullPublicDataForQuestion(
     }
   }
 
-  // Transport types
   if (intent.wantsTransportTypes) {
-    const vts = await fetchJson<{ name: string; description?: string; slug?: string }>(
-      "/api/public/vehicle-types",
-      { active: true },
-      50,
-    );
-    if (vts.length) {
-      const lines = vts.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
+    const vehicleTypes = await fetchJson<{ name: string; description?: string; slug?: string }>("/api/public/vehicle-types", { active: true });
+    if (vehicleTypes.length) {
+      const lines = vehicleTypes.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
       blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
     }
   }
 
-  // Journeys (when specifically asking about routes/journeys)
-  if (intent.wantsRouteInfo) {
-    const journeys = await fetchJson<JourneyRow>(
-      "/api/public/journeys",
-      { q: countryHint ?? q, date: iso, active: true },
-      50,
-    );
+  if (intent.wantsRouteInfo || intent.wantsRoutesOverview) {
+    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { q: countryHint ?? q, date: iso ?? undefined, active: true }, 200);
     if (journeys.length) {
-      const lines = journeys.slice(0, 20).map(j =>
-        `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`,
-      );
-      blocks.push(`JOURNEYS${countryHint ? ` in ${countryHint}` : ""} on ${iso}\n${lines.join("\n")}`);
+      const lines = journeys.slice(0, 20).map(j => {
+        const priceStr = j.price_per_seat_from && j.price_per_seat_from > 0
+          ? `from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`
+          : "price to be confirmed";
+        const label = j.route_name ?? `${j.pickup_name} → ${j.destination_name}`;
+        return `• ${label} — ${j.departure_time} UTC, ${j.duration_min} min, ${priceStr}`;
+      });
+      blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}${countryHint ? ` in ${countryHint}` : ""}\n${lines.join("\n")}`);
     }
   }
 
@@ -338,7 +324,7 @@ export async function POST(req: Request) {
   const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
-  /* Concierge path (unchanged) */
+  /* Concierge path first */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
     const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
@@ -367,8 +353,9 @@ export async function POST(req: Request) {
     });
   }
 
-  /* Clarifier memory: if UI sent expectedIntent, consume it here */
+  /* Clarifier memory handling */
   let forceCountryList: "current" | "roadmap" | undefined;
+
   if (expectedIntent === "wantsCountryList") {
     const choice = resolveCountryListChoice(q);
     if (choice) {
@@ -383,7 +370,7 @@ export async function POST(req: Request) {
     }
   }
 
-  // Only ask a new clarifier when we don't already have a pending expectation
+  // Only ask a new clarifier when we don't already have an expectedIntention answer
   if (!expectedIntent) {
     const clarifier = buildClarifyingQuestion(intent, q);
     if (clarifier) {
@@ -394,7 +381,7 @@ export async function POST(req: Request) {
     }
   }
 
-  // Pull live PUBLIC data (countries/destinations/journeys…)
+  // Pull live PUBLIC data (countries/destinations/…)
   const dataBlock = await pullPublicDataForQuestion(q, intent, { forceCountryList });
 
   // Vector RAG (KB) + fallback
