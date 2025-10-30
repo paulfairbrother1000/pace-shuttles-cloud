@@ -1,5 +1,5 @@
 // src/server/homepage-catalog.ts
-// Goal: reuse the exact homepage loader so homepage & agent stay in lockstep.
+// Thin adapter so BOTH homepage and /api/public/visible-catalog use the SAME server logic.
 
 export type VisibleRoute = {
   route_id: string;
@@ -16,12 +16,7 @@ export type VisibleRoute = {
 
 export type VisibleCatalog = {
   routes: VisibleRoute[];
-  countries: Array<{
-    id?: string | null;
-    name: string;
-    description?: string | null;
-    hero_image_url?: string | null;
-  }>;
+  countries: Array<{ id?: string | null; name: string; description?: string | null; hero_image_url?: string | null }>;
   destinations: Array<{
     name: string;
     country_name?: string | null;
@@ -42,17 +37,13 @@ export type VisibleCatalog = {
   vehicle_types: Array<{ id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null }>;
 };
 
-// ------------- Replace this import with your real homepage loader -------------
-// Example: if your homepage exports a server function buildHomeCatalog():
+// Replace this with your actual homepage loader import
+// Example:
 // import { buildHomeCatalog } from "@/app/(site)/_server/buildHomeCatalog";
-//
-// Then implement getVisibleCatalog as a thin pass-through:
+
 export async function getVisibleCatalog(): Promise<VisibleCatalog> {
   // return await buildHomeCatalog();
 
-  // TEMP scaffolding to avoid typescript errors until you wire the real loader:
-  // Delete this stub once you hook up your actual homepage function.
-  throw new Error(
-    "Wire this adapter to your homepage’s server loader (e.g., buildHomeCatalog) and return {routes, countries, destinations, pickups, vehicle_types}."
-  );
+  // TEMP: throw so the API falls back gracefully until you wire the real function.
+  throw new Error("getVisibleCatalog() not wired to homepage loader yet.");
 }
