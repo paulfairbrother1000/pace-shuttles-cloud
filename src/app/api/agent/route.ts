@@ -370,7 +370,7 @@ export async function POST(req: Request) {
 
   // RAG + fallback
   const k = 8;
-  let snippets: any[]
+
   let snippets: any[] = [];
   try {
     snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
