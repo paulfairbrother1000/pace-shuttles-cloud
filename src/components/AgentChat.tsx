@@ -3,12 +3,16 @@
 
 import * as React from "react";
 
-// ---- Types ----
+/* ──────────────────────────────────────────────
+   Types
+   ────────────────────────────────────────────── */
+type SourceLink = { title: string; section?: string | null; url?: string | null };
+
 type ChatMsg = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  sources?: { title: string; section?: string | null; url?: string | null }[];
+  sources?: SourceLink[];
   meta?: {
     clarify?: boolean;
     expect?: string | null; // server suggests the next expected intent
@@ -21,7 +25,7 @@ type ChatMsg = {
 
 type AgentResponse = {
   content: string;
-  sources?: { title: string; section?: string | null; url?: string | null }[];
+  sources?: SourceLink[];
   requireLogin?: boolean;
   meta?: {
     clarify?: boolean;
@@ -32,14 +36,15 @@ type AgentResponse = {
   };
 };
 
-// ---- Small helpers ----
+/* ──────────────────────────────────────────────
+   Small helpers
+   ────────────────────────────────────────────── */
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
 const EXPECT_KEY = "ps_agent_expected_intent";
 
-// Persist expectedIntent between turns (same tab)
 function loadExpectedIntent(): string | null {
   try {
     return sessionStorage.getItem(EXPECT_KEY);
@@ -54,7 +59,9 @@ function saveExpectedIntent(v: string | null) {
   } catch {}
 }
 
-// ---- Component ----
+/* ──────────────────────────────────────────────
+   Component
+   ────────────────────────────────────────────── */
 export default function AgentChat({
   endpoint = "/api/agent",
   title = "Ask Pace Shuttles",
@@ -66,28 +73,37 @@ export default function AgentChat({
   const [text, setText] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [expectedIntent, setExpectedIntent] = React.useState<string | null>(loadExpectedIntent());
+  const [expectedIntent, setExpectedIntent] = React.useState<string | null>(
+    loadExpectedIntent()
+  );
 
-  // Keep expectedIntent mirrored into sessionStorage
+  // Keep expectedIntent mirrored to sessionStorage
   React.useEffect(() => {
     saveExpectedIntent(expectedIntent);
   }, [expectedIntent]);
 
-    async function send() {
-    const q = text.trim();
+  // Quick replies for common clarifiers
+  const quickReplies: Record<string, string[] | undefined> = {
+    wantsCountryList: ["today", "roadmap"],
+    // Add more when you add other clarifier paths:
+    // wantsDestinations: ["all destinations", "destinations in Antigua"],
+  };
+
+  async function send(payloadText?: string) {
+    const q = (payloadText ?? text).trim();
     if (!q || busy) return;
 
-    // Always re-read expectedIntent from sessionStorage before sending
-    let memoryIntent = expectedIntent || loadExpectedIntent();
+    // Always re-read expectedIntent from sessionStorage before sending (in case another tab updated it)
+    const memoryIntent = expectedIntent || loadExpectedIntent();
 
     // Push user message into the timeline
     const userMsg: ChatMsg = { id: uid(), role: "user", content: q };
-    setMessages(prev => [...prev, userMsg]);
-    setText("");
+    setMessages((prev) => [...prev, userMsg]);
+    if (!payloadText) setText("");
     setBusy(true);
     setError(null);
 
-    // Build payload, include memory (expectedIntent)
+    // Build payload
     const payload: Record<string, any> = { message: q };
     if (memoryIntent) payload.expectedIntent = memoryIntent;
 
@@ -99,12 +115,10 @@ export default function AgentChat({
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
         throw new Error(`Agent error: ${res.status} ${res.statusText} ${txt}`);
       }
-
       data = (await res.json()) as AgentResponse;
     } catch (e: any) {
       setBusy(false);
@@ -112,7 +126,9 @@ export default function AgentChat({
       return;
     }
 
-    // Update expected intent memory from server response
+    // Update expected intent memory:
+    // - if server continues to expect something, store it;
+    // - otherwise clear it to avoid loops.
     const nextExpect = data?.meta?.expect ?? null;
     setExpectedIntent(nextExpect || null);
 
@@ -132,11 +148,10 @@ export default function AgentChat({
       },
     };
 
-    setMessages(prev => [...prev, assistantMsg]);
+    setMessages((prev) => [...prev, assistantMsg]);
     setBusy(false);
   }
 
-  // Submit on Enter
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -155,10 +170,17 @@ export default function AgentChat({
           'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial',
       }}
     >
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
         <h2 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>{title}</h2>
 
-        {/* Small debug chip to show clarifier memory */}
+        {/* Debug chip: shows what the server expects next */}
         {expectedIntent ? (
           <span
             title="The assistant asked a clarifying question; your next message will include this context so it can resolve it."
@@ -204,6 +226,30 @@ export default function AgentChat({
           </div>
         )}
       </div>
+
+      {/* Quick replies when a clarifier is active */}
+      {expectedIntent && quickReplies[expectedIntent]?.length ? (
+        <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {quickReplies[expectedIntent]!.map((label) => (
+            <button
+              key={label}
+              onClick={() => void send(label)}
+              disabled={busy}
+              style={{
+                background: "#f3f4f6",
+                color: "#111827",
+                border: "1px solid #e5e7eb",
+                borderRadius: 999,
+                padding: "6px 10px",
+                fontSize: 13,
+                cursor: busy ? "not-allowed" : "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {/* Error */}
       {error ? (
@@ -254,16 +300,13 @@ export default function AgentChat({
   );
 }
 
-// ---- Message bubble with simple formatting ----
+/* ──────────────────────────────────────────────
+   Message bubble with lite markdown
+   ────────────────────────────────────────────── */
 function MessageBubble({ msg }: { msg: ChatMsg }) {
   const isUser = msg.role === "user";
   return (
-    <div
-      style={{
-        justifySelf: isUser ? "end" : "start",
-        maxWidth: "85%",
-      }}
-    >
+    <div style={{ justifySelf: isUser ? "end" : "start", maxWidth: "85%" }}>
       <div
         style={{
           background: isUser ? "#2563eb" : "#f9fafb",
@@ -275,11 +318,9 @@ function MessageBubble({ msg }: { msg: ChatMsg }) {
           lineHeight: 1.4,
           fontSize: 14,
         }}
-        // Basic sanitization for links in assistant content
         dangerouslySetInnerHTML={{ __html: renderMarkdownLite(msg.content) }}
       />
 
-      {/* Sources */}
       {msg.sources && msg.sources.length > 0 && (
         <div style={{ marginTop: 6, paddingLeft: 8 }}>
           <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 4 }}>Sources:</div>
@@ -303,7 +344,6 @@ function MessageBubble({ msg }: { msg: ChatMsg }) {
         </div>
       )}
 
-      {/* Meta flags */}
       {msg.meta?.requireLogin ? (
         <div style={{ marginTop: 6, fontSize: 12, color: "#b45309" }}>
           Please sign in to continue (privacy safeguard for account lookups).
@@ -313,7 +353,9 @@ function MessageBubble({ msg }: { msg: ChatMsg }) {
   );
 }
 
-// ---- Ultra-light markdown renderer (bold, bullets, links, line breaks) ----
+/* ──────────────────────────────────────────────
+   Ultra-light markdown renderer
+   ────────────────────────────────────────────── */
 function renderMarkdownLite(raw: string): string {
   let s = raw || "";
 
@@ -324,7 +366,10 @@ function renderMarkdownLite(raw: string): string {
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
   // Links [text](url)
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer">$1</a>`);
+  s = s.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    `<a href="$2" target="_blank" rel="noreferrer">$1</a>`
+  );
 
   // Bullets starting with "- " or "• "
   s = s
