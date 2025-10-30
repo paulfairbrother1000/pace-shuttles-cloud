@@ -73,9 +73,12 @@ export default function AgentChat({
     saveExpectedIntent(expectedIntent);
   }, [expectedIntent]);
 
-  async function send() {
+    async function send() {
     const q = text.trim();
     if (!q || busy) return;
+
+    // Always re-read expectedIntent from sessionStorage before sending
+    let memoryIntent = expectedIntent || loadExpectedIntent();
 
     // Push user message into the timeline
     const userMsg: ChatMsg = { id: uid(), role: "user", content: q };
@@ -86,7 +89,7 @@ export default function AgentChat({
 
     // Build payload, include memory (expectedIntent)
     const payload: Record<string, any> = { message: q };
-    if (expectedIntent) payload.expectedIntent = expectedIntent;
+    if (memoryIntent) payload.expectedIntent = memoryIntent;
 
     let data: AgentResponse | null = null;
 
