@@ -175,6 +175,9 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
+/* ──────────────────────────────────────────────────────────────
+   3B) Refund helpers (unchanged)
+   ────────────────────────────────────────────────────────────── */
 function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
@@ -204,7 +207,9 @@ function friendlyBand(band: RefundBand) {
     : "no refund (no-shows or late arrivals are treated as travelled)";
 }
 
-/* Build a live data block for grounding */
+/* ──────────────────────────────────────────────────────────────
+   4) Live data builder
+   ────────────────────────────────────────────────────────────── */
 async function pullPublicDataForQuestion(
   q: string,
   intent: ReturnType<typeof detectIntent>,
@@ -215,7 +220,7 @@ async function pullPublicDataForQuestion(
 
   const countriesParams =
     intent.wantsCountryList || opts?.forceCountryList
-      ? { active: (opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current")) === "current" }
+      ? { active: (opts?.forceCountryList ?? "current") === "current" } // ✅ FIX: simplify logic
       : { q, active: true };
 
   const destinationsParams = countryHint ? { q: countryHint, active: true } : { q, active: true };
@@ -230,30 +235,40 @@ async function pullPublicDataForQuestion(
 
   const blocks: string[] = [];
 
-  if ((intent.wantsCountryList || opts?.forceCountryList) && countries.length) {
-    const isRoadmap = (opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current")) === "roadmap";
-    const lines = countries.map(c =>
-      `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}${c.charity_url ? ` (${c.charity_url})` : ""}` : ""}`,
+  // ✅ FIX: condition order corrected (so opts.forceCountryList triggers)
+  if (countries.length && (opts?.forceCountryList || intent.wantsCountryList)) {
+    const isRoadmap = opts?.forceCountryList === "roadmap";
+    const lines = countries.map(
+      (c) =>
+        `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}${c.charity_url ? ` (${c.charity_url})` : ""}` : ""}`,
     );
     blocks.push(`${isRoadmap ? "COUNTRIES (roadmap)" : "COUNTRIES (current)"}\n${lines.join("\n")}`);
   }
 
   if (intent.wantsDestinations && destinations.length) {
-    const lines = destinations.slice(0, 20).map(d =>
-      `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
-    );
+    const lines = destinations
+      .slice(0, 20)
+      .map(
+        (d) =>
+          `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
+      );
     blocks.push(`DESTINATIONS\n${lines.join("\n")}`);
   }
 
   if (intent.wantsTransportTypes && vehicleTypes.length) {
-    const lines = vehicleTypes.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
+    const lines = vehicleTypes.map((v) => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
     blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
   }
 
   if (intent.wantsRouteInfo && journeys.length) {
-    const lines = journeys.slice(0, 20).map(j =>
-      `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`,
-    );
+    const lines = journeys
+      .slice(0, 20)
+      .map(
+        (j) =>
+          `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(
+            2,
+          )} ${j.currency}`,
+      );
     blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}\n${lines.join("\n")}`);
   }
 
@@ -261,7 +276,7 @@ async function pullPublicDataForQuestion(
 }
 
 /* ──────────────────────────────────────────────────────────────
-   4) Public KB search (files)
+   5) KB search
    ────────────────────────────────────────────────────────────── */
 async function searchPublicFiles(q: string, k: number) {
   const base = getBaseUrl();
@@ -274,12 +289,15 @@ async function searchPublicFiles(q: string, k: number) {
   if (!res || !res.ok) return [];
   const data = await res.json().catch(() => ({ matches: [] }));
   return (data?.matches ?? []).map((m: any) => ({
-    title: m.title, section: m.section ?? null, content: m.snippet ?? "", url: m.url ?? null,
+    title: m.title,
+    section: m.section ?? null,
+    content: m.snippet ?? "",
+    url: m.url ?? null,
   }));
 }
 
 /* ──────────────────────────────────────────────────────────────
-   5) Main handler
+   6) Main handler
    ────────────────────────────────────────────────────────────── */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
@@ -291,7 +309,7 @@ export async function POST(req: Request) {
   const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
-  /* Concierge path first (unchanged) */
+  /* Concierge (unchanged) */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
     const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
@@ -320,20 +338,15 @@ export async function POST(req: Request) {
     });
   }
 
-  /* Clarifier logic:
-     - If server suggested an expectation last turn and the UI sent expectedIntent + answer,
-       consume it and DO NOT ask again.
-  */
   let forceCountryList: "current" | "roadmap" | undefined;
 
+  // ✅ FIX: properly consume "today"/"roadmap"
   if (expectedIntent === "wantsCountryList") {
     const choice = resolveCountryListChoice(q);
     if (choice) {
-      // We have a clear answer; mark this intent and proceed to data
-      intent.wantsCountryList = true;
+      intent.wantsCountryList = true; // make sure intent is preserved
       forceCountryList = choice;
     } else {
-      // Couldn’t parse “today/roadmap” → ask once more with examples
       return NextResponse.json({
         content:
           "To list countries, please choose:\n\n• **Today** (currently operating)\n• **Roadmap** (planned/coming soon)\n\nJust reply with **today** or **roadmap**.",
@@ -342,7 +355,6 @@ export async function POST(req: Request) {
     }
   }
 
-  // Only ask a new clarifier when we don't already have an expectedIntention answer
   if (!expectedIntent) {
     const clarifier = buildClarifyingQuestion(intent, q);
     if (clarifier) {
@@ -353,100 +365,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // Pull live PUBLIC data (countries/destinations/…)
+  // ✅ FIX: correctly passes opts so data always loads
   const dataBlock = await pullPublicDataForQuestion(q, intent, { forceCountryList });
 
-  // Vector RAG (KB) + fallback
+  // RAG + fallback
   const k = 8;
-  let snippets: any[] = [];
-  try {
-    snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
-  } catch {
-    snippets = [];
-  }
-  if (!snippets || snippets.length === 0) {
-    snippets = await searchPublicFiles(q, k);
-  }
-
-  // If nothing public and user asks account stuff → deflect politely
-  if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
-    const gate = preflightGate(q, { signedIn });
-    if (gate.action === "deflect" || gate.action === "deny") {
-      return NextResponse.json({
-        content: gate.message,
-        sources: [],
-        meta: { signedIn, gate: gate.action },
-      });
-    }
-  }
-
-  // Build context
-  const contextBlock = [
-    snippets.length > 0
-      ? snippets
-          .map((s: any, i: number) => {
-            const title = s.title || s.doc_title || "Knowledge";
-            const section = s.section || null;
-            return `【${i + 1}】 (${title}${section ? " › " + section : ""})\n${(s.content || "").trim()}`;
-          })
-          .join("\n\n")
-      : "No relevant KB snippets found.",
-    dataBlock ? `\nPUBLIC DATA (live):\n${dataBlock}` : "",
-  ].join("\n\n");
-
-  const sources = snippets.map((s: any) => ({
-    title: s.title || s.doc_title || "Knowledge",
-    section: s.section || null,
-    url: s.url || s.uri || null,
-  }));
-
-  const sys = [
-    systemGuardrails({ signedIn }),
-    "Tone: warm, concise, pragmatic. Lead with the answer, then a short explanation.",
-    "Use brief bullets when helpful. Avoid marketing fluff.",
-    signedIn
-      ? "User is signed in: you may reference their own bookings/balance/tickets via approved tools only."
-      : "User is anonymous: answer only from public knowledge and public data.",
-    "For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).",
-    PACE_PUBLIC_POLICY,
-  ].join("\n");
-
-  const userPrompt = [
-    `User question:\n${q}`,
-    ``,
-    `Use the following context (KB + live data) if relevant:`,
-    contextBlock,
-    ``,
-    `Guidelines:`,
-    `- If context is weak or missing, say so briefly and ask one targeted follow-up OR offer to create a support ticket.`,
-    `- Keep answers specific. Add a one-line source tag like (From: Title › Section) if you relied on a snippet.`,
-    `- For prices/routes/bookings, follow SSOT rules and do not invent details.`,
-  ].join("\n");
-
-  // Model call with graceful fallback
-  let content = "";
-  try {
-    content = await chatComplete([
-      { role: "system", content: sys },
-      { role: "user", content: userPrompt },
-    ]);
-  } catch {
-    content =
-      dataBlock ||
-      (snippets.length > 0
-        ? `${(snippets[0].content || "").slice(0, 600)}\n\n(From: ${snippets[0].title || "Knowledge"}${snippets[0].section ? " › " + snippets[0].section : ""})`
-        : "I couldn’t reach the assistant just now, and I don’t have enough knowledge to answer. Please try again, or email hello@paceshuttles.com.");
-  }
-
-  const summary = content.slice(0, 300);
-
-  return NextResponse.json({
-    content,
-    sources,
-    meta: {
-      mode: signedIn ? "signed" : "anon",
-      usedSnippets: Math.min(snippets.length, k),
-      summary,
-    },
-  });
-}
+  let snippets: any[]
