@@ -1,54 +1,26 @@
 // src/app/api/agent/route.ts
 import { NextResponse } from "next/server";
-import { cookies, headers } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { headers } from "next/headers";
 
-import { chatComplete } from "@/lib/ai";
-import { preflightGate, systemGuardrails } from "@/lib/guardrails";
-import { retrieveSimilar } from "@/lib/rag";
+/**
+ * Chat API that uses the same SSOT as the homepage:
+ * - /api/home-hydrate (global + per-country)
+ * - /api/quote (live price; filters out zero/invalid)
+ *
+ * It provides three core intents without annoying clarifier loops:
+ *  1) Countries we operate in (today)  → verified routes + upcoming occurrences
+ *  2) Destinations we visit in <Country> → allowedDestIds from home-hydrate
+ *  3) Journeys in <Country> [on <YYYY-MM-DD>] → occurrences + /api/quote
+ *
+ * Notes:
+ * - No citations. Short, direct answers.
+ * - Interprets questions as "today/current" unless the user explicitly asks for "roadmap/future".
+ * - Filters out unit price £0 and non-available quote statuses.
+ */
 
-/* ──────────────────────────────────────────────────────────────
-   0) Policy & constants
-   ────────────────────────────────────────────────────────────── */
-const PACE_PUBLIC_POLICY = `
-Facts & tools (public, anon-safe):
-• Countries: /api/public/countries  (includes charity_name, charity_url, charity_description; filter active=true)
-• Destinations: /api/public/destinations  (q=, country filter via name)
-• Pickups: /api/public/pickups          (q=, includes directions_url)
-• Journeys: /api/public/journeys        (date=YYYY-MM-DD strongly preferred)
-• Vehicle Types: /api/public/vehicle-types
-
-Revenue model (must be accurate):
-• Operators receive the ride revenue; destinations do NOT receive revenue.
-• Pace Shuttles earns a commission from operators.
-
-Environmental note:
-• Pace Shuttles contributes to environmental charities in the regions it operates.
-• Retrieve charity fields from /api/public/countries when asked.
-
-General:
-• Do not invent data. If a field is missing, say “not published yet.”
-• Prefer small result sets (limit ≤ 20).
-`;
-
-/* ──────────────────────────────────────────────────────────────
-   1) Session helpers
-   ────────────────────────────────────────────────────────────── */
-async function isSignedInFromCookies(): Promise<boolean> {
-  try {
-    const cookieStore = cookies();
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    const sb = createServerClient(url, anon, {
-      cookies: { get: (n) => cookieStore.get(n)?.value, set() {}, remove() {} },
-    });
-    const { data } = await sb.auth.getUser();
-    return !!data?.user;
-  } catch {
-    return false;
-  }
-}
-
+// ──────────────────────────────────────────────────────────────
+// Small utils
+// ──────────────────────────────────────────────────────────────
 function getBaseUrl() {
   const h = headers();
   const proto = h.get("x-forwarded-proto") ?? "https";
@@ -60,343 +32,399 @@ function getBaseUrl() {
   return `${proto}://${host}`;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   2) Intent + helpers
-   ────────────────────────────────────────────────────────────── */
-function detectIntent(q: string) {
-  const s = q.toLowerCase();
-
-  const wantsCountryList =
-    /(which|what)\s+countries\b|countries\s+(do you|d’you)?\s*(operate|serve)|\boperate in which countries\b/.test(s);
-
-  const wantsRoadmapQuery =
-    /\b(road\s*map|roadmap|future|next|coming|planned|expanding)\b/.test(s);
-
-  const wantsDestinations =
-    /\b(what|which)\s+(destinations|places)\b|\bdestinations?\s+do (you|u)\s+(visit|serve|go)\b/.test(s);
-
-  const wantsTransportTypes =
-    /\b(what|which)\s+(modes|mode|transport|vehicle types?|boats?|helicopters?)\b|\btransport[-\s]?types?\b/.test(s);
-
-  const wantsCharities =
-    /\b(what|which)\s+charit(y|ies)\b|\bcharit(y|ies)\s+do (you|u)\s+(support|donate)\b/.test(s);
-
-  const wantsRoutesOverview =
-    /\b(tell me about|what about)\s+(your )?routes\b|\broutes?\s+overview\b/.test(s);
-
-  return {
-    wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
-    wantsRouteInfo:
-      /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
-    wantsMyStuff:
-      /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
-    wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
-
-    wantsCountryList,
-    wantsRoadmapQuery, // NEW: explicit roadmap switch
-    wantsDestinations,
-    wantsTransportTypes,
-    wantsCharities,
-    wantsRoutesOverview,
-  };
+async function fetchJSON<T>(path: string): Promise<T> {
+  const base = getBaseUrl();
+  const res = await fetch(`${base}${path}`, { cache: "no-store", headers: { accept: "application/json" } });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${path}: ${t.slice(0, 200)}`);
+  }
+  return res.json() as Promise<T>;
 }
 
+const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(12,0,0,0); return x; }
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addMonths(d: Date, n: number) { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; }
+function startOfMonth(d: Date) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(12,0,0,0); return x; }
+function endOfMonth(d: Date) { const x = new Date(d.getFullYear(), d.getMonth() + 1, 0); x.setHours(12,0,0,0); return x; }
+function withinSeason(day: Date, from?: string | null, to?: string | null): boolean {
+  if (!from && !to) return true;
+  const t = startOfDay(day).getTime();
+  if (from) { const f = new Date(from + "T12:00:00").getTime(); if (t < f) return false; }
+  if (to)   { const tt = new Date(to + "T12:00:00").getTime(); if (t > tt) return false; }
+  return true;
+}
+
+type Freq = { type: "WEEKLY"; weekday: number } | { type: "DAILY" } | { type: "ADHOC" };
+function parseFrequency(freq: string | null | undefined): Freq {
+  if (!freq) return { type: "ADHOC" };
+  const s = (freq || "").toLowerCase().trim();
+  if (s.includes("daily")) return { type: "DAILY" };
+  const weekdayIdx = DAY_NAMES.findIndex((d) => s.includes(d.toLowerCase()));
+  if (weekdayIdx >= 0) return { type: "WEEKLY", weekday: weekdayIdx };
+  return { type: "ADHOC" };
+}
+
+function formatLocalISO(d: Date, timeZone?: string | null): string {
+  const tz = (timeZone && timeZone.trim()) || "UTC";
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+  const parts = fmt.formatToParts(d);
+  const y = parts.find(p => p.type === "year")?.value ?? "1970";
+  const m = parts.find(p => p.type === "month")?.value ?? "01";
+  const dd = parts.find(p => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${dd}`;
+}
+
+function hhmmLocalToDisplay(hhmm: string | null | undefined) {
+  if (!hhmm) return "—";
+  try {
+    const [h, m] = (hhmm || "").split(":").map((x) => parseInt(x, 10));
+    const d = new Date(); d.setHours(h, m, 0, 0);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch { return hhmm || "—"; }
+}
+
+function currencyIntPounds(n: number | null | undefined) {
+  if (n == null || Number.isNaN(n)) return "£0";
+  return `£${Math.ceil(n).toLocaleString("en-GB")}`;
+}
+
+function findISOInText(text: string): string | null {
+  const m = String(text).match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return m ? m[0] : null;
+}
 function guessCountryName(q: string): string | null {
-  const m = q.match(/\b(?:in|for|at|of)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
+  // naive: take proper-noun-like chunk after "in " or "for "
+  const m = q.match(/\b(?:in|for)\s+([A-Z][A-Za-z &'().-]+)(?:\?|$|\.|,)/);
   return m ? m[1].trim() : null;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   3) Public data fetchers
-   ────────────────────────────────────────────────────────────── */
-async function fetchJson<T>(path: string, params: Record<string, any> = {}, max = 20): Promise<T[]> {
+// ──────────────────────────────────────────────────────────────
+// Types (mirror homepage contracts)
+// ──────────────────────────────────────────────────────────────
+type Country = { id: string; name: string; description?: string | null; picture_url?: string | null; timezone?: string | null };
+type Destination = { id: string; name: string; country_id: string | null; town?: string | null; region?: string | null; picture_url?: string | null; description?: string | null };
+type Pickup = { id: string; name: string; country_id: string; picture_url?: string | null; description?: string | null };
+
+type RouteRow = {
+  id: string;
+  route_name: string | null;
+  country_id: string | null;
+  pickup_id: string | null;
+  destination_id: string | null;
+  approx_duration_mins: number | null;
+  pickup_time: string | null;       // "HH:mm"
+  frequency: string | null;         // "Every Tuesday", "Daily", "Ad-hoc"
+  frequency_rrule?: string | null;
+  season_from?: string | null;      // YYYY-MM-DD
+  season_to?: string | null;        // YYYY-MM-DD
+  is_active?: boolean | null;
+  transport_type?: string | null;
+  countries?: { id: string; name: string; timezone?: string | null } | null;
+};
+
+type Assignment = { id: string; route_id: string; vehicle_id: string; preferred?: boolean | null; is_active?: boolean | null; };
+type Vehicle = {
+  id: string;
+  name: string;
+  operator_id?: string | null;
+  type_id?: string | null;
+  active?: boolean | null;
+  minseats?: number | null;
+  minvalue?: number | null;
+  maxseatdiscount?: number | null;
+  maxseats?: number | string | null;
+};
+
+type HydrateGlobal = {
+  countries: Country[];
+  available_destinations_by_country: Record<string, string[]>;
+};
+type HydrateCountry = {
+  pickups: Pickup[];
+  destinations: Destination[];
+  routes: RouteRow[];
+  assignments: Assignment[];
+  vehicles: Vehicle[];
+  sold_out_keys: string[];
+  remaining_by_key_db: Record<string, number>;
+};
+
+// ──────────────────────────────────────────────────────────────
+const MIN_LEAD_HOURS = 25;
+const DIAG = process.env.NODE_ENV !== "production" ? "1" : "0";
+
+async function fetchQuote(routeId: string, dateISO: string, qty = 1, vehicleId?: string | null) {
+  const sp = new URLSearchParams({
+    route_id: routeId,
+    date: dateISO,
+    qty: String(Math.max(1, qty)),
+    diag: DIAG,
+  });
+  if (vehicleId) sp.set("vehicle_id", vehicleId);
+
   const base = getBaseUrl();
-  const usp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null || v === "") continue;
-    usp.set(k, String(v));
+  const res = await fetch(`${base}/api/quote?${sp.toString()}`, { method: "GET", cache: "no-store" });
+  const text = await res.text();
+  let json: any = null;
+  try { json = JSON.parse(text); } catch { return { ok: false, reason: "non_json" as const }; }
+
+  if (json && !json.error_code) {
+    const unitMinor =
+      (json.unit_cents ?? null) != null
+        ? Number(json.unit_cents)
+        : Math.round(Number(json.total_cents ?? 0) / Math.max(1, Number(json.qty || 1)));
+
+    if (json.availability === "available" && unitMinor > 0) {
+      return {
+        ok: true as const,
+        unitGBP: Math.ceil(unitMinor / 100),
+        currency: json.currency ?? "GBP",
+        token: json.token,
+        vehicle_id: json.vehicle_id ?? null,
+      };
+    }
+    return { ok: false as const, reason: "unavailable" as const };
   }
-  if (!usp.has("limit")) usp.set("limit", String(max));
-  const url = `${base}${path}${usp.toString() ? `?${usp.toString()}` : ""}`;
-  const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
-  if (!res.ok) return [];
-  const json = await res.json().catch(() => ({ rows: [] }));
-  return (json?.rows ?? []) as T[];
+  return { ok: false as const, reason: json?.error_code ? String(json.error_code) : "unknown" };
 }
 
-type CountryRow = {
-  name: string; description?: string; charity_name?: string; charity_url?: string; charity_description?: string; active?: boolean;
-};
-type DestinationRow = { name: string; country_name?: string; town?: string; region?: string; website_url?: string; directions_url?: string; description?: string; active?: boolean; };
-type PickupRow = { name: string; country_name?: string; town?: string; region?: string; directions_url?: string; description?: string; active?: boolean; };
-type JourneyRow = {
-  pickup_name: string; destination_name: string; country_name: string; route_name?: string;
-  starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
-};
+function computeOccurrences(verifiedRoutes: RouteRow[]) {
+  const nowPlus = addDays(new Date(), 0);
+  nowPlus.setHours(nowPlus.getHours() + MIN_LEAD_HOURS);
+  const today = startOfDay(new Date());
+  const windowStart = startOfMonth(today);
+  const windowEnd = endOfMonth(addMonths(today, 5));
 
-function findISOInText(text: string): string | null {
-  const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
-  return m ? m[0] : null;
-}
-function extractCutoffsFromSnippet(snippet: string) {
-  const t = (snippet || "").toLowerCase();
-  const has72 = /72\s*hour|72\s*hrs|3\+?\s*days/.test(t);
-  const has24 = /24\s*hour|24\s*hrs|1\s*day/.test(t);
-  return { cutoffFullRefundH: has72 ? 72 : 72, cutoffHalfRefundH: has24 ? 24 : 24 };
-}
-type RefundBand = "FULL_MINUS_FEES" | "FIFTY_PERCENT" | "NO_REFUND";
-function evaluateRefundBand(departureISO: string, now = new Date(), cut = { cutoffFullRefundH:72, cutoffHalfRefundH:24 }) {
-  const dep = new Date(departureISO);
-  const ms = dep.getTime() - now.getTime();
-  const totalHours = Math.ceil(ms / (1000 * 60 * 60));
-  let band: RefundBand;
-  if (totalHours >= cut.cutoffFullRefundH) band = "FULL_MINUS_FEES";
-  else if (totalHours >= cut.cutoffHalfRefundH) band = "FIFTY_PERCENT";
-  else band = "NO_REFUND";
-  return { band, totalHours, departureLocal: dep.toLocaleString() };
-}
-function friendlyBand(band: RefundBand) {
-  return band === "FULL_MINUS_FEES"
-    ? "a full refund minus any bank fees charged to Pace Shuttles"
-    : band === "FIFTY_PERCENT"
-    ? "a 50% refund of the booking value"
-    : "no refund (no-shows or late arrivals are treated as travelled)";
-}
+  type Occurrence = { route_id: string; dateISO: string };
+  const out: Occurrence[] = [];
 
-/* Rolling 30-day window: “operational today” if any journey exists in next 30 days */
-async function getOperationalCountriesRollingWindow(): Promise<string[]> {
-  const base = new Date();
-  const names = new Set<string>();
-  for (let offset = 0; offset <= 30; offset += 5) {
-    const dt = new Date(base.getTime() + offset * 86400000);
-    const iso = dt.toISOString().slice(0, 10);
-    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: iso, active: true }, 200);
-    for (const j of journeys) if (j.country_name) names.add(j.country_name);
-  }
-  return [...names];
-}
-
-/* Build a live data block for grounding */
-async function pullPublicDataForQuestion(
-  q: string,
-  intent: ReturnType<typeof detectIntent>,
-) {
-  const iso = findISOInText(q);
-  const countryHint = guessCountryName(q);
-
-  const blocks: string[] = [];
-
-  // Countries: NO clarifier. Default = “current” (operational). If user explicitly asked for future → roadmap.
-  if (intent.wantsCountryList) {
-    const opNames = await getOperationalCountriesRollingWindow();
-    if (intent.wantsRoadmapQuery) {
-      const allActive = await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
-      const roadmap = allActive.map(c => c.name).filter(n => !opNames.includes(n));
-      blocks.push(
-        roadmap.length
-          ? `COUNTRIES (roadmap)\n${roadmap.map(n => `• ${n}`).join("\n")}`
-          : "COUNTRIES (roadmap)\n• Not published yet."
-      );
+  for (const r of verifiedRoutes) {
+    const kind = parseFrequency(r.frequency);
+    if (kind.type === "WEEKLY") {
+      const s = new Date(windowStart);
+      const diff = (kind.weekday - s.getDay() + 7) % 7;
+      s.setDate(s.getDate() + diff);
+      for (let d = new Date(s); d <= windowEnd; d = addDays(d, 7)) {
+        if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
+        if (d.getTime() < startOfDay(nowPlus).getTime()) continue;
+        const iso = formatLocalISO(d, r.countries?.timezone);
+        out.push({ route_id: r.id, dateISO: iso });
+      }
+    } else if (kind.type === "DAILY") {
+      for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
+        if (!withinSeason(d, r.season_from ?? null, r.season_to ?? null)) continue;
+        if (d.getTime() < startOfDay(nowPlus).getTime()) continue;
+        const iso = formatLocalISO(d, r.countries?.timezone);
+        out.push({ route_id: r.id, dateISO: iso });
+      }
     } else {
-      blocks.push(
-        opNames.length
-          ? `COUNTRIES (current)\n${opNames.map(n => `• ${n}`).join("\n")}`
-          : "COUNTRIES (current)\n• Not published yet."
-      );
+      if (withinSeason(today, r.season_from ?? null, r.season_to ?? null)) {
+        const d = new Date(today);
+        if (d.getTime() >= startOfDay(nowPlus).getTime()) {
+          const iso = formatLocalISO(d, r.countries?.timezone);
+          out.push({ route_id: r.id, dateISO: iso });
+        }
+      }
     }
   }
-
-  // Destinations: answer directly if the country is already in the question
-  if (intent.wantsDestinations) {
-    const destinations = await fetchJson<DestinationRow>("/api/public/destinations", countryHint ? { q: countryHint, active: true } : { q, active: true });
-    if (destinations.length) {
-      const lines = destinations.slice(0, 20).map(d =>
-        `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
-      );
-      blocks.push(`DESTINATIONS${countryHint ? ` in ${countryHint}` : ""}\n${lines.join("\n")}`);
-    } else if (countryHint) {
-      blocks.push(`DESTINATIONS in ${countryHint}\n• Not published yet.`);
-    }
-  }
-
-  if (intent.wantsTransportTypes) {
-    const vehicleTypes = await fetchJson<{ name: string; description?: string; slug?: string }>("/api/public/vehicle-types", { active: true });
-    if (vehicleTypes.length) {
-      const lines = vehicleTypes.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
-      blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
-    }
-  }
-
-  if (intent.wantsRouteInfo || intent.wantsRoutesOverview) {
-    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { q: countryHint ?? q, date: iso ?? undefined, active: true }, 200);
-    if (journeys.length) {
-      const lines = journeys.slice(0, 20).map(j => {
-        const priceStr = j.price_per_seat_from && j.price_per_seat_from > 0
-          ? `from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`
-          : "price to be confirmed";
-        const label = j.route_name ?? `${j.pickup_name} → ${j.destination_name}`;
-        return `• ${label} — ${j.departure_time} UTC, ${j.duration_min} min, ${priceStr}`;
-      });
-      blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}${countryHint ? ` in ${countryHint}` : ""}\n${lines.join("\n")}`);
-    }
-  }
-
-  return blocks.join("\n\n");
+  return out;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   4) Public KB search (files)
-   ────────────────────────────────────────────────────────────── */
-async function searchPublicFiles(q: string, k: number) {
-  const base = getBaseUrl();
-  const res = await fetch(`${base}/api/tools/searchPublicKB`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query: q, topK: k }),
-    cache: "no-store",
-  }).catch(() => null);
-  if (!res || !res.ok) return [];
-  const data = await res.json().catch(() => ({ matches: [] }));
-  return (data?.matches ?? []).map((m: any) => ({
-    title: m.title, section: m.section ?? null, content: m.snippet ?? "", url: m.url ?? null,
-  }));
+function buildVerifiedRoutes(data: HydrateCountry) {
+  // Active vehicles with capacity
+  const activeVehicleIds = new Set(
+    data.vehicles
+      .filter((v) => v && v.active !== false && Number(v.maxseats ?? 0) > 0)
+      .map((v) => v.id)
+  );
+
+  // Routes that have at least one active assignment to an active vehicle
+  const routesWithActiveVehicle = new Set(
+    data.assignments
+      .filter((a) => a.is_active !== false && activeVehicleIds.has(a.vehicle_id))
+      .map((a) => a.route_id)
+  );
+
+  return data.routes.filter((r) => routesWithActiveVehicle.has(r.id));
 }
 
-/* ──────────────────────────────────────────────────────────────
-   5) Main handler
-   ────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────
+// Intent detection (lean; no loops)
+// ──────────────────────────────────────────────────────────────
+function detectIntent(q: string) {
+  const s = q.toLowerCase();
+  const wantsCountryList =
+    /(which|what)\s+countries\b|countries\s+(do you|d’you)?\s*(operate|serve)|\boperate in which countries\b/.test(s);
+  const wantsDestinations =
+    /(?:what|which)\s+(destinations|places)\b.*\b(in|at)\b|\bdestinations?\s+in\b/.test(s);
+  const wantsJourneys =
+    /(?:what|which)\s+(journeys|trips|routes)\b|\bshow\s+journeys\b|\bbook\b.*\bjourney\b/.test(s);
+  const roadmap =
+    /\b(road\s*map|roadmap|future|next|coming|planned|expanding)\b/.test(s);
+  const countryHint = guessCountryName(q);
+  const isoDate = findISOInText(q);
+
+  return { wantsCountryList, wantsDestinations, wantsJourneys, roadmap, countryHint, isoDate };
+}
+
+// ──────────────────────────────────────────────────────────────
+// Main handler
+// ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const q = String(body?.message || body?.text || "").trim();
-
   if (!q) return NextResponse.json({ content: "Please enter a question." });
 
-  const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
-  /* Concierge path (unchanged) */
-  if (intent.wantsCancel) {
-    const iso = findISOInText(q);
-    const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
-    if (hasRef && !signedIn) {
+  try {
+    // 1) Global hydrate
+    const global = await fetchJSON<HydrateGlobal>("/api/home-hydrate");
+
+    // Helper to resolve country object from name hint
+    const findCountry = (name?: string | null): Country | null => {
+      if (!name) return null;
+      const n = name.trim().toLowerCase();
+      return (
+        global.countries.find(
+          (c) => c.name.trim().toLowerCase() === n ||
+                 c.name.trim().toLowerCase().includes(n)
+        ) || null
+      );
+    };
+
+    // If they ask for roadmap, we *do not* list it unless you want to surface inactive plans.
+    // Per your latest direction: "current" means countries with verified routes + upcoming occurrences.
+    if (intent.wantsCountryList && !intent.roadmap) {
+      // Determine which countries are *operating today*: have verified routes with upcoming occurrences.
+      const operatingNames: string[] = [];
+
+      for (const c of global.countries) {
+        // Pull per-country hydrate
+        const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(c.id)}`);
+        const verifiedRoutes = buildVerifiedRoutes(data);
+        if (verifiedRoutes.length === 0) continue;
+
+        const occ = computeOccurrences(verifiedRoutes);
+        if (occ.length > 0) operatingNames.push(c.name);
+      }
+
+      if (operatingNames.length === 0) {
+        return NextResponse.json({
+          content: "We don’t have any bookable journeys today. Please check back soon."
+        });
+      }
+
+      const list = operatingNames.map((n) => `• ${n}`).join("\n");
       return NextResponse.json({
-        content:
-          "I can help with that. To protect your privacy, please **sign in** before I open your booking. Once signed in, paste your booking reference here and I’ll check your options.",
-        requireLogin: true,
+        content: `Pace Shuttles currently operates in:\n\n${list}\n\nAsk for destinations in any of these, e.g. “What destinations do you visit in Antigua?”`
       });
     }
-    if (iso) {
-      const policySnips = await searchPublicFiles("client cancellations rescheduling refunds policy Pace Shuttles", 4);
-      const best = policySnips[0];
-      const cut = extractCutoffsFromSnippet(best?.content ?? "");
-      const evaln = evaluateRefundBand(iso, new Date(), cut);
-      const msg = [
-        `Based on the date you provided (${evaln.departureLocal}), you are **${evaln.totalHours} hours** before departure.`,
-        `Under the policy this means **${friendlyBand(evaln.band)}**.`,
-        best ? `\n(From: ${best.title}${best.section ? " › " + best.section : ""})` : "",
-      ].join("\n\n");
-      return NextResponse.json({ content: msg });
+
+    // 2) Destinations in a country
+    if (intent.wantsDestinations) {
+      const country = findCountry(intent.countryHint) || null;
+      if (!country) {
+        return NextResponse.json({
+          content: "Please tell me the country (e.g., “What destinations do you visit in Antigua?”)."
+        });
+      }
+
+      const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(country.id)}`);
+      const allowed = new Set(global.available_destinations_by_country[country.id] ?? []);
+      const list = (data.destinations || []).filter(d => allowed.has(d.id));
+
+      if (list.length === 0) {
+        return NextResponse.json({
+          content: `We don’t have bookable destinations in ${country.name} right now.`
+        });
+      }
+
+      // Show name + general locality if available
+      const lines = list.map((d) => {
+        const locality = [d.town, d.region].filter(Boolean).join(", ");
+        return locality ? `• ${d.name} — ${locality}` : `• ${d.name}`;
+      }).join("\n");
+
+      return NextResponse.json({
+        content: `We currently visit the following destinations in ${country.name}:\n\n${lines}\n\nYou can ask “Show journeys in ${country.name} on YYYY-MM-DD” to see live options.`
+      });
     }
+
+    // 3) Journeys in a country (optionally on a specific date)
+    if (intent.wantsJourneys || intent.countryHint) {
+      const country = findCountry(intent.countryHint) || null;
+      if (!country) {
+        return NextResponse.json({
+          content: "Please tell me the country (e.g., “Show journeys in Antigua on 2025-11-20”)."
+        });
+      }
+
+      const data = await fetchJSON<HydrateCountry>(`/api/home-hydrate?country_id=${encodeURIComponent(country.id)}`);
+      const verifiedRoutes = buildVerifiedRoutes(data);
+      if (verifiedRoutes.length === 0) {
+        return NextResponse.json({ content: `No verified routes in ${country.name} yet.` });
+      }
+
+      const occAll = computeOccurrences(verifiedRoutes);
+      if (occAll.length === 0) {
+        return NextResponse.json({ content: `No upcoming departures in ${country.name} right now.` });
+      }
+
+      // Optional date lock (YYYY-MM-DD). If provided, filter to that date.
+      const iso = intent.isoDate;
+      const occ = iso ? occAll.filter(o => o.dateISO === iso) : occAll;
+
+      // Fetch quotes for first N occurrences (avoid spam)
+      const MAX = 12;
+      const sample = occ.slice(0, MAX);
+
+      // Build lookup maps for names
+      const pickupById = new Map((data.pickups || []).map(p => [p.id, p]));
+      const destById = new Map((data.destinations || []).map(d => [d.id, d]));
+      const routeMap = new Map(verifiedRoutes.map(r => [r.id, r]));
+
+      const rows: string[] = [];
+      for (const o of sample) {
+        const r = routeMap.get(o.route_id);
+        if (!r) continue;
+
+        const quote = await fetchQuote(r.id, o.dateISO, 1, null);
+        if (!quote.ok) continue; // skip unavailable / zero / errors
+
+        const pu = r.pickup_id ? pickupById.get(r.pickup_id) : null;
+        const de = r.destination_id ? destById.get(r.destination_id) : null;
+
+        const name = `${pu?.name ?? "—"} → ${de?.name ?? "—"}`;
+        const dateStr = new Date(o.dateISO + "T12:00:00").toLocaleDateString();
+        const timeStr = hhmmLocalToDisplay(r.pickup_time);
+        const mins = r.approx_duration_mins ?? undefined;
+
+        rows.push(`• ${name} — ${dateStr}, ${timeStr}${mins ? `, ${mins} min` : ""}, from ${currencyIntPounds(quote.unitGBP)}`);
+      }
+
+      if (rows.length === 0) {
+        return NextResponse.json({
+          content: iso
+            ? `No bookable journeys found in ${country.name} on ${iso}.`
+            : `No bookable journeys surfaced just now in ${country.name}. Try another date.`
+        });
+      }
+
+      const header = iso ? `Journeys in ${country.name} on ${iso}:` : `Next available journeys in ${country.name}:`;
+      return NextResponse.json({ content: `${header}\n\n${rows.join("\n")}\n\nSay “show more” with a date if you want additional options.` });
+    }
+
+    // Default fallback: brief help
     return NextResponse.json({
       content:
-        "I can help with cancellations and refunds. Please share your **journey date/time** (or your booking reference once you’re signed in).",
+        "I can help with countries, destinations, and journeys.\n\n• “What countries do you operate in?”\n• “What destinations do you visit in Antigua?”\n• “Show journeys in Barbados on 2025-11-20”"
+    });
+  } catch (e: any) {
+    return NextResponse.json({
+      content: e?.message || "Something went wrong reaching live data."
     });
   }
-
-  // Pull live PUBLIC data first (now includes country handling without clarifier)
-  const dataBlock = await pullPublicDataForQuestion(q, intent);
-
-  // Vector RAG (KB) + fallback
-  const k = 8;
-  let snippets: any[] = [];
-  try {
-    snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
-  } catch {
-    snippets = [];
-  }
-  if (!snippets || snippets.length === 0) {
-    snippets = await searchPublicFiles(q, k);
-  }
-
-  // If nothing public and user asks account stuff → deflect politely
-  if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
-    const gate = preflightGate(q, { signedIn });
-    if (gate.action === "deflect" || gate.action === "deny") {
-      return NextResponse.json({
-        content: gate.message,
-        sources: [],
-        meta: { signedIn, gate: gate.action },
-      });
-    }
-  }
-
-  // Build context
-  const contextBlock = [
-    snippets.length > 0
-      ? snippets
-          .map((s: any, i: number) => {
-            const title = s.title || s.doc_title || "Knowledge";
-            const section = s.section || null;
-            return `【${i + 1}】 (${title}${section ? " › " + section : ""})\n${(s.content || "").trim()}`;
-          })
-          .join("\n\n")
-      : "No relevant KB snippets found.",
-    dataBlock ? `\nPUBLIC DATA (live):\n${dataBlock}` : "",
-  ].join("\n\n");
-
-  const sources = snippets.map((s: any) => ({
-    title: s.title || s.doc_title || "Knowledge",
-    section: s.section || null,
-    url: s.url || s.uri || null,
-  }));
-
-  const sys = [
-    systemGuardrails({ signedIn }),
-    "Tone: warm, concise, pragmatic. Lead with the answer, then a short explanation.",
-    "Use brief bullets when helpful. Avoid marketing fluff.",
-    signedIn
-      ? "User is signed in: you may reference their own bookings/balance/tickets via approved tools only."
-      : "User is anonymous: answer only from public knowledge and public data.",
-    "For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).",
-    PACE_PUBLIC_POLICY,
-  ].join("\n");
-
-  const userPrompt = [
-    `User question:\n${q}`,
-    ``,
-    `Use the following context (KB + live data) if relevant:`,
-    contextBlock,
-    ``,
-    `Guidelines:`,
-    `- If context is weak or missing, say so briefly and ask one targeted follow-up OR offer to create a support ticket.`,
-    `- Keep answers specific. Add a one-line source tag like (From: Title › Section) if you relied on a snippet.`,
-    `- For prices/routes/bookings, follow SSOT rules and do not invent details.`,
-  ].join("\n");
-
-  // Model call with graceful fallback
-  let content = "";
-  try {
-    content = await chatComplete([
-      { role: "system", content: sys },
-      { role: "user", content: userPrompt },
-    ]);
-  } catch {
-    content =
-      dataBlock ||
-      (snippets.length > 0
-        ? `${(snippets[0].content || "").slice(0, 600)}\n\n(From: ${snippets[0].title || "Knowledge"}${snippets[0].section ? " › " + snippets[0].section : ""})`
-        : "I couldn’t reach the assistant just now, and I don’t have enough knowledge to answer. Please try again, or email hello@paceshuttles.com.");
-  }
-
-  const summary = content.slice(0, 300);
-
-  return NextResponse.json({
-    content,
-    sources,
-    meta: {
-      mode: signedIn ? "signed" : "anon",
-      usedSnippets: Math.min(snippets.length, k),
-      summary,
-    },
-  });
 }
