@@ -211,57 +211,46 @@ async function fetchAllCountriesFallback(): Promise<Country[]> {
 }
 
 async function fetchVisibleCatalog(): Promise<Catalog> {
-  // 1) Fetch visible routes (multi-probe)
-  const routes = await fetchVisibleRoutes();
+  // 1) Try to load visible routes (multi-probe)
+  const routes = await fetchVisibleRoutes(); // returns [] only if all candidates fail
 
-  // 2) Try explicit visible countries
+  // 2) Countries
   let countries: Country[] = [];
-  try {
-    const vcRes = await fetch(API.visibleCountries, { cache: "no-store" });
-    const maybe = await jsonArray<Country>(vcRes);
-    if (maybe?.length) countries = maybe;
-  } catch {
-    // ignore
-  }
 
-  // 3) Derive from routes when needed
-  if (!countries.length && routes.length) {
+  if (routes.length) {
+    // STRICT: derive markets from routes (homepage source of truth)
     countries = uniqBy(
       routes
-        .filter((r) => r.country_name)
-        .map((r) => ({
+        .filter(r => r.country_name)
+        .map(r => ({
           id: r.country_id ?? null,
           name: r.country_name || "Unknown",
           description: r.country_description ?? null,
         })),
-      (c) => (c.id ?? c.name ?? "").toString().toLowerCase()
+      c => (c.id ?? c.name ?? "").toString().toLowerCase()
     );
+  } else {
+    // No routes available -> last resort so we can still answer
+    countries = await fetchAllCountriesFallback(); // active-first
   }
 
-  // 4) Last-resort: fall back to all countries (so the question still gets an answer)
-  if (!countries.length) {
-    countries = await fetchAllCountriesFallback();
-  }
-
-  // 5) Destinations (full info), then filter to visible by name
+  // 3) Destinations (full info), then filter to visible by name when routes exist
   let destinationsAll: Destination[] = [];
   try {
     const dRes = await fetch(API.destinations, { cache: "no-store" });
     destinationsAll = await jsonArray<Destination>(dRes);
-  } catch {
-    destinationsAll = [];
-  }
+  } catch { /* swallow */ }
 
-  const visibleDestNameSet = new Set(
-    routes.filter((r) => r.destination_name).map((r) => (r.destination_name || "").toLowerCase())
-  );
-  const visibleDestinations =
-    routes.length && visibleDestNameSet.size
-      ? destinationsAll.filter((d) => d.name && visibleDestNameSet.has(d.name.toLowerCase()))
-      : destinationsAll; // if we couldn't load routes, show all destinations rather than nothing
+  const visibleDestinations = routes.length
+    ? destinationsAll.filter(d => {
+        const name = d.name?.toLowerCase();
+        return !!name && routes.some(r => r.destination_name?.toLowerCase() === name);
+      })
+    : destinationsAll;
 
   return { countries, destinationsAll, visibleDestinations, routes };
 }
+
 
 /* ──────────────────────────────────────────────
    NLU — intents & slot extraction
@@ -462,24 +451,34 @@ export default function AgentChat() {
       switch (intent) {
         /* -------- Countries (visible; with resilient fallbacks) -------- */
         case "ask_countries": {
-          // If empty, refresh catalogue; if still empty, direct fallback to all countries
-          let listCountries = catalog.countries;
-          if (!listCountries.length) {
-            const fresh = await fetchVisibleCatalog().catch(() => emptyCatalog);
-            setCatalog(fresh);
-            listCountries = fresh.countries;
-            if (!listCountries.length) {
-              listCountries = await fetchAllCountriesFallback();
-            }
-          }
-          if (!listCountries.length) {
-            assistantSay("I couldn’t load countries right now. Please try again.");
-            return;
-          }
-          const list = listCountries.map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`).join("\n");
-          assistantSay(`We currently operate in:\n${list}`);
-          return;
-        }
+  // Always try to refresh once
+  let cat = catalog;
+  if (!cat.countries.length) {
+    cat = await fetchVisibleCatalog().catch(() => emptyCatalog);
+    setCatalog(cat);
+  }
+
+  // If we have routes, we MUST only show the route-derived markets
+  const usingRoutes = cat.routes && cat.routes.length > 0;
+  let listCountries = cat.countries;
+
+  // Absolute last resort: no routes and no derived countries -> load active all-countries
+  if (!usingRoutes && !listCountries.length) {
+    listCountries = await fetchAllCountriesFallback();
+  }
+
+  if (!listCountries.length) {
+    assistantSay("I couldn’t load countries right now. Please try again.");
+    return;
+  }
+
+  const list = listCountries
+    .map(c => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`)
+    .join("\n");
+
+  assistantSay(`We currently operate in:\n${list}`);
+  return;
+}
 
         /* -------- Destinations (visible list) -------- */
         case "ask_destinations": {
