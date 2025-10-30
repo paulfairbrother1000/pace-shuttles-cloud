@@ -32,8 +32,9 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.2",
     "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
     "tsx": "^4.19.2",
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "overrides": {
     "pdf-parse": "1.1.1"
