@@ -12,22 +12,21 @@ import { retrieveSimilar } from "@/lib/rag";
    ────────────────────────────────────────────────────────────── */
 const PACE_PUBLIC_POLICY = `
 Facts & tools (public, anon-safe):
-• Countries: /api/public/countries  (includes charity_name, charity_url, charity_description; filter active=true/false)
+• Countries: /api/public/countries  (charity_name/url/description; use for metadata)
 • Destinations: /api/public/destinations  (q=, country filter via name)
 • Pickups: /api/public/pickups          (q=, includes directions_url)
-• Journeys: /api/public/journeys        (date=YYYY-MM-DD strongly preferred)
+• Journeys: /api/public/journeys        (date=YYYY-MM-DD strongly preferred) ← SOURCE OF TRUTH for "operational today"
 • Vehicle Types: /api/public/vehicle-types
 
-Revenue model (must be accurate):
-• Operators receive the ride revenue; destinations do NOT receive revenue.
-• Pace Shuttles earns a commission from operators.
+Definitions:
+• "Operate today / current": countries that have at least one journey for the given day.
+• "Roadmap": active countries that currently have no journeys (no vehicles/routes live today).
 
-Environmental note:
-• Pace Shuttles contributes to environmental charities in the regions it operates.
-• Retrieve charity fields from /api/public/countries when asked.
+Revenue model:
+• Operators receive ride revenue; destinations do NOT. Pace Shuttles earns a commission from operators.
 
 General:
-• Do not invent data. If a field is missing, say “not published yet.”
+• Never invent data. If a field is missing, say “not published yet.”
 • Prefer small result sets (limit ≤ 20).
 `;
 
@@ -175,9 +174,6 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
-/* ──────────────────────────────────────────────────────────────
-   3B) Refund helpers (unchanged)
-   ────────────────────────────────────────────────────────────── */
 function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
@@ -207,76 +203,112 @@ function friendlyBand(band: RefundBand) {
     : "no refund (no-shows or late arrivals are treated as travelled)";
 }
 
-/* ──────────────────────────────────────────────────────────────
-   4) Live data builder
-   ────────────────────────────────────────────────────────────── */
+/* Build a live data block for grounding */
 async function pullPublicDataForQuestion(
   q: string,
   intent: ReturnType<typeof detectIntent>,
   opts?: { forceCountryList?: "current" | "roadmap" }
 ) {
-  const iso = findISOInText(q);
+  const iso = findISOInText(q) ?? new Date().toISOString().slice(0, 10); // default: today
   const countryHint = guessCountryName(q);
 
-  const countriesParams =
-    intent.wantsCountryList || opts?.forceCountryList
-      ? { active: (opts?.forceCountryList ?? "current") === "current" } // ✅ FIX: simplify logic
-      : { q, active: true };
+  // Helper: distinct country names from journeys (operational today)
+  async function getOperationalCountries(dateISO: string): Promise<string[]> {
+    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: dateISO, active: true }, 200);
+    const set = new Set<string>();
+    for (const j of journeys) {
+      if (j.country_name) set.add(j.country_name);
+    }
+    return [...set];
+  }
 
-  const destinationsParams = countryHint ? { q: countryHint, active: true } : { q, active: true };
-
-  const [countries, destinations, pickups, journeys, vehicleTypes] = await Promise.all([
-    fetchJson<CountryRow>("/api/public/countries", countriesParams),
-    fetchJson<DestinationRow>("/api/public/destinations", destinationsParams),
-    fetchJson<PickupRow>("/api/public/pickups", { q: countryHint ?? q, active: true }),
-    fetchJson<JourneyRow>("/api/public/journeys", { q: countryHint ?? q, date: iso ?? undefined, active: true }),
-    fetchJson<{ name: string; description?: string; slug?: string }>("/api/public/vehicle-types", { active: true }),
-  ]);
+  // Helper: active countries (catalog)
+  async function getActiveCountriesCatalog(): Promise<CountryRow[]> {
+    return await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
+  }
 
   const blocks: string[] = [];
 
-  // ✅ FIX: condition order corrected (so opts.forceCountryList triggers)
-  if (countries.length && (opts?.forceCountryList || intent.wantsCountryList)) {
-    const isRoadmap = opts?.forceCountryList === "roadmap";
-    const lines = countries.map(
-      (c) =>
-        `• ${c.name}${c.charity_name ? ` — charity: ${c.charity_name}${c.charity_url ? ` (${c.charity_url})` : ""}` : ""}`,
+  // Countries: "current" vs "roadmap"
+  if (intent.wantsCountryList || opts?.forceCountryList) {
+    const choice = opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current");
+
+    const [operationalToday, activeCatalog] = await Promise.all([
+      getOperationalCountries(iso),
+      getActiveCountriesCatalog(),
+    ]);
+
+    if (choice === "current") {
+      // Show only countries that have journeys today
+      if (operationalToday.length > 0) {
+        const lines = operationalToday.sort().map(c => `• ${c}`);
+        blocks.push(`COUNTRIES WE OPERATE IN TODAY\n${lines.join("\n")}`);
+      } else {
+        blocks.push(`COUNTRIES WE OPERATE IN TODAY\n(no journeys published for today)`);
+      }
+    } else {
+      // roadmap = active catalog MINUS operationalToday
+      const roadmap = activeCatalog
+        .map(c => c.name)
+        .filter(name => !operationalToday.includes(name))
+        .sort();
+      if (roadmap.length > 0) {
+        const lines = roadmap.map(c => `• ${c}`);
+        blocks.push(`FUTURE / ROADMAP COUNTRIES (active but no journeys today)\n${lines.join("\n")}`);
+      } else {
+        blocks.push(`FUTURE / ROADMAP COUNTRIES\n(none to show)`);
+      }
+    }
+  }
+
+  // Destinations (scoped by country if hinted)
+  if (intent.wantsDestinations) {
+    const destinations = await fetchJson<DestinationRow>(
+      "/api/public/destinations",
+      countryHint ? { q: countryHint, active: true } : { active: true },
+      50,
     );
-    blocks.push(`${isRoadmap ? "COUNTRIES (roadmap)" : "COUNTRIES (current)"}\n${lines.join("\n")}`);
-  }
-
-  if (intent.wantsDestinations && destinations.length) {
-    const lines = destinations
-      .slice(0, 20)
-      .map(
-        (d) =>
-          `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
+    if (destinations.length) {
+      const lines = destinations.slice(0, 20).map(d =>
+        `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
       );
-    blocks.push(`DESTINATIONS\n${lines.join("\n")}`);
+      blocks.push(`DESTINATIONS${countryHint ? ` in ${countryHint}` : ""}\n${lines.join("\n")}`);
+    }
   }
 
-  if (intent.wantsTransportTypes && vehicleTypes.length) {
-    const lines = vehicleTypes.map((v) => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
-    blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
+  // Transport types
+  if (intent.wantsTransportTypes) {
+    const vts = await fetchJson<{ name: string; description?: string; slug?: string }>(
+      "/api/public/vehicle-types",
+      { active: true },
+      50,
+    );
+    if (vts.length) {
+      const lines = vts.map(v => `• ${v.name}${v.description ? ` — ${v.description}` : ""}`);
+      blocks.push(`TRANSPORT TYPES\n${lines.join("\n")}`);
+    }
   }
 
-  if (intent.wantsRouteInfo && journeys.length) {
-    const lines = journeys
-      .slice(0, 20)
-      .map(
-        (j) =>
-          `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(
-            2,
-          )} ${j.currency}`,
+  // Journeys (when specifically asking about routes/journeys)
+  if (intent.wantsRouteInfo) {
+    const journeys = await fetchJson<JourneyRow>(
+      "/api/public/journeys",
+      { q: countryHint ?? q, date: iso, active: true },
+      50,
+    );
+    if (journeys.length) {
+      const lines = journeys.slice(0, 20).map(j =>
+        `• ${j.route_name ?? `${j.pickup_name} → ${j.destination_name}`} — ${j.departure_time} UTC, ${j.duration_min} min, from ${j.price_per_seat_from.toFixed(2)} ${j.currency}`,
       );
-    blocks.push(`JOURNEYS${iso ? ` on ${iso}` : ""}\n${lines.join("\n")}`);
+      blocks.push(`JOURNEYS${countryHint ? ` in ${countryHint}` : ""} on ${iso}\n${lines.join("\n")}`);
+    }
   }
 
   return blocks.join("\n\n");
 }
 
 /* ──────────────────────────────────────────────────────────────
-   5) KB search
+   4) Public KB search (files)
    ────────────────────────────────────────────────────────────── */
 async function searchPublicFiles(q: string, k: number) {
   const base = getBaseUrl();
@@ -289,15 +321,12 @@ async function searchPublicFiles(q: string, k: number) {
   if (!res || !res.ok) return [];
   const data = await res.json().catch(() => ({ matches: [] }));
   return (data?.matches ?? []).map((m: any) => ({
-    title: m.title,
-    section: m.section ?? null,
-    content: m.snippet ?? "",
-    url: m.url ?? null,
+    title: m.title, section: m.section ?? null, content: m.snippet ?? "", url: m.url ?? null,
   }));
 }
 
 /* ──────────────────────────────────────────────────────────────
-   6) Main handler
+   5) Main handler
    ────────────────────────────────────────────────────────────── */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
@@ -309,7 +338,7 @@ export async function POST(req: Request) {
   const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
-  /* Concierge (unchanged) */
+  /* Concierge path (unchanged) */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
     const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
@@ -338,44 +367,23 @@ export async function POST(req: Request) {
     });
   }
 
+  /* Clarifier memory: if UI sent expectedIntent, consume it here */
   let forceCountryList: "current" | "roadmap" | undefined;
-
-  // ✅ FIX: properly consume "today"/"roadmap"
-  let forceCountryList: "current" | "roadmap" | undefined;
-
   if (expectedIntent === "wantsCountryList") {
     const choice = resolveCountryListChoice(q);
-    if (!choice) {
-      // Couldn’t parse → ask once more with explicit buttons
+    if (choice) {
+      intent.wantsCountryList = true;
+      forceCountryList = choice;
+    } else {
       return NextResponse.json({
         content:
-          "To list countries, please choose:\n\n" +
-          "• **Today** (currently operating)\n" +
-          "• **Roadmap** (planned/coming soon)\n\n" +
-          "Just reply with **today** or **roadmap**.",
+          "To list countries, please choose:\n\n• **Today** (currently operating)\n• **Roadmap** (planned/coming soon)\n\nJust reply with **today** or **roadmap**.",
         meta: { clarify: true, expect: "wantsCountryList" },
       });
     }
-
-    // We parsed the user’s choice – build live data and RETURN it immediately.
-    forceCountryList = choice;
-    const dataBlock = await pullPublicDataForQuestion(q, { ...detectIntent("countries"), wantsCountryList: true } as any, {
-      forceCountryList,
-    });
-
-    if (dataBlock && /COUNTRIES/i.test(dataBlock)) {
-      return NextResponse.json({
-        content: dataBlock,
-        sources: [],
-        // clear the clarifier on the client so it doesn’t keep sending it
-        meta: { clarify: false, expect: null, mode: "anon", usedSnippets: 0, summary: dataBlock.slice(0, 300) },
-      });
-    }
-
-    // If, for some reason, we have no data, fall through to general flow.
   }
 
-
+  // Only ask a new clarifier when we don't already have a pending expectation
   if (!expectedIntent) {
     const clarifier = buildClarifyingQuestion(intent, q);
     if (clarifier) {
@@ -386,12 +394,11 @@ export async function POST(req: Request) {
     }
   }
 
-  // ✅ FIX: correctly passes opts so data always loads
+  // Pull live PUBLIC data (countries/destinations/journeys…)
   const dataBlock = await pullPublicDataForQuestion(q, intent, { forceCountryList });
 
-  // RAG + fallback
+  // Vector RAG (KB) + fallback
   const k = 8;
-
   let snippets: any[] = [];
   try {
     snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
@@ -402,6 +409,7 @@ export async function POST(req: Request) {
     snippets = await searchPublicFiles(q, k);
   }
 
+  // If nothing public and user asks account stuff → deflect politely
   if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
     const gate = preflightGate(q, { signedIn });
     if (gate.action === "deflect" || gate.action === "deny") {
@@ -413,6 +421,7 @@ export async function POST(req: Request) {
     }
   }
 
+  // Build context
   const contextBlock = [
     snippets.length > 0
       ? snippets
@@ -445,16 +454,17 @@ export async function POST(req: Request) {
 
   const userPrompt = [
     `User question:\n${q}`,
-    "",
-    "Use the following context (KB + live data) if relevant:",
+    ``,
+    `Use the following context (KB + live data) if relevant:`,
     contextBlock,
-    "",
-    "Guidelines:",
-    "- If context is weak or missing, say so briefly and ask one targeted follow-up OR offer to create a support ticket.",
-    "- Keep answers specific. Add a one-line source tag like (From: Title › Section) if you relied on a snippet.",
-    "- For prices/routes/bookings, follow SSOT rules and do not invent details.",
+    ``,
+    `Guidelines:`,
+    `- If context is weak or missing, say so briefly and ask one targeted follow-up OR offer to create a support ticket.`,
+    `- Keep answers specific. Add a one-line source tag like (From: Title › Section) if you relied on a snippet.`,
+    `- For prices/routes/bookings, follow SSOT rules and do not invent details.`,
   ].join("\n");
 
+  // Model call with graceful fallback
   let content = "";
   try {
     content = await chatComplete([
@@ -465,9 +475,7 @@ export async function POST(req: Request) {
     content =
       dataBlock ||
       (snippets.length > 0
-        ? `${(snippets[0].content || "").slice(0, 600)}\n\n(From: ${
-            snippets[0].title || "Knowledge"
-          }${snippets[0].section ? " › " + snippets[0].section : ""})`
+        ? `${(snippets[0].content || "").slice(0, 600)}\n\n(From: ${snippets[0].title || "Knowledge"}${snippets[0].section ? " › " + snippets[0].section : ""})`
         : "I couldn’t reach the assistant just now, and I don’t have enough knowledge to answer. Please try again, or email hello@paceshuttles.com.");
   }
 
