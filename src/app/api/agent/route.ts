@@ -371,3 +371,94 @@ export async function POST(req: Request) {
   // RAG + fallback
   const k = 8;
   let snippets: any[]
+  let snippets: any[] = [];
+  try {
+    snippets = (await retrieveSimilar(q, { signedIn, k })) || [];
+  } catch {
+    snippets = [];
+  }
+  if (!snippets || snippets.length === 0) {
+    snippets = await searchPublicFiles(q, k);
+  }
+
+  if (!signedIn && intent.wantsMyStuff && snippets.length === 0 && !dataBlock) {
+    const gate = preflightGate(q, { signedIn });
+    if (gate.action === "deflect" || gate.action === "deny") {
+      return NextResponse.json({
+        content: gate.message,
+        sources: [],
+        meta: { signedIn, gate: gate.action },
+      });
+    }
+  }
+
+  const contextBlock = [
+    snippets.length > 0
+      ? snippets
+          .map((s: any, i: number) => {
+            const title = s.title || s.doc_title || "Knowledge";
+            const section = s.section || null;
+            return `【${i + 1}】 (${title}${section ? " › " + section : ""})\n${(s.content || "").trim()}`;
+          })
+          .join("\n\n")
+      : "No relevant KB snippets found.",
+    dataBlock ? `\nPUBLIC DATA (live):\n${dataBlock}` : "",
+  ].join("\n\n");
+
+  const sources = snippets.map((s: any) => ({
+    title: s.title || s.doc_title || "Knowledge",
+    section: s.section || null,
+    url: s.url || s.uri || null,
+  }));
+
+  const sys = [
+    systemGuardrails({ signedIn }),
+    "Tone: warm, concise, pragmatic. Lead with the answer, then a short explanation.",
+    "Use brief bullets when helpful. Avoid marketing fluff.",
+    signedIn
+      ? "User is signed in: you may reference their own bookings/balance/tickets via approved tools only."
+      : "User is anonymous: answer only from public knowledge and public data.",
+    "For account-sensitive topics: ask only for the minimum detail; require login before any lookup; explain why (privacy).",
+    PACE_PUBLIC_POLICY,
+  ].join("\n");
+
+  const userPrompt = [
+    `User question:\n${q}`,
+    "",
+    "Use the following context (KB + live data) if relevant:",
+    contextBlock,
+    "",
+    "Guidelines:",
+    "- If context is weak or missing, say so briefly and ask one targeted follow-up OR offer to create a support ticket.",
+    "- Keep answers specific. Add a one-line source tag like (From: Title › Section) if you relied on a snippet.",
+    "- For prices/routes/bookings, follow SSOT rules and do not invent details.",
+  ].join("\n");
+
+  let content = "";
+  try {
+    content = await chatComplete([
+      { role: "system", content: sys },
+      { role: "user", content: userPrompt },
+    ]);
+  } catch {
+    content =
+      dataBlock ||
+      (snippets.length > 0
+        ? `${(snippets[0].content || "").slice(0, 600)}\n\n(From: ${
+            snippets[0].title || "Knowledge"
+          }${snippets[0].section ? " › " + snippets[0].section : ""})`
+        : "I couldn’t reach the assistant just now, and I don’t have enough knowledge to answer. Please try again, or email hello@paceshuttles.com.");
+  }
+
+  const summary = content.slice(0, 300);
+
+  return NextResponse.json({
+    content,
+    sources,
+    meta: {
+      mode: signedIn ? "signed" : "anon",
+      usedSnippets: Math.min(snippets.length, k),
+      summary,
+    },
+  });
+}
