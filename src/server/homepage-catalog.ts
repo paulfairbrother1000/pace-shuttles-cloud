@@ -1,15 +1,7 @@
 // src/server/homepage-catalog.ts
 // Thin adapter so BOTH homepage and /api/public/visible-catalog use the SAME server logic.
 
-// src/server/homepage-catalog.ts
-// Thin adapter so BOTH homepage and /api/public/visible-catalog use the SAME server logic.
-
-import { buildHomeCatalog } from "@/buildHomeCatalog"; // ← path now matches the rename
-
-export async function getVisibleCatalog() {
-  return await buildHomeCatalog();
-}
-
+import { buildHomeCatalog } from "@/buildHomeCatalog"; // path matches the rename
 
 export type VisibleRoute = {
   route_id: string;
@@ -47,13 +39,9 @@ export type VisibleCatalog = {
   vehicle_types: Array<{ id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null }>;
 };
 
-// Replace this with your actual homepage loader import
-// Example:
-// import { buildHomeCatalog } from "@/app/(site)/_server/buildHomeCatalog";
-
+/** Single source of truth used by homepage and the public API */
 export async function getVisibleCatalog(): Promise<VisibleCatalog> {
-  // return await buildHomeCatalog();
-
-  // TEMP: throw so the API falls back gracefully until you wire the real function.
-  throw new Error("getVisibleCatalog() not wired to homepage loader yet.");
+  // Delegate to the real homepage loader
+  const catalog = await buildHomeCatalog();
+  return catalog as VisibleCatalog;
 }
