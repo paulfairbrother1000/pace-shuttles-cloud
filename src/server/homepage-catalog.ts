@@ -1,6 +1,16 @@
 // src/server/homepage-catalog.ts
 // Thin adapter so BOTH homepage and /api/public/visible-catalog use the SAME server logic.
 
+// src/server/homepage-catalog.ts
+// Thin adapter so BOTH homepage and /api/public/visible-catalog use the SAME server logic.
+
+import { buildHomeCatalog } from "@/buildHomeCatalog"; // ← path now matches the rename
+
+export async function getVisibleCatalog() {
+  return await buildHomeCatalog();
+}
+
+
 export type VisibleRoute = {
   route_id: string;
   route_name: string;
