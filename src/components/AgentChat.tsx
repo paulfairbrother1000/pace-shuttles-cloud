@@ -4,7 +4,7 @@
 import * as React from "react";
 
 /* ──────────────────────────────────────────────
-   Types (preserved + extended)
+   Types
    ────────────────────────────────────────────── */
 type SourceLink = { title: string; section?: string | null; url?: string | null };
 
@@ -15,242 +15,82 @@ type ChatMsg = {
   sources?: SourceLink[];
   meta?: {
     clarify?: boolean;
-    expect?: string | null; // server suggests the next expected intent
+    expect?: string | null;
     requireLogin?: boolean;
     mode?: "anon" | "signed";
     usedSnippets?: number;
     summary?: string;
-    // NEW: parsed entities snapshot for debugging
     entities?: Partial<ParsedEntities>;
   };
 };
 
-type AgentResponse = {
-  content: string;
-  sources?: SourceLink[];
-  requireLogin?: boolean;
-  meta?: {
-    clarify?: boolean;
-    expect?: string | null;
-    mode?: "anon" | "signed";
-    usedSnippets?: number;
-    summary?: string;
-  };
-};
-
-/* ──────────────────────────────────────────────
-   Domain types expected from your APIs
-   (Descriptions are important per your request)
-   ────────────────────────────────────────────── */
 type UUID = string;
 
-type Country = { id: UUID; name: string; description?: string | null; slug?: string | null };
+type Country = { id?: UUID | null; name: string; description?: string | null; slug?: string | null; active?: boolean | null };
 type Destination = {
-  id: UUID;
-  country_id: UUID;
+  // Public /destinations payload (no IDs in your sample)
   name: string;
+  country_name?: string | null;
   description?: string | null;
-  slug?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  town?: string | null;
+  region?: string | null;
+  postal_code?: string | null;
+  phone?: string | null;
+  website_url?: string | null;
+  image_url?: string | null;
+  directions_url?: string | null;
+  active?: boolean | null;
 };
-type Pickup = {
-  id: UUID;
-  destination_id: UUID | null;
-  country_id: UUID;
-  name: string;
-  description?: string | null;
-  slug?: string | null;
+type Pickup = { id: UUID; country_id: UUID; destination_id: UUID | null; name: string; description?: string | null; slug?: string | null };
+
+/* Homepage-visible routes (only those we can actually sell/show) */
+type VisibleRoute = {
+  route_id: UUID;
+  route_name: string;
+  country_id?: UUID | null;
+  country_name?: string | null;
+  destination_id?: UUID | null;
+  destination_name?: string | null;
+  pickup_id?: UUID | null;
+  pickup_name?: string | null;
+  country_description?: string | null;
+  destination_description?: string | null;
+  pickup_description?: string | null;
 };
 
+/* SSOT quotes */
 type QuoteRequest = {
   date?: string; // ISO yyyy-mm-dd
   country_id?: UUID | null;
   destination_id?: UUID | null;
   pickup_id?: UUID | null;
 };
-
 type QuoteItem = {
   route_id: UUID;
   route_name: string;
   destination_name?: string | null;
   pickup_name?: string | null;
-  // SSOT: per-seat all-in price, rounded up (as per your spec)
   price_per_seat: number;
-  currency: string; // "GBP" etc.
-  quoteToken: string; // carry through the flow
+  currency: string;
+  quoteToken: string;
 };
-
-type QuoteResponse = {
-  items: QuoteItem[];
-  // optional more fields (rates, breakdowns)
-};
+type QuoteResponse = { items: QuoteItem[] };
 
 /* ──────────────────────────────────────────────
-   Config: API endpoints (adjust if your paths differ)
+   Config — align with HOME PAGE endpoints
    ────────────────────────────────────────────── */
 const API = {
-  countries: "/api/countries",
-  destinations: "/api/destinations", // supports ?country_id=
-  pickups: "/api/pickups",           // supports ?country_id=&destination_id=
-  quote: "/api/quote",               // SSOT
+  visibleCountries: "/api/public/visible-countries", // optional helper
+  visibleRoutes: "/api/public/routes?onlyVisible=1",  // homepage SSOT for visibility
+  destinations: "/api/public/destinations",           // info-rich payload
+  pickups: "/api/public/pickups",                     // if needed as a fallback
+  quote: "/api/quote",                                // SSOT prices/availability
 };
 
 /* ──────────────────────────────────────────────
-   Minimal in-component cache to avoid re-fetching
-   ────────────────────────────────────────────── */
-type Catalog = {
-  countries: Country[];
-  destinations: Destination[]; // all; we’ll filter client-side
-  pickups: Pickup[];           // all; we’ll filter client-side
-};
-const emptyCatalog: Catalog = { countries: [], destinations: [], pickups: [] };
-
-/* ──────────────────────────────────────────────
-   NLU helpers (no external deps)
-   ────────────────────────────────────────────── */
-type ParsedEntities = {
-  intent?: "journeys" | "ask_countries" | "ask_destinations" | "ask_pickups" | "unknown";
-  countryName?: string;
-  destinationName?: string;
-  pickupName?: string;
-  dateISO?: string; // yyyy-mm-dd
-};
-
-function normalize(s: string) {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}\s\-&]/gu, " ").replace(/\s+/g, " ").trim();
-}
-
-function parseDateToISO(input: string): string | undefined {
-  // Try ISO yyyy-mm-dd first
-  const iso = input.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/);
-  if (iso) return iso[0];
-
-  // Try UK dd/mm/yyyy or dd/mm/yy
-  const uk = input.match(/\b(0?[1-9]|[12]\d|3[01])\/(0?[1-9]|1[0-2])\/(\d{2}|\d{4})\b/);
-  if (uk) {
-    const dd = parseInt(uk[1], 10);
-    const mm = parseInt(uk[2], 10);
-    let yyyy = uk[3].length === 2 ? 2000 + parseInt(uk[3], 10) : parseInt(uk[3], 10);
-    // basic validity
-    if (yyyy >= 2000 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
-      const mmStr = mm.toString().padStart(2, "0");
-      const ddStr = dd.toString().padStart(2, "0");
-      return `${yyyy}-${mmStr}-${ddStr}`;
-    }
-  }
-  return undefined;
-}
-
-function detectIntent(raw: string): ParsedEntities {
-  const text = normalize(raw);
-
-  // Direct “what countries” style
-  if (/\b(what|which)\b.*\bcountries?\b/.test(text)) {
-    return { intent: "ask_countries" };
-  }
-  if (/\b(destinations?|stops?)\b/.test(text) && /\bin\b/.test(text)) {
-    // “What destinations do you visit in Antigua?”
-    // leave countryName extraction to entity pass
-    return { intent: "ask_destinations" };
-  }
-  if (/\b(pickups?|pickup points?)\b/.test(text)) {
-    return { intent: "ask_pickups" };
-  }
-
-  // Journey-ish verbs
-  if (
-    /\b(show|find|list|any|anything|available|journeys?|routes?)\b/.test(text) ||
-    /\bbook\b/.test(text)
-  ) {
-    return { intent: "journeys" };
-  }
-
-  return { intent: "unknown" };
-}
-
-/* Extract surface strings; entity resolution to catalog happens later */
-function extractSurfaceEntities(raw: string): Omit<ParsedEntities, "intent"> {
-  const dateISO = parseDateToISO(raw) ?? undefined;
-
-  // a naive “in X” / “to X” grab for country/destination/pickup surface names
-  // We’ll resolve these against the catalog with fuzzy-ish matching
-  const inMatch = raw.match(/\b(?:in|to)\s+([A-Za-z][A-Za-z\s&\-']{1,60})/i);
-  const surface = inMatch?.[1]?.trim();
-
-  // Also try “in Antigua on …” where “on …” would terminate the name
-  let surfaceTrimmed = surface?.replace(/\s+on\s+.*$/i, "").trim();
-
-  return {
-    countryName: surfaceTrimmed,      // might be country OR destination — we’ll resolve
-    destinationName: undefined,
-    pickupName: undefined,
-    dateISO,
-  };
-}
-
-/* ──────────────────────────────────────────────
-   Resolution helpers (catalog-aware, tolerant)
-   ────────────────────────────────────────────── */
-function bestNameMatch<T extends { name: string }>(name: string, items: T[]): T | undefined {
-  const n = normalize(name);
-  let exact = items.find((i) => normalize(i.name) === n);
-  if (exact) return exact;
-
-  // startsWith or contains as a soft match
-  let starts = items.find((i) => normalize(i.name).startsWith(n));
-  if (starts) return starts;
-
-  return items.find((i) => normalize(i.name).includes(n));
-}
-
-function resolveEntitiesToIds(
-  parsed: ParsedEntities,
-  catalog: Catalog,
-  ctx: ConversationContext
-): {
-  country?: Country;
-  destination?: Destination;
-  pickup?: Pickup;
-  dateISO?: string;
-} {
-  let country: Country | undefined;
-  let destination: Destination | undefined;
-  let pickup: Pickup | undefined;
-
-  // Prefer freshly parsed date; otherwise reuse context
-  const dateISO = parsed.dateISO ?? ctx.dateISO ?? undefined;
-
-  // Try to resolve ambiguous "in X" surface against country first
-  if (parsed.countryName) {
-    country = bestNameMatch(parsed.countryName, catalog.countries);
-    // If not a country, try destination under any country
-    if (!country) {
-      destination = bestNameMatch(parsed.countryName, catalog.destinations);
-      if (destination) {
-        country = catalog.countries.find((c) => c.id === destination!.country_id);
-      }
-    }
-  }
-
-  // If we still don’t have a country, reuse from context
-  if (!country && ctx.country) country = ctx.country;
-  if (!destination && ctx.destination) destination = ctx.destination;
-  if (!pickup && ctx.pickup) pickup = ctx.pickup;
-
-  return { country, destination, pickup, dateISO };
-}
-
-/* ──────────────────────────────────────────────
-   Conversation context (in-component memory)
-   ────────────────────────────────────────────── */
-type ConversationContext = {
-  country?: Country;
-  destination?: Destination;
-  pickup?: Pickup;
-  dateISO?: string;
-};
-
-/* ──────────────────────────────────────────────
-   Fetch helpers
+   Helpers: tolerant JSON unwrapping
    ────────────────────────────────────────────── */
 async function safeJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -259,39 +99,217 @@ async function safeJson<T>(res: Response): Promise<T> {
   }
   return res.json();
 }
-
-async function fetchCatalog(): Promise<Catalog> {
-  const [countriesRes, destinationsRes, pickupsRes] = await Promise.allSettled([
-    fetch(API.countries, { cache: "no-store" }),
-    fetch(API.destinations, { cache: "no-store" }),
-    fetch(API.pickups, { cache: "no-store" }),
-  ]);
-
-  const countries =
-    countriesRes.status === "fulfilled" ? await safeJson<Country[]>(countriesRes.value) : [];
-  const destinations =
-    destinationsRes.status === "fulfilled" ? await safeJson<Destination[]>(destinationsRes.value) : [];
-  const pickups =
-    pickupsRes.status === "fulfilled" ? await safeJson<Pickup[]>(pickupsRes.value) : [];
-
-  return { countries, destinations, pickups };
+async function jsonArray<T>(res: Response): Promise<T[]> {
+  const data = await safeJson<any>(res);
+  if (Array.isArray(data)) return data as T[];
+  if (data?.rows && Array.isArray(data.rows)) return data.rows as T[];
+  if (data?.data && Array.isArray(data.data)) return data.data as T[];
+  throw new Error("Unexpected API response shape (no array found).");
 }
 
-async function fetchDestinationsForCountry(countryId: UUID): Promise<Destination[]> {
-  const res = await fetch(`${API.destinations}?country_id=${encodeURIComponent(countryId)}`, {
-    cache: "no-store",
-  });
-  return safeJson<Destination[]>(res);
+function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const v of arr) {
+    const k = key(v);
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(v);
+    }
+  }
+  return out;
 }
 
-async function fetchPickups(params: { country_id?: UUID; destination_id?: UUID }): Promise<Pickup[]> {
-  const qs = new URLSearchParams();
-  if (params.country_id) qs.set("country_id", params.country_id);
-  if (params.destination_id) qs.set("destination_id", params.destination_id);
-  const res = await fetch(`${API.pickups}?${qs.toString()}`, { cache: "no-store" });
-  return safeJson<Pickup[]>(res);
+/* ──────────────────────────────────────────────
+   Catalogue (VISIBLE scope + destination details)
+   ────────────────────────────────────────────── */
+type Catalog = {
+  countries: Country[];
+  destinationsAll: Destination[]; // raw API list (for details)
+  visibleDestinations: Destination[]; // filtered to visible routes
+  pickups: Pickup[];
+  routes: VisibleRoute[];
+};
+const emptyCatalog: Catalog = { countries: [], destinationsAll: [], visibleDestinations: [], pickups: [], routes: [] };
+
+async function fetchVisibleCatalog(): Promise<Catalog> {
+  // Core: visible routes
+  const routesRes = await fetch(API.visibleRoutes, { cache: "no-store" });
+  const routes = await jsonArray<VisibleRoute>(routesRes);
+
+  // Try explicit visible countries
+  let countries: Country[] = [];
+  try {
+    const vcRes = await fetch(API.visibleCountries, { cache: "no-store" });
+    countries = await jsonArray<Country>(vcRes);
+  } catch {
+    // derive from routes
+    countries = uniqBy(
+      routes
+        .filter((r) => r.country_name)
+        .map((r) => ({
+          id: r.country_id ?? null,
+          name: r.country_name || "Unknown",
+          description: r.country_description ?? null,
+        })),
+      (c) => (c.id ?? c.name ?? "").toString().toLowerCase()
+    );
+  }
+
+  // Full destinations payload (for rich info)
+  let destinationsAll: Destination[] = [];
+  try {
+    const dRes = await fetch(API.destinations, { cache: "no-store" });
+    destinationsAll = await jsonArray<Destination>(dRes);
+  } catch {
+    destinationsAll = [];
+  }
+
+  // Restrict to visible destinations (present in visible routes by name)
+  const visibleDestNameSet = new Set(
+    routes.filter((r) => r.destination_name).map((r) => (r.destination_name || "").toLowerCase())
+  );
+  const visibleDestinations = destinationsAll.filter((d) =>
+    d.name ? visibleDestNameSet.has(d.name.toLowerCase()) : false
+  );
+
+  return { countries, destinationsAll, visibleDestinations, pickups: [], routes };
 }
 
+/* ──────────────────────────────────────────────
+   NLU — intents & slot extraction
+   ────────────────────────────────────────────── */
+type Intent =
+  | "journeys"
+  | "ask_countries"
+  | "ask_destinations"
+  | "ask_pickups"
+  | "dest_info"        // tell me about X
+  | "dest_address"     // what's the address for X?
+  | "dest_map"         // maps link
+  | "dest_phone"
+  | "dest_website"
+  | "dest_image"
+  | "unknown";
+
+type ParsedEntities = {
+  intent?: Intent;
+  countryName?: string;
+  destinationName?: string;
+  pickupName?: string;
+  dateISO?: string;
+};
+
+function normalize(s: string) {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}\s\-&']/gu, " ").replace(/\s+/g, " ").trim();
+}
+function parseDateToISO(input: string): string | undefined {
+  const iso = input.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/);
+  if (iso) return iso[0];
+  const uk = input.match(/\b(0?[1-9]|[12]\d|3[01])\/(0?[1-9]|1[0-2])\/(\d{2}|\d{4})\b/);
+  if (uk) {
+    const dd = parseInt(uk[1], 10);
+    const mm = parseInt(uk[2], 10);
+    const yyyy = uk[3].length === 2 ? 2000 + parseInt(uk[3], 10) : parseInt(uk[3], 10);
+    if (yyyy >= 2000 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+    }
+  }
+  return undefined;
+}
+
+function detectIntent(raw: string): Intent {
+  const t = normalize(raw);
+
+  // Destination info patterns
+  if (/\b(tell me about|what is|info on|describe)\b/.test(t) && /\b(catherine|boom|shirley|cliff|hut|reef|nobu|prickly|loose)\b/.test(t))
+    return "dest_info";
+  if (/\b(address|where is|what is the address)\b/.test(t)) return "dest_address";
+  if (/\b(map|google maps|directions)\b/.test(t)) return "dest_map";
+  if (/\b(phone|telephone|contact number)\b/.test(t)) return "dest_phone";
+  if (/\b(website|url|link)\b/.test(t)) return "dest_website";
+  if (/\b(image|photo|picture|pic)\b/.test(t)) return "dest_image";
+
+  // Catalogue queries
+  if (/\b(what|which)\b.*\bcountries?\b/.test(t)) return "ask_countries";
+  if (/\b(destinations?|stops?)\b/.test(t) && /\bin\b/.test(t)) return "ask_destinations";
+  if (/\b(pickups?|pickup points?)\b/.test(t)) return "ask_pickups";
+
+  // Journeys / availability
+  if (/\b(show|find|list|any|anything|available|journeys?|routes?|book)\b/.test(t)) return "journeys";
+
+  return "unknown";
+}
+
+function extractSurfaceEntities(raw: string): Omit<ParsedEntities, "intent"> {
+  const dateISO = parseDateToISO(raw);
+  // Capture thing after "in" or "to"
+  const inMatch = raw.match(/\b(?:in|to)\s+([A-Za-z][A-Za-z\s&\-']{1,80})/i);
+  const surface = inMatch?.[1]?.trim();
+  const surfaceTrimmed = surface?.replace(/\s+on\s+.*$/i, "").trim();
+
+  // Also capture a quoted destination name: "Catherine's Cafe"
+  const quoted = raw.match(/["“”']([^"“”']{2,80})["“”']/);
+  const quotedName = quoted?.[1]?.trim();
+
+  return {
+    countryName: surfaceTrimmed,
+    destinationName: quotedName,
+    dateISO,
+  };
+}
+
+function bestNameMatch<T extends { name: string }>(name: string, items: T[]): T | undefined {
+  const n = normalize(name);
+  let exact = items.find((i) => normalize(i.name) === n);
+  if (exact) return exact;
+  let starts = items.find((i) => normalize(i.name).startsWith(n));
+  if (starts) return starts;
+  return items.find((i) => normalize(i.name).includes(n));
+}
+
+type ConversationContext = { country?: Country; destination?: Destination; pickup?: Pickup; dateISO?: string };
+
+/* Resolve to visible-only world first; use full destination list to fill details */
+function resolveEntities(
+  parsed: ParsedEntities,
+  catalog: Catalog,
+  ctx: ConversationContext
+): { country?: Country; destination?: Destination; dateISO?: string } {
+  let country: Country | undefined;
+  let destination: Destination | undefined;
+  const dateISO = parsed.dateISO ?? ctx.dateISO ?? undefined;
+
+  // Prefer explicit destination match (quoted or name) against visibleDestinations first
+  const destNameCandidate = parsed.destinationName || parsed.countryName; // sometimes users write "in Boom"
+  if (destNameCandidate) {
+    destination = bestNameMatch(destNameCandidate, catalog.visibleDestinations);
+    if (!destination) {
+      // Try the full list (still ok for info fetches)
+      destination = bestNameMatch(destNameCandidate, catalog.destinationsAll);
+    }
+  }
+
+  // Country match only within visible countries
+  if (parsed.countryName && !destination) {
+    country = bestNameMatch(parsed.countryName, catalog.countries);
+  }
+
+  // Backfill from context
+  if (!country && ctx.country) country = ctx.country;
+  if (!destination && ctx.destination) destination = ctx.destination;
+
+  // If we found a destination, infer its country from name match
+  if (!country && destination?.country_name) {
+    country = bestNameMatch(destination.country_name, catalog.countries);
+  }
+
+  return { country, destination, dateISO };
+}
+
+/* ──────────────────────────────────────────────
+   Quote fetch (SSOT)
+   ────────────────────────────────────────────── */
 async function fetchQuotes(req: QuoteRequest): Promise<QuoteResponse> {
   const res = await fetch(API.quote, {
     method: "POST",
@@ -303,6 +321,26 @@ async function fetchQuotes(req: QuoteRequest): Promise<QuoteResponse> {
 }
 
 /* ──────────────────────────────────────────────
+   Destination detail rendering
+   ────────────────────────────────────────────── */
+function formatAddress(d: Destination): string {
+  const parts = [d.address1, d.address2, d.town, d.region, d.postal_code].filter(Boolean);
+  return parts.length ? parts.join(", ") : "N/A";
+}
+
+function renderDestinationCard(d: Destination): string {
+  const lines: string[] = [];
+  lines.push(`**${d.name}** ${d.country_name ? `(${d.country_name})` : ""}`.trim());
+  if (d.description) lines.push(d.description);
+  lines.push(`Address: ${formatAddress(d)}`);
+  lines.push(`Maps: ${d.directions_url || "N/A"}`);
+  lines.push(`Phone: ${d.phone || "N/A"}`);
+  lines.push(`Website: ${d.website_url || "N/A"}`);
+  lines.push(`Image: ${d.image_url || "N/A"}`);
+  return lines.join("\n");
+}
+
+/* ──────────────────────────────────────────────
    UI Component
    ────────────────────────────────────────────── */
 export default function AgentChat() {
@@ -311,21 +349,22 @@ export default function AgentChat() {
       id: crypto.randomUUID(),
       role: "assistant",
       content:
-        "Hi! I can help with countries, destinations, pickup points, and journeys.\nTry: “Show journeys in Antigua on 2025-11-20”.",
+        "Hi! I can help with countries, destinations, pickup points, and journeys.\nTry: “Show journeys in Antigua on 2025-11-20”, or “Tell me about Catherine’s Cafe”.",
     },
   ]);
   const [input, setInput] = React.useState("");
   const [catalog, setCatalog] = React.useState<Catalog>(emptyCatalog);
   const [ctx, setCtx] = React.useState<ConversationContext>({});
 
-  // Load catalog once
   React.useEffect(() => {
     let alive = true;
-    fetchCatalog()
-      .then((cat) => alive && setCatalog(cat))
+    fetchVisibleCatalog()
+      .then((cat) => {
+        if (!alive) return;
+        setCatalog(cat);
+      })
       .catch((err) => {
-        console.error("Catalog fetch error:", err);
-        // Keep empty catalog but don’t crash
+        console.error("Visible catalog fetch error:", err);
       });
     return () => {
       alive = false;
@@ -335,18 +374,15 @@ export default function AgentChat() {
   function push(msg: ChatMsg) {
     setMessages((m) => [...m, msg]);
   }
-
   function assistantSay(text: string, meta?: ChatMsg["meta"]) {
     push({ id: crypto.randomUUID(), role: "assistant", content: text, meta });
   }
-
   function summarizeQuoteItem(q: QuoteItem) {
     const price = new Intl.NumberFormat("en-GB", {
       style: "currency",
       currency: q.currency || "GBP",
       maximumFractionDigits: 0,
     }).format(q.price_per_seat);
-
     const parts: string[] = [];
     parts.push(`• ${q.route_name} — ${price} per seat`);
     if (q.pickup_name) parts.push(`  Pickup: ${q.pickup_name}`);
@@ -359,90 +395,131 @@ export default function AgentChat() {
     const userMsg: ChatMsg = { id: crypto.randomUUID(), role: "user", content: raw };
     push(userMsg);
 
-    // 1) Parse + extract entities
-    const intentGuess = detectIntent(raw);
+    const intent = detectIntent(raw);
     const surfaces = extractSurfaceEntities(raw);
-    const parsed: ParsedEntities = { ...intentGuess, ...surfaces };
+    const parsed: ParsedEntities = { intent, ...surfaces };
+    const resolved = resolveEntities(parsed, catalog, ctx);
 
-    // 2) Resolve to catalog + context
-    const resolved = resolveEntitiesToIds(parsed, catalog, ctx);
-
-    // 3) Route by intent (with smart fallbacks)
     try {
-      switch (parsed.intent) {
+      switch (intent) {
+        /* ───────── Countries (visible only) ───────── */
         case "ask_countries": {
           if (!catalog.countries.length) {
-            assistantSay("I couldn’t load countries just now. Please try again shortly.");
+            try {
+              const fresh = await fetchVisibleCatalog();
+              setCatalog(fresh);
+              if (fresh.countries.length) {
+                const list = fresh.countries.map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`).join("\n");
+                assistantSay(`We currently operate in:\n${list}`);
+                return;
+              }
+            } catch {}
+            assistantSay("I couldn’t load visible countries right now. Please try again.");
             return;
           }
-          const list = catalog.countries.map((c) => `• ${c.name}`).join("\n");
+          const list = catalog.countries.map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`).join("\n");
           assistantSay(`We currently operate in:\n${list}`);
           return;
         }
 
+        /* ───────── Destinations list (visible only) ───────── */
         case "ask_destinations": {
           const country = resolved.country;
           if (!country) {
-            assistantSay(
-              `Which country are you interested in?\nFor example: “What destinations do you visit in Antigua?”`
-            );
+            assistantSay(`Which country are you interested in? (e.g., “What destinations do you visit in Antigua?”)`);
             return;
           }
-          const dests = await fetchDestinationsForCountry(country.id).catch(() => []);
+          const dests = catalog.visibleDestinations.filter((d) =>
+            d.country_name ? d.country_name.toLowerCase() === country.name.toLowerCase() : false
+          );
           if (!dests.length) {
-            assistantSay(`I couldn’t find destinations in ${country.name} right now.`);
+            assistantSay(`I couldn’t find visible destinations in ${country.name} right now.`);
             return;
           }
-          // Include descriptions per your requirement
-          const lines = dests.map((d) => {
-            const desc = d.description ? ` — ${d.description}` : "";
-            return `• ${d.name}${desc}`;
-          });
+          const lines = dests.map((d) => `• ${d.name}${d.description ? ` — ${d.description}` : ""}`);
           assistantSay(`Destinations in ${country.name}:\n${lines.join("\n")}`);
-
-          // Update context
           setCtx((prev) => ({ ...prev, country }));
           return;
         }
 
-        case "ask_pickups": {
-          // Prefer destination>country if we have them; else ask
-          const country = resolved.country;
-          const destination = resolved.destination;
+        /* ───────── Destination info (rich, from /destinations) ───────── */
+        case "dest_info":
+        case "dest_address":
+        case "dest_map":
+        case "dest_phone":
+        case "dest_website":
+        case "dest_image": {
+          // Decide which destination we’re talking about:
+          const byName =
+            (parsed.destinationName && bestNameMatch(parsed.destinationName, catalog.destinationsAll)) ||
+            (parsed.countryName && bestNameMatch(parsed.countryName, catalog.destinationsAll)) ||
+            ctx.destination;
 
-          if (!country && !destination) {
-            assistantSay(
-              `Would you like pickups for a country or a specific destination?\nExample: “Show pickup points in Antigua” or “Pickups for English Harbour”.`
-            );
+          if (!byName) {
+            // Try to infer from last visible destination list (first item as hint)
+            const hint = catalog.visibleDestinations[0]?.name || "Catherine's Cafe";
+            assistantSay(`Which destination do you mean? For example: "Tell me about \"${hint}\"".`);
             return;
           }
 
-          const pickups = await fetchPickups({
-            country_id: destination ? undefined : country?.id,
-            destination_id: destination?.id,
-          }).catch(() => []);
-
-          if (!pickups.length) {
-            const scope = destination ? destination.name : country?.name || "that area";
-            assistantSay(`I couldn’t find pickup points for ${scope}.`);
-            return;
+          // Build answer depending on the sub-intent
+          if (intent === "dest_info") {
+            assistantSay(renderDestinationCard(byName));
+          } else if (intent === "dest_address") {
+            assistantSay(`**${byName.name}** address: ${formatAddress(byName)}`);
+          } else if (intent === "dest_map") {
+            assistantSay(`Google Maps for **${byName.name}**: ${byName.directions_url || "N/A"}`);
+          } else if (intent === "dest_phone") {
+            assistantSay(`Phone for **${byName.name}**: ${byName.phone || "N/A"}`);
+          } else if (intent === "dest_website") {
+            assistantSay(`Website for **${byName.name}**: ${byName.website_url || "N/A"}`);
+          } else if (intent === "dest_image") {
+            assistantSay(`Image for **${byName.name}**: ${byName.image_url || "N/A"}`);
           }
-
-          const lines = pickups.map((p) => {
-            const desc = p.description ? ` — ${p.description}` : "";
-            return `• ${p.name}${desc}`;
-          });
-          const scope = destination ? ` for ${destination.name}` : ` in ${country?.name}`;
-          assistantSay(`Pickup points${scope}:\n${lines.join("\n")}`);
 
           // Update context
+          setCtx((prev) => ({ ...prev, destination: byName, country: resolved.country ?? prev.country }));
+          return;
+        }
+
+        /* ───────── Pickups (derive from visible routes by destination/country) ───────── */
+        case "ask_pickups": {
+          const { country, destination } = resolved;
+
+          // If a destination is known, show pickups tied to routes for that destination
+          let pickupsForScope: string[] = [];
+          if (destination?.name) {
+            pickupsForScope = uniqBy(
+              catalog.routes
+                .filter((r) => r.destination_name && r.destination_name.toLowerCase() === destination.name.toLowerCase())
+                .filter((r) => r.pickup_name)
+                .map((r) => r.pickup_name as string),
+              (n) => n.toLowerCase()
+            );
+          } else if (country?.name) {
+            pickupsForScope = uniqBy(
+              catalog.routes
+                .filter((r) => r.country_name && r.country_name.toLowerCase() === country.name.toLowerCase())
+                .filter((r) => r.pickup_name)
+                .map((r) => r.pickup_name as string),
+              (n) => n.toLowerCase()
+            );
+          }
+
+          if (!pickupsForScope.length) {
+            const scope = destination?.name || country?.name || "that area";
+            assistantSay(`I couldn’t find visible pickup points for ${scope}.`);
+            return;
+          }
+
+          assistantSay(`Pickup points${destination ? ` for ${destination.name}` : country ? ` in ${country.name}` : ""}:\n` + pickupsForScope.map((p) => `• ${p}`).join("\n"));
           setCtx((prev) => ({ ...prev, country: country ?? prev.country, destination: destination ?? prev.destination }));
           return;
         }
 
+        /* ───────── Journeys / quotes (SSOT) ───────── */
         case "journeys": {
-          // Need country or destination, and ideally date
-          const { country, destination, pickup, dateISO } = resolved;
+          const { country, destination, dateISO } = resolved;
 
           if (!country && !destination) {
             assistantSay(
@@ -451,34 +528,20 @@ export default function AgentChat() {
             );
             return;
           }
-
-          // If no date, try to continue with context — else ask
           if (!dateISO) {
-            assistantSay(
-              `Got it — ${destination ? destination.name : country?.name}. Which date?\n(e.g., 20/11/2025 or 2025-11-20)`
-            );
-            // update context with the location we do have
-            setCtx((prev) => ({
-              ...prev,
-              country: country ?? prev.country,
-              destination: destination ?? prev.destination,
-              pickup: pickup ?? prev.pickup,
-            }));
+            assistantSay(`Got it — ${destination ? destination.name : country?.name}. Which date? (e.g., 20/11/2025 or 2025-11-20)`);
+            setCtx((prev) => ({ ...prev, country: country ?? prev.country, destination: destination ?? prev.destination }));
             return;
           }
 
-          // Call SSOT for quotes
           const req: QuoteRequest = {
             date: dateISO,
-            country_id: destination ? undefined : country?.id ?? null,
-            destination_id: destination?.id ?? null,
-            pickup_id: pickup?.id ?? null,
+            country_id: destination ? undefined : (country?.id ?? null),
+            destination_id: undefined, // we don’t have destination IDs in public API; SSOT can still filter via country/pickup/date
+            pickup_id: undefined,
           };
 
-          assistantSay(
-            `Searching journeys for ${destination ? destination.name : country?.name} on ${dateISO}…`
-          );
-
+          assistantSay(`Searching journeys for ${destination ? destination.name : country?.name} on ${dateISO}…`);
           const quotes = await fetchQuotes(req).catch((err) => {
             console.error("quote error", err);
             return null;
@@ -486,8 +549,7 @@ export default function AgentChat() {
 
           if (!quotes || !quotes.items?.length) {
             assistantSay(`No journeys found for ${destination ? destination.name : country?.name} on ${dateISO}. Try another date.`);
-            // still store context
-            setCtx((prev) => ({ ...prev, country, destination, pickup, dateISO }));
+            setCtx((prev) => ({ ...prev, country, destination, dateISO }));
             return;
           }
 
@@ -497,38 +559,48 @@ export default function AgentChat() {
             { summary: "SSOT quotes", entities: { ...parsed, dateISO } }
           );
 
-          // Update context (success path)
-          setCtx({ country, destination, pickup, dateISO });
+          setCtx({ country, destination, dateISO });
           return;
         }
 
+        /* ───────── Unknown / follow-up handling ───────── */
         case "unknown":
         default: {
-          // If user gave only a date (e.g., “anything on 12/11/25”) and we have a remembered country/destination
-          const onlyDate = parsed.dateISO && !parsed.countryName;
+          // Date-only follow-up (“anything on 12/11/25”) reusing context
+          const onlyDate = parsed.dateISO && !parsed.countryName && !parsed.destinationName;
           if (onlyDate && (ctx.country || ctx.destination)) {
-            // Re-run as journeys with inferred location
-            const reParsed: ParsedEntities = { ...parsed, intent: "journeys" };
-            const reResolved = resolveEntitiesToIds(reParsed, catalog, ctx);
-            // recurse by faking a journeys path
-            const faux = `show journeys ${
-              reResolved.destination?.name
-                ? `in ${reResolved.destination.name}`
-                : reResolved.country?.name
-                ? `in ${reResolved.country.name}`
-                : ""
-            } on ${reResolved.dateISO}`;
+            const faux = `show journeys ${ctx.destination ? `in ${ctx.destination.name}` : ctx.country ? `in ${ctx.country.name}` : ""} on ${parsed.dateISO}`;
             await handleUserTurn(faux);
             return;
           }
 
-          // Soft guidance tailored to current context
+          // If user asked “what’s the address?” after a previous destination context
+          if (/\b(address|where is)\b/i.test(raw) && ctx.destination) {
+            assistantSay(`**${ctx.destination.name}** address: ${formatAddress(ctx.destination)}`);
+            return;
+          }
+          if (/\b(map|directions)\b/i.test(raw) && ctx.destination) {
+            assistantSay(`Google Maps for **${ctx.destination.name}**: ${ctx.destination.directions_url || "N/A"}`);
+            return;
+          }
+          if (/\b(phone|telephone)\b/i.test(raw) && ctx.destination) {
+            assistantSay(`Phone for **${ctx.destination.name}**: ${ctx.destination.phone || "N/A"}`);
+            return;
+          }
+          if (/\b(website|url|link)\b/i.test(raw) && ctx.destination) {
+            assistantSay(`Website for **${ctx.destination.name}**: ${ctx.destination.website_url || "N/A"}`);
+            return;
+          }
+          if (/\b(image|photo|picture)\b/i.test(raw) && ctx.destination) {
+            assistantSay(`Image for **${ctx.destination.name}**: ${ctx.destination.image_url || "N/A"}`);
+            return;
+          }
+
+          // Context-aware hints
           let hint = "I can help with countries, destinations, pickup points, and journeys.";
-          if (ctx.country && !ctx.dateISO) {
-            hint = `You can ask: “Show journeys in ${ctx.country.name} on 2025-11-20”.`;
-          } else if (!ctx.country && catalog.countries.length) {
-            const sample = catalog.countries[0]?.name ?? "Antigua";
-            hint = `Try: “What destinations do you visit in ${sample}?” or “Show journeys in ${sample} on 2025-11-20”.`;
+          if (catalog.countries.length) {
+            const sample = catalog.countries[0].name;
+            hint = `Try: “What destinations do you visit in ${sample}?”, “Tell me about 'Catherine’s Cafe'”, or “Show journeys in ${sample} on 2025-11-20”.`;
           }
           assistantSay(hint, { entities: parsed });
           return;
@@ -553,25 +625,12 @@ export default function AgentChat() {
       <div className="border rounded-2xl p-3 space-y-3 bg-white/70">
         <div className="max-h-[60vh] overflow-y-auto space-y-2">
           {messages.map((m) => (
-            <div
-              key={m.id}
-              className={m.role === "user" ? "text-right" : "text-left"}
-            >
-              <div
-                className={
-                  m.role === "user"
-                    ? "inline-block rounded-xl px-3 py-2 bg-black text-white"
-                    : "inline-block rounded-xl px-3 py-2 bg-gray-100"
-                }
-              >
-                <pre className="whitespace-pre-wrap break-words font-sans text-sm">
-                  {m.content}
-                </pre>
+            <div key={m.id} className={m.role === "user" ? "text-right" : "text-left"}>
+              <div className={m.role === "user" ? "inline-block rounded-xl px-3 py-2 bg-black text-white" : "inline-block rounded-xl px-3 py-2 bg-gray-100"}>
+                <pre className="whitespace-pre-wrap break-words font-sans text-sm">{m.content}</pre>
               </div>
               {m.meta?.entities ? (
                 <div className="text-xs text-gray-400 mt-1">
-                  {/* lightweight debug breadcrumb; remove in prod */}
-                  inferred:{" "}
                   {Object.entries(m.meta.entities)
                     .map(([k, v]) => `${k}:${String(v ?? "")}`)
                     .join(" · ")}
@@ -585,15 +644,10 @@ export default function AgentChat() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about countries, destinations, pickup points, or say: Show journeys in Antigua on 2025-11-20"
+            placeholder="Ask about destinations (e.g., Tell me about 'Catherine’s Cafe') or journeys (Show journeys in Antigua on 2025-11-20)"
             className="flex-1 border rounded-xl px-3 py-2 outline-none"
           />
-          <button
-            type="submit"
-            className="rounded-xl px-4 py-2 bg-black text-white"
-          >
-            Send
-          </button>
+          <button type="submit" className="rounded-xl px-4 py-2 bg-black text-white">Send</button>
         </form>
       </div>
     </div>
