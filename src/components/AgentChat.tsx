@@ -88,20 +88,19 @@ type QuoteResponse = { items: QuoteItem[] };
    Config — align with HOME PAGE endpoints
    ────────────────────────────────────────────── */
 const API = {
-  visibleCountries: "/api/public/visible-countries",      // optional helper
-  visibleRoutesPreferred: "/api/public/routes?onlyVisible=1",
+  // multi-probe: try these in order (match whatever the homepage uses)
   visibleRoutesCandidates: [
     "/api/public/routes?onlyVisible=1",
     "/api/public/routes?visible=1",
-    "/api/public/routes",
+    "/api/public/routes-visible",
+    "/api/public/visible-routes",
   ],
   destinations: "/api/public/destinations",
-  countriesAll: "/api/public/countries",
   quote: "/api/quote",
 };
 
 /* ──────────────────────────────────────────────
-   JSON helpers (tolerant)
+   Helpers (tolerant JSON)
    ────────────────────────────────────────────── */
 async function safeJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -129,14 +128,13 @@ function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
   }
   return out;
 }
-
-/* ──────────────────────────────────────────────
-   Normalization + type inference
-   ────────────────────────────────────────────── */
 function normalize(s: string) {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s\-&']/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+/* ──────────────────────────────────────────────
+   Type inference for destinations
+   ────────────────────────────────────────────── */
 const TYPE_SYNONYMS: Record<string, string> = {
   restaurant: "restaurant",
   restaurants: "restaurant",
@@ -174,12 +172,12 @@ function getDestinationType(d: Destination): string | null {
 }
 
 /* ──────────────────────────────────────────────
-   Catalogue (VISIBLE scope + destination details)
+   Catalogue (STRICTLY derived from visible routes)
    ────────────────────────────────────────────── */
 type Catalog = {
-  countries: Country[];
-  destinationsAll: Destination[];
-  visibleDestinations: Destination[];
+  countries: Country[];            // derived from routes
+  destinationsAll: Destination[];  // info payload
+  visibleDestinations: Destination[]; // destinations present in routes
   routes: VisibleRoute[];
 };
 const emptyCatalog: Catalog = { countries: [], destinationsAll: [], visibleDestinations: [], routes: [] };
@@ -190,70 +188,54 @@ async function fetchVisibleRoutes(): Promise<VisibleRoute[]> {
       const res = await fetch(url, { cache: "no-store" });
       const rows = await jsonArray<VisibleRoute>(res);
       if (rows?.length) return rows;
-      // if array but empty, try next candidate
     } catch {
-      // try next candidate
+      /* try next */
     }
   }
-  return []; // all candidates failed
-}
-
-async function fetchAllCountriesFallback(): Promise<Country[]> {
-  try {
-    const res = await fetch(API.countriesAll, { cache: "no-store" });
-    const rows = await jsonArray<Country>(res);
-    // Prefer active ones if present
-    const active = rows.filter((c: any) => c?.active !== false);
-    return active.length ? active : rows;
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 async function fetchVisibleCatalog(): Promise<Catalog> {
-  // 1) Try to load visible routes (multi-probe)
-  const routes = await fetchVisibleRoutes(); // returns [] only if all candidates fail
+  // 1) STRICT: visible routes are the single source of truth
+  const routes = await fetchVisibleRoutes();
 
-  // 2) Countries
-  let countries: Country[] = [];
-
-  if (routes.length) {
-    // STRICT: derive markets from routes (homepage source of truth)
-    countries = uniqBy(
-      routes
-        .filter(r => r.country_name)
-        .map(r => ({
-          id: r.country_id ?? null,
-          name: r.country_name || "Unknown",
-          description: r.country_description ?? null,
-        })),
-      c => (c.id ?? c.name ?? "").toString().toLowerCase()
-    );
-  } else {
-    // No routes available -> last resort so we can still answer
-    countries = await fetchAllCountriesFallback(); // active-first
+  // 2) If we cannot load routes, do NOT guess — return empty; handlers will show a helpful message
+  if (!routes.length) {
+    return { ...emptyCatalog };
   }
 
-  // 3) Destinations (full info), then filter to visible by name when routes exist
+  // 3) Derive countries ONLY from routes
+  const countries: Country[] = uniqBy(
+    routes
+      .filter((r) => r.country_name)
+      .map((r) => ({
+        id: r.country_id ?? null,
+        name: r.country_name || "Unknown",
+        description: r.country_description ?? null,
+      })),
+    (c) => (c.id ?? c.name ?? "").toString().toLowerCase()
+  );
+
+  // 4) Load destination info payload and restrict to those present in routes (by name)
   let destinationsAll: Destination[] = [];
   try {
-    const dRes = await fetch(API.destinations, { cache: "no-store" });
+    const dRes = await fetch("/api/public/destinations", { cache: "no-store" });
     destinationsAll = await jsonArray<Destination>(dRes);
-  } catch { /* swallow */ }
-
-  const visibleDestinations = routes.length
-    ? destinationsAll.filter(d => {
-        const name = d.name?.toLowerCase();
-        return !!name && routes.some(r => r.destination_name?.toLowerCase() === name);
-      })
-    : destinationsAll;
+  } catch {
+    destinationsAll = [];
+  }
+  const visibleNames = new Set(
+    routes.filter((r) => r.destination_name).map((r) => (r.destination_name || "").toLowerCase())
+  );
+  const visibleDestinations = destinationsAll.filter(
+    (d) => d.name && visibleNames.has(d.name.toLowerCase())
+  );
 
   return { countries, destinationsAll, visibleDestinations, routes };
 }
 
-
 /* ──────────────────────────────────────────────
-   NLU — intents & slot extraction
+   NLU
    ────────────────────────────────────────────── */
 type Intent =
   | "journeys"
@@ -295,8 +277,8 @@ function parseDateToISO(input: string): string | undefined {
 function detectIntent(raw: string): Intent {
   const t = normalize(raw);
 
-  if (/\b(restaurant|restaurants|bar|bars|beach ?club|beach ?clubs|cafe|caf[eé]s|lunch|dinner|brunch)\b/.test(t) &&
-      /\b(what|which|show|list|where)\b/.test(t)) return "ask_destinations_by_type";
+  if (/\b(restaurant|restaurants|bar|bars|beach ?club|beach ?clubs|cafe|caf[eé]s|lunch|dinner|brunch)\b/.test(t)
+      && /\b(what|which|show|list|where)\b/.test(t)) return "ask_destinations_by_type";
 
   if (/\b(tell me about|what is|info on|describe)\b/.test(t)) return "dest_info";
   if (/\b(address|where is|what is the address)\b/.test(t)) return "dest_address";
@@ -449,48 +431,46 @@ export default function AgentChat() {
 
     try {
       switch (intent) {
-        /* -------- Countries (visible; with resilient fallbacks) -------- */
+        /* -------- Countries (STRICT: routes-only; no guessing) -------- */
         case "ask_countries": {
-  // Always try to refresh once
-  let cat = catalog;
-  if (!cat.countries.length) {
-    cat = await fetchVisibleCatalog().catch(() => emptyCatalog);
-    setCatalog(cat);
-  }
-
-  // If we have routes, we MUST only show the route-derived markets
-  const usingRoutes = cat.routes && cat.routes.length > 0;
-  let listCountries = cat.countries;
-
-  // Absolute last resort: no routes and no derived countries -> load active all-countries
-  if (!usingRoutes && !listCountries.length) {
-    listCountries = await fetchAllCountriesFallback();
-  }
-
-  if (!listCountries.length) {
-    assistantSay("I couldn’t load countries right now. Please try again.");
-    return;
-  }
-
-  const list = listCountries
-    .map(c => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`)
-    .join("\n");
-
-  assistantSay(`We currently operate in:\n${list}`);
-  return;
-}
+          let cat = catalog;
+          if (!cat.countries.length || !cat.routes.length) {
+            cat = await fetchVisibleCatalog().catch(() => emptyCatalog);
+            setCatalog(cat);
+          }
+          if (!cat.routes.length || !cat.countries.length) {
+            assistantSay("I couldn’t load the live markets just now. Please refresh the page and try again.");
+            return;
+          }
+          const list = cat.countries
+            .map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`)
+            .join("\n");
+          assistantSay(`We currently operate in:\n${list}`);
+          return;
+        }
 
         /* -------- Destinations (visible list) -------- */
         case "ask_destinations": {
           const country = resolved.country;
+          let cat = catalog;
+          if (!cat.routes.length) {
+            cat = await fetchVisibleCatalog().catch(() => emptyCatalog);
+            setCatalog(cat);
+          }
+          if (!cat.routes.length) {
+            assistantSay("I couldn’t load destinations right now. Please refresh and try again.");
+            return;
+          }
           if (!country) {
             assistantSay(`Which country are you interested in? (e.g., “What destinations do you visit in Antigua?”)`);
             return;
           }
-          const base = catalog.visibleDestinations.length ? catalog.visibleDestinations : catalog.destinationsAll;
-          const dests = base.filter((d) => d.country_name && d.country_name.toLowerCase() === country.name.toLowerCase());
+          const base = cat.visibleDestinations;
+          const dests = base.filter(
+            (d) => d.country_name && d.country_name.toLowerCase() === country.name.toLowerCase()
+          );
           if (!dests.length) {
-            assistantSay(`I couldn’t find destinations in ${country.name} right now.`);
+            assistantSay(`I couldn’t find visible destinations in ${country.name} right now.`);
             return;
           }
           const lines = dests.map((d) => `• ${d.name}${d.description ? ` — ${d.description}` : ""}`);
@@ -503,8 +483,19 @@ export default function AgentChat() {
         case "ask_destinations_by_type": {
           const { destType } = resolved;
           const t = destType || detectDestinationTypeFromText(raw) || "restaurant";
+
+          let cat = catalog;
+          if (!cat.routes.length) {
+            cat = await fetchVisibleCatalog().catch(() => emptyCatalog);
+            setCatalog(cat);
+          }
+          if (!cat.routes.length) {
+            assistantSay("I couldn’t load destinations right now. Please refresh and try again.");
+            return;
+          }
+
           const country = resolved.country;
-          const base = catalog.visibleDestinations.length ? catalog.visibleDestinations : catalog.destinationsAll;
+          const base = cat.visibleDestinations;
 
           const filtered = base.filter((d) => {
             if (country && d.country_name?.toLowerCase() !== country.name.toLowerCase()) return false;
@@ -546,9 +537,9 @@ export default function AgentChat() {
         case "dest_website":
         case "dest_image": {
           const byName =
+            (resolved.destination && resolved.destination) ||
             (parsed.destinationName && bestNameMatch(parsed.destinationName, catalog.destinationsAll)) ||
-            (parsed.countryName && bestNameMatch(parsed.countryName, catalog.destinationsAll)) ||
-            resolved.destination;
+            (parsed.countryName && bestNameMatch(parsed.countryName, catalog.destinationsAll));
 
           if (!byName) {
             const hint = (catalog.visibleDestinations[0] || catalog.destinationsAll[0])?.name || "Catherine's Cafe";
@@ -567,10 +558,18 @@ export default function AgentChat() {
           return;
         }
 
-        /* -------- Pickups (derived from routes) -------- */
+        /* -------- Pickups (derived strictly from routes) -------- */
         case "ask_pickups": {
           const { country, destination } = resolved;
-          const routes = catalog.routes.length ? catalog.routes : await fetchVisibleRoutes();
+
+          let routes = catalog.routes;
+          if (!routes.length) {
+            routes = await fetchVisibleRoutes();
+          }
+          if (!routes.length) {
+            assistantSay("I couldn’t load pickup points right now. Please refresh and try again.");
+            return;
+          }
 
           let pickupsForScope: string[] = [];
           if (destination?.name) {
