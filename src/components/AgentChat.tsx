@@ -65,9 +65,11 @@ function saveExpectedIntent(v: string | null) {
 export default function AgentChat({
   endpoint = "/api/agent",
   title = "Ask Pace Shuttles",
+  showSources = false, // NEW: hide citations by default
 }: {
   endpoint?: string;
   title?: string;
+  showSources?: boolean;
 }) {
   const [messages, setMessages] = React.useState<ChatMsg[]>([]);
   const [text, setText] = React.useState("");
@@ -82,7 +84,7 @@ export default function AgentChat({
     saveExpectedIntent(expectedIntent);
   }, [expectedIntent]);
 
-  // Quick replies for common clarifiers
+  // Quick replies for common clarifiers (kept generic; server won’t ask for countries anymore)
   const quickReplies: Record<string, string[] | undefined> = {
     wantsCountryList: ["today", "roadmap"],
     // Add more when you add other clarifier paths:
@@ -137,7 +139,8 @@ export default function AgentChat({
       id: uid(),
       role: "assistant",
       content: data?.content ?? "(no response)",
-      sources: data?.sources ?? [],
+      // Hide sources unless explicitly enabled by prop
+      sources: showSources ? data?.sources ?? [] : [],
       meta: {
         clarify: !!data?.meta?.clarify,
         expect: nextExpect,
@@ -221,7 +224,7 @@ export default function AgentChat({
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
             {messages.map((m) => (
-              <MessageBubble key={m.id} msg={m} />
+              <MessageBubble key={m.id} msg={m} showSources={showSources} />
             ))}
           </div>
         )}
@@ -303,7 +306,13 @@ export default function AgentChat({
 /* ──────────────────────────────────────────────
    Message bubble with lite markdown
    ────────────────────────────────────────────── */
-function MessageBubble({ msg }: { msg: ChatMsg }) {
+function MessageBubble({
+  msg,
+  showSources,
+}: {
+  msg: ChatMsg;
+  showSources?: boolean;
+}) {
   const isUser = msg.role === "user";
   return (
     <div style={{ justifySelf: isUser ? "end" : "start", maxWidth: "85%" }}>
@@ -321,7 +330,8 @@ function MessageBubble({ msg }: { msg: ChatMsg }) {
         dangerouslySetInnerHTML={{ __html: renderMarkdownLite(msg.content) }}
       />
 
-      {msg.sources && msg.sources.length > 0 && (
+      {/* Sources (hidden by default) */}
+      {showSources && msg.sources && msg.sources.length > 0 && (
         <div style={{ marginTop: 6, paddingLeft: 8 }}>
           <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 4 }}>Sources:</div>
           <ul style={{ margin: 0, paddingLeft: 16 }}>
