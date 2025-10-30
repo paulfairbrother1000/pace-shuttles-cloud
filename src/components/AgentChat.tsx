@@ -48,22 +48,11 @@ type Destination = {
   image_url?: string | null;
   directions_url?: string | null;
   active?: boolean | null;
-  // Tolerant: some APIs might expose these
-  type?: string | null;       // "restaurant" | "bar" | "beach club" | ...
-  category?: string | null;   // alternative
-  tags?: string[] | null;     // ["restaurant","beach club"]
+  type?: string | null;
+  category?: string | null;
+  tags?: string[] | null;
 };
 
-type Pickup = {
-  id: UUID;
-  country_id: UUID;
-  destination_id: UUID | null;
-  name: string;
-  description?: string | null;
-  slug?: string | null;
-};
-
-/* Homepage-visible routes (only those we can actually sell/show) */
 type VisibleRoute = {
   route_id: UUID;
   route_name: string;
@@ -78,7 +67,6 @@ type VisibleRoute = {
   pickup_description?: string | null;
 };
 
-/* SSOT quotes */
 type QuoteRequest = {
   date?: string; // ISO yyyy-mm-dd
   country_id?: UUID | null;
@@ -100,15 +88,20 @@ type QuoteResponse = { items: QuoteItem[] };
    Config — align with HOME PAGE endpoints
    ────────────────────────────────────────────── */
 const API = {
-  visibleCountries: "/api/public/visible-countries",  // optional helper; we tolerate absence
-  visibleRoutes: "/api/public/routes?onlyVisible=1",   // homepage SSOT for visibility
-  destinations: "/api/public/destinations",            // info-rich payload (name, address, map, image)
-  pickups: "/api/public/pickups",
-  quote: "/api/quote",                                  // SSOT prices/availability
+  visibleCountries: "/api/public/visible-countries",      // optional helper
+  visibleRoutesPreferred: "/api/public/routes?onlyVisible=1",
+  visibleRoutesCandidates: [
+    "/api/public/routes?onlyVisible=1",
+    "/api/public/routes?visible=1",
+    "/api/public/routes",
+  ],
+  destinations: "/api/public/destinations",
+  countriesAll: "/api/public/countries",
+  quote: "/api/quote",
 };
 
 /* ──────────────────────────────────────────────
-   Helpers: tolerant JSON unwrapping
+   JSON helpers (tolerant)
    ────────────────────────────────────────────── */
 async function safeJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -124,7 +117,6 @@ async function jsonArray<T>(res: Response): Promise<T[]> {
   if (data?.data && Array.isArray(data.data)) return data.data as T[];
   throw new Error("Unexpected API response shape (no array found).");
 }
-
 function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
@@ -139,13 +131,12 @@ function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
 }
 
 /* ──────────────────────────────────────────────
-   Normalization helpers
+   Normalization + type inference
    ────────────────────────────────────────────── */
 function normalize(s: string) {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s\-&']/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-/* Destination "type" detection (tolerant) */
 const TYPE_SYNONYMS: Record<string, string> = {
   restaurant: "restaurant",
   restaurants: "restaurant",
@@ -158,14 +149,13 @@ const TYPE_SYNONYMS: Record<string, string> = {
   "beach clubs": "beach club",
   beachclub: "beach club",
   beachclubs: "beach club",
-  club: "beach club", // lean toward "beach club" for our use-case
+  club: "beach club",
   lounge: "bar",
   cocktail: "bar",
   brunch: "restaurant",
   lunch: "restaurant",
   dinner: "restaurant",
 };
-
 function detectDestinationTypeFromText(text: string | null | undefined): string | null {
   if (!text) return null;
   const t = normalize(text);
@@ -174,21 +164,13 @@ function detectDestinationTypeFromText(text: string | null | undefined): string 
   }
   return null;
 }
-
 function getDestinationType(d: Destination): string | null {
   const direct =
     d.type?.toLowerCase() ||
     d.category?.toLowerCase() ||
     (Array.isArray(d.tags) ? d.tags.map((x) => x.toLowerCase()).find((x) => TYPE_SYNONYMS[x]) || null : null);
-
   if (direct) return TYPE_SYNONYMS[direct] || direct;
-
-  // Infer from description / name
-  return (
-    detectDestinationTypeFromText(d.description) ||
-    detectDestinationTypeFromText(d.name) ||
-    null
-  );
+  return detectDestinationTypeFromText(d.description) || detectDestinationTypeFromText(d.name) || null;
 }
 
 /* ──────────────────────────────────────────────
@@ -196,18 +178,43 @@ function getDestinationType(d: Destination): string | null {
    ────────────────────────────────────────────── */
 type Catalog = {
   countries: Country[];
-  destinationsAll: Destination[];      // full info list
-  visibleDestinations: Destination[];  // filtered by visible routes
+  destinationsAll: Destination[];
+  visibleDestinations: Destination[];
   routes: VisibleRoute[];
 };
 const emptyCatalog: Catalog = { countries: [], destinationsAll: [], visibleDestinations: [], routes: [] };
 
-async function fetchVisibleCatalog(): Promise<Catalog> {
-  // Core visible routes (always fetched)
-  const routesRes = await fetch(API.visibleRoutes, { cache: "no-store" });
-  const routes = await jsonArray<VisibleRoute>(routesRes);
+async function fetchVisibleRoutes(): Promise<VisibleRoute[]> {
+  for (const url of API.visibleRoutesCandidates) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      const rows = await jsonArray<VisibleRoute>(res);
+      if (rows?.length) return rows;
+      // if array but empty, try next candidate
+    } catch {
+      // try next candidate
+    }
+  }
+  return []; // all candidates failed
+}
 
-  // Try explicit visible countries, tolerate failure/empty
+async function fetchAllCountriesFallback(): Promise<Country[]> {
+  try {
+    const res = await fetch(API.countriesAll, { cache: "no-store" });
+    const rows = await jsonArray<Country>(res);
+    // Prefer active ones if present
+    const active = rows.filter((c: any) => c?.active !== false);
+    return active.length ? active : rows;
+  } catch {
+    return [];
+  }
+}
+
+async function fetchVisibleCatalog(): Promise<Catalog> {
+  // 1) Fetch visible routes (multi-probe)
+  const routes = await fetchVisibleRoutes();
+
+  // 2) Try explicit visible countries
   let countries: Country[] = [];
   try {
     const vcRes = await fetch(API.visibleCountries, { cache: "no-store" });
@@ -217,8 +224,8 @@ async function fetchVisibleCatalog(): Promise<Catalog> {
     // ignore
   }
 
-  // Always derive if empty
-  if (!countries.length) {
+  // 3) Derive from routes when needed
+  if (!countries.length && routes.length) {
     countries = uniqBy(
       routes
         .filter((r) => r.country_name)
@@ -231,7 +238,12 @@ async function fetchVisibleCatalog(): Promise<Catalog> {
     );
   }
 
-  // Pull full destination info payload
+  // 4) Last-resort: fall back to all countries (so the question still gets an answer)
+  if (!countries.length) {
+    countries = await fetchAllCountriesFallback();
+  }
+
+  // 5) Destinations (full info), then filter to visible by name
   let destinationsAll: Destination[] = [];
   try {
     const dRes = await fetch(API.destinations, { cache: "no-store" });
@@ -240,13 +252,13 @@ async function fetchVisibleCatalog(): Promise<Catalog> {
     destinationsAll = [];
   }
 
-  // Restrict to destinations that appear in visible routes by NAME
   const visibleDestNameSet = new Set(
     routes.filter((r) => r.destination_name).map((r) => (r.destination_name || "").toLowerCase())
   );
-  const visibleDestinations = destinationsAll.filter(
-    (d) => d.name && visibleDestNameSet.has(d.name.toLowerCase())
-  );
+  const visibleDestinations =
+    routes.length && visibleDestNameSet.size
+      ? destinationsAll.filter((d) => d.name && visibleDestNameSet.has(d.name.toLowerCase()))
+      : destinationsAll; // if we couldn't load routes, show all destinations rather than nothing
 
   return { countries, destinationsAll, visibleDestinations, routes };
 }
@@ -260,9 +272,9 @@ type Intent =
   | "ask_destinations"
   | "ask_pickups"
   | "ask_destinations_by_type"
-  | "dest_info"        // tell me about X
-  | "dest_address"     // what's the address for X?
-  | "dest_map"         // maps link
+  | "dest_info"
+  | "dest_address"
+  | "dest_map"
   | "dest_phone"
   | "dest_website"
   | "dest_image"
@@ -273,7 +285,7 @@ type ParsedEntities = {
   countryName?: string;
   destinationName?: string;
   dateISO?: string;
-  destType?: string | null; // "restaurant" | "bar" | "beach club"
+  destType?: string | null;
 };
 
 function parseDateToISO(input: string): string | undefined {
@@ -294,15 +306,9 @@ function parseDateToISO(input: string): string | undefined {
 function detectIntent(raw: string): Intent {
   const t = normalize(raw);
 
-  // Destination-type listing (“restaurants”, “bars”, “beach clubs”)
-  if (
-    /\b(restaurant|restaurants|bar|bars|beach ?club|beach ?clubs|cafe|caf[eé]s|lunch|dinner|brunch)\b/.test(t) &&
-    /\b(what|which|show|list|where)\b/.test(t)
-  ) {
-    return "ask_destinations_by_type";
-  }
+  if (/\b(restaurant|restaurants|bar|bars|beach ?club|beach ?clubs|cafe|caf[eé]s|lunch|dinner|brunch)\b/.test(t) &&
+      /\b(what|which|show|list|where)\b/.test(t)) return "ask_destinations_by_type";
 
-  // Destination info patterns
   if (/\b(tell me about|what is|info on|describe)\b/.test(t)) return "dest_info";
   if (/\b(address|where is|what is the address)\b/.test(t)) return "dest_address";
   if (/\b(map|google maps|directions)\b/.test(t)) return "dest_map";
@@ -310,12 +316,10 @@ function detectIntent(raw: string): Intent {
   if (/\b(website|url|link)\b/.test(t)) return "dest_website";
   if (/\b(image|photo|picture|pic)\b/.test(t)) return "dest_image";
 
-  // Catalogue queries
   if (/\b(what|which)\b.*\bcountries?\b/.test(t)) return "ask_countries";
   if (/\b(destinations?|stops?)\b/.test(t) && /\bin\b/.test(t)) return "ask_destinations";
   if (/\b(pickups?|pickup points?)\b/.test(t)) return "ask_pickups";
 
-  // Journeys / availability
   if (/\b(show|find|list|any|anything|available|journeys?|routes?|book)\b/.test(t)) return "journeys";
 
   return "unknown";
@@ -323,39 +327,24 @@ function detectIntent(raw: string): Intent {
 
 function extractSurfaceEntities(raw: string): Omit<ParsedEntities, "intent"> {
   const dateISO = parseDateToISO(raw);
-
-  // Capture thing after "in" or "to" (country or sometimes a destination)
   const inMatch = raw.match(/\b(?:in|to)\s+([A-Za-z][A-Za-z\s&\-']{1,80})/i);
   const surface = inMatch?.[1]?.trim()?.replace(/\s+on\s+.*$/i, "").trim();
-
-  // Quoted destination names
   const quoted = raw.match(/["“”']([^"“”']{2,80})["“”']/);
   const quotedName = quoted?.[1]?.trim();
 
-  // Destination type asked
   let destType: string | null = null;
   for (const k of Object.keys(TYPE_SYNONYMS)) {
-    if (normalize(raw).includes(k)) {
-      destType = TYPE_SYNONYMS[k];
-      break;
-    }
+    if (normalize(raw).includes(k)) { destType = TYPE_SYNONYMS[k]; break; }
   }
 
-  return {
-    countryName: surface || undefined,
-    destinationName: quotedName,
-    dateISO,
-    destType,
-  };
+  return { countryName: surface || undefined, destinationName: quotedName, dateISO, destType };
 }
 
 function bestNameMatch<T extends { name: string }>(name: string, items: T[]): T | undefined {
   const n = normalize(name);
-  let exact = items.find((i) => normalize(i.name) === n);
-  if (exact) return exact;
-  let starts = items.find((i) => normalize(i.name).startsWith(n));
-  if (starts) return starts;
-  return items.find((i) => normalize(i.name).includes(n));
+  return items.find((i) => normalize(i.name) === n)
+      || items.find((i) => normalize(i.name).startsWith(n))
+      || items.find((i) => normalize(i.name).includes(n));
 }
 
 type ConversationContext = { country?: Country; destination?: Destination; dateISO?: string };
@@ -369,33 +358,25 @@ function resolveEntities(
   let destination: Destination | undefined;
   const dateISO = parsed.dateISO ?? ctx.dateISO ?? undefined;
 
-  // Prefer explicit destination match against visibleDestinations then full list
   const destNameCandidate = parsed.destinationName || parsed.countryName;
   if (destNameCandidate) {
-    destination = bestNameMatch(destNameCandidate, catalog.visibleDestinations) ??
-                  bestNameMatch(destNameCandidate, catalog.destinationsAll) ??
-                  undefined;
+    destination = bestNameMatch(destNameCandidate, catalog.visibleDestinations)
+               ?? bestNameMatch(destNameCandidate, catalog.destinationsAll)
+               ?? undefined;
   }
-
-  // Country match only within visible countries
   if (parsed.countryName && !destination) {
     country = bestNameMatch(parsed.countryName, catalog.countries);
   }
-
-  // Backfill from context
   if (!country && ctx.country) country = ctx.country;
   if (!destination && ctx.destination) destination = ctx.destination;
-
-  // If destination known, infer country from its country_name
   if (!country && destination?.country_name) {
     country = bestNameMatch(destination.country_name, catalog.countries);
   }
-
   return { country, destination, dateISO, destType: parsed.destType ?? null };
 }
 
 /* ──────────────────────────────────────────────
-   Quote fetch (SSOT)
+   SSOT quotes
    ────────────────────────────────────────────── */
 async function fetchQuotes(req: QuoteRequest): Promise<QuoteResponse> {
   const res = await fetch(API.quote, {
@@ -414,7 +395,6 @@ function formatAddress(d: Destination): string {
   const parts = [d.address1, d.address2, d.town, d.region, d.postal_code].filter(Boolean);
   return parts.length ? parts.join(", ") : "N/A";
 }
-
 function renderDestinationCard(d: Destination): string {
   const lines: string[] = [];
   lines.push(`**${d.name}** ${d.country_name ? `(${d.country_name})` : ""}`.trim());
@@ -426,13 +406,8 @@ function renderDestinationCard(d: Destination): string {
   lines.push(`Image: ${d.image_url || "N/A"}`);
   return lines.join("\n");
 }
-
 function summarizeQuoteItem(q: QuoteItem) {
-  const price = new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: q.currency || "GBP",
-    maximumFractionDigits: 0,
-  }).format(q.price_per_seat);
+  const price = new Intl.NumberFormat("en-GB", { style: "currency", currency: q.currency || "GBP", maximumFractionDigits: 0 }).format(q.price_per_seat);
   const parts: string[] = [];
   parts.push(`• ${q.route_name} — ${price} per seat`);
   if (q.pickup_name) parts.push(`  Pickup: ${q.pickup_name}`);
@@ -442,7 +417,7 @@ function summarizeQuoteItem(q: QuoteItem) {
 }
 
 /* ──────────────────────────────────────────────
-   UI Component
+   UI
    ────────────────────────────────────────────── */
 export default function AgentChat() {
   const [messages, setMessages] = React.useState<ChatMsg[]>([
@@ -459,17 +434,17 @@ export default function AgentChat() {
 
   React.useEffect(() => {
     let alive = true;
-    fetchVisibleCatalog()
-      .then((cat) => alive && setCatalog(cat))
-      .catch((err) => console.error("Visible catalog fetch error:", err));
-    return () => {
-      alive = false;
-    };
+    (async () => {
+      const cat = await fetchVisibleCatalog().catch((e) => {
+        console.error("Visible catalog error:", e);
+        return emptyCatalog;
+      });
+      if (alive) setCatalog(cat);
+    })();
+    return () => { alive = false; };
   }, []);
 
-  function push(msg: ChatMsg) {
-    setMessages((m) => [...m, msg]);
-  }
+  function push(msg: ChatMsg) { setMessages((m) => [...m, msg]); }
   function assistantSay(text: string, meta?: ChatMsg["meta"]) {
     push({ id: crypto.randomUUID(), role: "assistant", content: text, meta });
   }
@@ -485,42 +460,38 @@ export default function AgentChat() {
 
     try {
       switch (intent) {
-        /* ───────── Countries (visible only) ───────── */
+        /* -------- Countries (visible; with resilient fallbacks) -------- */
         case "ask_countries": {
-          if (!catalog.countries.length) {
-            try {
-              const fresh = await fetchVisibleCatalog();
-              setCatalog(fresh);
-              if (fresh.countries.length) {
-                const list = fresh.countries
-                  .map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`)
-                  .join("\n");
-                assistantSay(`We currently operate in:\n${list}`);
-                return;
-              }
-            } catch {}
-            assistantSay("I couldn’t load visible countries right now. Please try again.");
+          // If empty, refresh catalogue; if still empty, direct fallback to all countries
+          let listCountries = catalog.countries;
+          if (!listCountries.length) {
+            const fresh = await fetchVisibleCatalog().catch(() => emptyCatalog);
+            setCatalog(fresh);
+            listCountries = fresh.countries;
+            if (!listCountries.length) {
+              listCountries = await fetchAllCountriesFallback();
+            }
+          }
+          if (!listCountries.length) {
+            assistantSay("I couldn’t load countries right now. Please try again.");
             return;
           }
-          const list = catalog.countries
-            .map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`)
-            .join("\n");
+          const list = listCountries.map((c) => `• ${c.name}${c.description ? ` — ${c.description}` : ""}`).join("\n");
           assistantSay(`We currently operate in:\n${list}`);
           return;
         }
 
-        /* ───────── Destinations list (visible only) ───────── */
+        /* -------- Destinations (visible list) -------- */
         case "ask_destinations": {
           const country = resolved.country;
           if (!country) {
             assistantSay(`Which country are you interested in? (e.g., “What destinations do you visit in Antigua?”)`);
             return;
           }
-          const dests = catalog.visibleDestinations.filter(
-            (d) => d.country_name && d.country_name.toLowerCase() === country.name.toLowerCase()
-          );
+          const base = catalog.visibleDestinations.length ? catalog.visibleDestinations : catalog.destinationsAll;
+          const dests = base.filter((d) => d.country_name && d.country_name.toLowerCase() === country.name.toLowerCase());
           if (!dests.length) {
-            assistantSay(`I couldn’t find visible destinations in ${country.name} right now.`);
+            assistantSay(`I couldn’t find destinations in ${country.name} right now.`);
             return;
           }
           const lines = dests.map((d) => `• ${d.name}${d.description ? ` — ${d.description}` : ""}`);
@@ -529,31 +500,27 @@ export default function AgentChat() {
           return;
         }
 
-        /* ───────── Destinations by TYPE (restaurant / bar / beach club) ───────── */
+        /* -------- Destination type lists (restaurants/bars/beach clubs) -------- */
         case "ask_destinations_by_type": {
           const { destType } = resolved;
           const t = destType || detectDestinationTypeFromText(raw) || "restaurant";
-
-          const country = resolved.country; // optional scope
-          const base = catalog.visibleDestinations;
+          const country = resolved.country;
+          const base = catalog.visibleDestinations.length ? catalog.visibleDestinations : catalog.destinationsAll;
 
           const filtered = base.filter((d) => {
             if (country && d.country_name?.toLowerCase() !== country.name.toLowerCase()) return false;
             const dt = getDestinationType(d);
             if (dt) return dt === t;
-            // fallback: keyword search in name/description
             const hay = normalize(`${d.name} ${d.description || ""}`);
-            return Object.keys(TYPE_SYNONYMS)
-              .filter((k) => TYPE_SYNONYMS[k] === t)
-              .some((k) => hay.includes(k));
+            return Object.keys(TYPE_SYNONYMS).filter((k) => TYPE_SYNONYMS[k] === t).some((k) => hay.includes(k));
           });
 
           if (!filtered.length) {
-            if (country) {
-              assistantSay(`I couldn’t find any ${t}s in ${country.name} right now. Would you like to see all destinations, or try a different type?`);
-            } else {
-              assistantSay(`I couldn’t find any ${t}s in our visible list right now. Would you like to pick a country, or see a different type (bars, beach clubs)?`);
-            }
+            assistantSay(
+              country
+                ? `I couldn’t find any ${t}s in ${country.name} right now. Would you like to see all destinations, or try a different type (bars, beach clubs)?`
+                : `I couldn’t find any ${t}s in our list right now. Would you like to pick a country, or try a different type (bars, beach clubs)?`
+            );
             return;
           }
 
@@ -568,26 +535,24 @@ export default function AgentChat() {
               "\n\n"
             )}\n\nWe also have other destination types such as **bars** and **beach clubs**. Would you like to learn more about them too?`
           );
-
           setCtx((prev) => ({ ...prev, country: country ?? prev.country }));
           return;
         }
 
-        /* ───────── Destination info (rich, from /destinations) ───────── */
+        /* -------- Destination info (address/map/phone/website/image) -------- */
         case "dest_info":
         case "dest_address":
         case "dest_map":
         case "dest_phone":
         case "dest_website":
         case "dest_image": {
-          // Decide which destination:
           const byName =
             (parsed.destinationName && bestNameMatch(parsed.destinationName, catalog.destinationsAll)) ||
             (parsed.countryName && bestNameMatch(parsed.countryName, catalog.destinationsAll)) ||
             resolved.destination;
 
           if (!byName) {
-            const hint = catalog.visibleDestinations[0]?.name || "Catherine's Cafe";
+            const hint = (catalog.visibleDestinations[0] || catalog.destinationsAll[0])?.name || "Catherine's Cafe";
             assistantSay(`Which destination do you mean? For example: "Tell me about '${hint}'".`);
             return;
           }
@@ -603,14 +568,15 @@ export default function AgentChat() {
           return;
         }
 
-        /* ───────── Pickups (derived from visible routes) ───────── */
+        /* -------- Pickups (derived from routes) -------- */
         case "ask_pickups": {
           const { country, destination } = resolved;
+          const routes = catalog.routes.length ? catalog.routes : await fetchVisibleRoutes();
 
           let pickupsForScope: string[] = [];
           if (destination?.name) {
             pickupsForScope = uniqBy(
-              catalog.routes
+              routes
                 .filter((r) => r.destination_name && r.destination_name.toLowerCase() === destination.name!.toLowerCase())
                 .filter((r) => r.pickup_name)
                 .map((r) => r.pickup_name as string),
@@ -618,7 +584,7 @@ export default function AgentChat() {
             );
           } else if (country?.name) {
             pickupsForScope = uniqBy(
-              catalog.routes
+              routes
                 .filter((r) => r.country_name && r.country_name.toLowerCase() === country.name!.toLowerCase())
                 .filter((r) => r.pickup_name)
                 .map((r) => r.pickup_name as string),
@@ -640,7 +606,7 @@ export default function AgentChat() {
           return;
         }
 
-        /* ───────── Journeys / quotes (SSOT) ───────── */
+        /* -------- Journeys (SSOT) -------- */
         case "journeys": {
           const { country, destination, dateISO } = resolved;
 
@@ -659,7 +625,6 @@ export default function AgentChat() {
 
           const req: QuoteRequest = {
             date: dateISO,
-            // visible scope; IDs are optional for SSOT (country-only filter is fine)
             country_id: destination ? undefined : (country?.id ?? null),
             destination_id: undefined,
             pickup_id: undefined,
@@ -687,10 +652,9 @@ export default function AgentChat() {
           return;
         }
 
-        /* ───────── Unknown / follow-up handling ───────── */
+        /* -------- Unknown / follow-ups -------- */
         case "unknown":
         default: {
-          // Date-only follow-up (“anything on 12/11/25”) reusing context
           const onlyDate = parsed.dateISO && !parsed.countryName && !parsed.destinationName;
           if (onlyDate && (ctx.country || ctx.destination)) {
             const faux = `show journeys ${ctx.destination ? `in ${ctx.destination.name}` : ctx.country ? `in ${ctx.country.name}` : ""} on ${parsed.dateISO}`;
@@ -698,7 +662,6 @@ export default function AgentChat() {
             return;
           }
 
-          // If user asked address/map/etc after a destination query
           if (/\b(address|where is)\b/i.test(raw) && ctx.destination) {
             assistantSay(`**${ctx.destination.name}** address: ${formatAddress(ctx.destination)}`);
             return;
@@ -720,7 +683,6 @@ export default function AgentChat() {
             return;
           }
 
-          // Context-aware hints
           let hint =
             "I can help with countries, destinations (restaurants, bars, beach clubs), pickup points, and journeys.";
           if (catalog.countries.length) {
@@ -751,20 +713,12 @@ export default function AgentChat() {
         <div className="max-h-[60vh] overflow-y-auto space-y-2">
           {messages.map((m) => (
             <div key={m.id} className={m.role === "user" ? "text-right" : "text-left"}>
-              <div
-                className={
-                  m.role === "user"
-                    ? "inline-block rounded-xl px-3 py-2 bg-black text-white"
-                    : "inline-block rounded-xl px-3 py-2 bg-gray-100"
-                }
-              >
+              <div className={m.role === "user" ? "inline-block rounded-xl px-3 py-2 bg-black text-white" : "inline-block rounded-xl px-3 py-2 bg-gray-100"}>
                 <pre className="whitespace-pre-wrap break-words font-sans text-sm">{m.content}</pre>
               </div>
               {m.meta?.entities ? (
                 <div className="text-xs text-gray-400 mt-1">
-                  {Object.entries(m.meta.entities)
-                    .map(([k, v]) => `${k}:${String(v ?? "")}`)
-                    .join(" · ")}
+                  {Object.entries(m.meta.entities).map(([k, v]) => `${k}:${String(v ?? "")}`).join(" · ")}
                 </div>
               ) : null}
             </div>
@@ -775,7 +729,7 @@ export default function AgentChat() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about restaurants/bars/beach clubs (e.g., What restaurants can I visit in Antigua?) or journeys (Show journeys in Antigua on 2025-11-20)"
+            placeholder="Ask: What countries do you operate in? • What restaurants can I visit in Antigua? • Show journeys in Antigua on 2025-11-20"
             className="flex-1 border rounded-xl px-3 py-2 outline-none"
           />
           <button type="submit" className="rounded-xl px-4 py-2 bg-black text-white">Send</button>
