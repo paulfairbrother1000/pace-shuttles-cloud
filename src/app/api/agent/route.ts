@@ -61,91 +61,49 @@ function getBaseUrl() {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   2) Intent + concierge helpers
+   2) Intent + helpers
    ────────────────────────────────────────────────────────────── */
 function detectIntent(q: string) {
   const s = q.toLowerCase();
 
   const wantsCountryList =
-    /(which|what)\s+countries\b|countries\s+(do you|d’you)?\s*(operate|serve)|\boperate in which countries\b/.test(
-      s,
-    );
+    /(which|what)\s+countries\b|countries\s+(do you|d’you)?\s*(operate|serve)|\boperate in which countries\b/.test(s);
+
+  const wantsRoadmapQuery =
+    /\b(road\s*map|roadmap|future|next|coming|planned|expanding)\b/.test(s);
 
   const wantsDestinations =
-    /\b(what|which)\s+(destinations|places)\b|\bdestinations?\s+do (you|u)\s+(visit|serve|go)\b/.test(
-      s,
-    );
-
-  const wantsOperateInCountry =
-    /\bdo (you|u)\s+operate\s+in\b|\boperate in\s+[a-z]/.test(s);
+    /\b(what|which)\s+(destinations|places)\b|\bdestinations?\s+do (you|u)\s+(visit|serve|go)\b/.test(s);
 
   const wantsTransportTypes =
-    /\b(what|which)\s+(modes|mode|transport|vehicle types?|boats?|helicopters?)\b|\btransport[-\s]?types?\b/.test(
-      s,
-    );
+    /\b(what|which)\s+(modes|mode|transport|vehicle types?|boats?|helicopters?)\b|\btransport[-\s]?types?\b/.test(s);
 
   const wantsCharities =
-    /\b(what|which)\s+charit(y|ies)\b|\bcharit(y|ies)\s+do (you|u)\s+(support|donate)\b/.test(
-      s,
-    );
+    /\b(what|which)\s+charit(y|ies)\b|\bcharit(y|ies)\s+do (you|u)\s+(support|donate)\b/.test(s);
 
   const wantsRoutesOverview =
-    /\b(tell me about|what about)\s+(your )?routes\b|\broutes?\s+overview\b/.test(
-      s,
-    );
+    /\b(tell me about|what about)\s+(your )?routes\b|\broutes?\s+overview\b/.test(s);
 
   return {
     wantsQuote: /price|cost|how much|quote|per\s*seat|ticket/i.test(s),
     wantsRouteInfo:
-      /route|pickup|destination|depart|when|schedule|how long|duration/i.test(
-        s,
-      ),
+      /route|pickup|destination|depart|when|schedule|how long|duration/i.test(s),
     wantsMyStuff:
       /my\s+(booking|tickets?|balance|payment|refund)|booking\s*ref/i.test(s),
     wantsCancel: /\bcancel(l|)\b|\brefund\b|\bresched/i.test(s),
 
     wantsCountryList,
+    wantsRoadmapQuery, // NEW: explicit roadmap switch
     wantsDestinations,
-    wantsOperateInCountry,
     wantsTransportTypes,
     wantsCharities,
     wantsRoutesOverview,
   };
 }
 
-function askedForRoadmap(q: string) {
-  return /\b(road\s*map|roadmap|future|next|coming|planned|expanding)\b/i.test(q);
-}
 function guessCountryName(q: string): string | null {
   const m = q.match(/\b(?:in|for|at|of)\s+([A-Z][A-Za-z &'-]+)(?:\?|$|\.|,)/);
   return m ? m[1].trim() : null;
-}
-
-function resolveCountryListChoice(answer: string): "current" | "roadmap" | null {
-  const s = answer.toLowerCase().trim();
-  if (/(today|now|current|live|active|operate now)/.test(s)) return "current";
-  if (/(road\s*map|roadmap|future|next|planned|coming)/.test(s)) return "roadmap";
-  return null;
-}
-
-function buildClarifyingQuestion(intent: ReturnType<typeof detectIntent>, q: string) {
-  if (intent.wantsCountryList && !askedForRoadmap(q)) {
-    return { question: "Do you want **countries we operate in today**, or our **future roadmap**?", expect: "wantsCountryList" };
-  }
-  // Only clarify for destinations if NO country was mentioned
-  if (intent.wantsDestinations && !guessCountryName(q)) {
-    return { question: "Would you like **all destinations**, or destinations in a **particular country or region**?", expect: "wantsDestinations" };
-  }
-  if (intent.wantsRoutesOverview) {
-    return { question: "Are you interested in **routes for a specific country**, a **journey type**, or **all routes**?", expect: "wantsRoutesOverview" };
-  }
-  if (intent.wantsTransportTypes) {
-    return { question: "Are you looking for **all transport types**, or just those available in a **specific country**?", expect: "wantsTransportTypes" };
-  }
-  if (intent.wantsCharities) {
-    return { question: "Would you like **all charities by country**, or the charity for a **specific country**?", expect: "wantsCharities" };
-  }
-  return null;
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -176,22 +134,6 @@ type JourneyRow = {
   starts_at: string; departure_time: string; duration_min: number; currency: string; price_per_seat_from: number; active: boolean;
 };
 
-/* Rolling 30-day window: countries considered "operational" if any journey exists
-   today..+30d (sampled every 5 days to keep calls light) */
-async function getOperationalCountriesRollingWindow(): Promise<string[]> {
-  const base = new Date();
-  const names = new Set<string>();
-
-  for (let offset = 0; offset <= 30; offset += 5) {
-    const dt = new Date(base.getTime() + offset * 86400000);
-    const iso = dt.toISOString().slice(0, 10);
-    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: iso, active: true }, 200);
-    for (const j of journeys) if (j.country_name) names.add(j.country_name);
-  }
-
-  return [...names];
-}
-
 function findISOInText(text: string): string | null {
   const m = String(text).match(/\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b/);
   return m ? m[0] : null;
@@ -221,50 +163,59 @@ function friendlyBand(band: RefundBand) {
     : "no refund (no-shows or late arrivals are treated as travelled)";
 }
 
+/* Rolling 30-day window: “operational today” if any journey exists in next 30 days */
+async function getOperationalCountriesRollingWindow(): Promise<string[]> {
+  const base = new Date();
+  const names = new Set<string>();
+  for (let offset = 0; offset <= 30; offset += 5) {
+    const dt = new Date(base.getTime() + offset * 86400000);
+    const iso = dt.toISOString().slice(0, 10);
+    const journeys = await fetchJson<JourneyRow>("/api/public/journeys", { date: iso, active: true }, 200);
+    for (const j of journeys) if (j.country_name) names.add(j.country_name);
+  }
+  return [...names];
+}
+
 /* Build a live data block for grounding */
 async function pullPublicDataForQuestion(
   q: string,
   intent: ReturnType<typeof detectIntent>,
-  opts?: { forceCountryList?: "current" | "roadmap" }
 ) {
   const iso = findISOInText(q);
   const countryHint = guessCountryName(q);
 
-  // Parameters for other endpoints
-  const destinationsParams = countryHint ? { q: countryHint, active: true } : { q, active: true };
-
-  // For country listing we switch to "journeys in next 30 days" = operational
   const blocks: string[] = [];
 
-  if (intent.wantsCountryList || opts?.forceCountryList) {
+  // Countries: NO clarifier. Default = “current” (operational). If user explicitly asked for future → roadmap.
+  if (intent.wantsCountryList) {
     const opNames = await getOperationalCountriesRollingWindow();
-
-    if ((opts?.forceCountryList ?? (askedForRoadmap(q) ? "roadmap" : "current")) === "current") {
-      if (opNames.length) {
-        blocks.push(`COUNTRIES (current)\n${opNames.map(n => `• ${n}`).join("\n")}`);
-      } else {
-        blocks.push("COUNTRIES (current)\n• Not published yet.");
-      }
+    if (intent.wantsRoadmapQuery) {
+      const allActive = await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
+      const roadmap = allActive.map(c => c.name).filter(n => !opNames.includes(n));
+      blocks.push(
+        roadmap.length
+          ? `COUNTRIES (roadmap)\n${roadmap.map(n => `• ${n}`).join("\n")}`
+          : "COUNTRIES (roadmap)\n• Not published yet."
+      );
     } else {
-      // roadmap = active countries that are NOT operational
-      const countries = await fetchJson<CountryRow>("/api/public/countries", { active: true }, 200);
-      const road = countries.map(c => c.name).filter(n => !opNames.includes(n));
-      if (road.length) {
-        blocks.push(`COUNTRIES (roadmap)\n${road.map(n => `• ${n}`).join("\n")}`);
-      } else {
-        blocks.push("COUNTRIES (roadmap)\n• Not published yet.");
-      }
+      blocks.push(
+        opNames.length
+          ? `COUNTRIES (current)\n${opNames.map(n => `• ${n}`).join("\n")}`
+          : "COUNTRIES (current)\n• Not published yet."
+      );
     }
   }
 
-  // Other lookups
+  // Destinations: answer directly if the country is already in the question
   if (intent.wantsDestinations) {
-    const destinations = await fetchJson<DestinationRow>("/api/public/destinations", destinationsParams);
+    const destinations = await fetchJson<DestinationRow>("/api/public/destinations", countryHint ? { q: countryHint, active: true } : { q, active: true });
     if (destinations.length) {
       const lines = destinations.slice(0, 20).map(d =>
         `• ${d.name}${d.country_name ? ` — ${d.country_name}` : ""}${d.town ? `, ${d.town}` : ""}${d.directions_url ? ` (directions: ${d.directions_url})` : ""}`,
       );
       blocks.push(`DESTINATIONS${countryHint ? ` in ${countryHint}` : ""}\n${lines.join("\n")}`);
+    } else if (countryHint) {
+      blocks.push(`DESTINATIONS in ${countryHint}\n• Not published yet.`);
     }
   }
 
@@ -317,14 +268,13 @@ async function searchPublicFiles(q: string, k: number) {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const q = String(body?.message || body?.text || "").trim();
-  const expectedIntent = body?.expectedIntent ? String(body.expectedIntent) : null;
 
   if (!q) return NextResponse.json({ content: "Please enter a question." });
 
   const signedIn = await isSignedInFromCookies();
   const intent = detectIntent(q);
 
-  /* Concierge path first */
+  /* Concierge path (unchanged) */
   if (intent.wantsCancel) {
     const iso = findISOInText(q);
     const hasRef = /\b[A-Z0-9]{6,}\b/.test(q);
@@ -353,36 +303,8 @@ export async function POST(req: Request) {
     });
   }
 
-  /* Clarifier memory handling */
-  let forceCountryList: "current" | "roadmap" | undefined;
-
-  if (expectedIntent === "wantsCountryList") {
-    const choice = resolveCountryListChoice(q);
-    if (choice) {
-      intent.wantsCountryList = true;
-      forceCountryList = choice;
-    } else {
-      return NextResponse.json({
-        content:
-          "To list countries, please choose:\n\n• **Today** (currently operating)\n• **Roadmap** (planned/coming soon)\n\nJust reply with **today** or **roadmap**.",
-        meta: { clarify: true, expect: "wantsCountryList" },
-      });
-    }
-  }
-
-  // Only ask a new clarifier when we don't already have an expectedIntention answer
-  if (!expectedIntent) {
-    const clarifier = buildClarifyingQuestion(intent, q);
-    if (clarifier) {
-      return NextResponse.json({
-        content: clarifier.question,
-        meta: { clarify: true, expect: clarifier.expect },
-      });
-    }
-  }
-
-  // Pull live PUBLIC data (countries/destinations/…)
-  const dataBlock = await pullPublicDataForQuestion(q, intent, { forceCountryList });
+  // Pull live PUBLIC data first (now includes country handling without clarifier)
+  const dataBlock = await pullPublicDataForQuestion(q, intent);
 
   // Vector RAG (KB) + fallback
   const k = 8;
