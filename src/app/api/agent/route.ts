@@ -341,19 +341,40 @@ export async function POST(req: Request) {
   let forceCountryList: "current" | "roadmap" | undefined;
 
   // ✅ FIX: properly consume "today"/"roadmap"
+  let forceCountryList: "current" | "roadmap" | undefined;
+
   if (expectedIntent === "wantsCountryList") {
     const choice = resolveCountryListChoice(q);
-    if (choice) {
-      intent.wantsCountryList = true; // make sure intent is preserved
-      forceCountryList = choice;
-    } else {
+    if (!choice) {
+      // Couldn’t parse → ask once more with explicit buttons
       return NextResponse.json({
         content:
-          "To list countries, please choose:\n\n• **Today** (currently operating)\n• **Roadmap** (planned/coming soon)\n\nJust reply with **today** or **roadmap**.",
+          "To list countries, please choose:\n\n" +
+          "• **Today** (currently operating)\n" +
+          "• **Roadmap** (planned/coming soon)\n\n" +
+          "Just reply with **today** or **roadmap**.",
         meta: { clarify: true, expect: "wantsCountryList" },
       });
     }
+
+    // We parsed the user’s choice – build live data and RETURN it immediately.
+    forceCountryList = choice;
+    const dataBlock = await pullPublicDataForQuestion(q, { ...detectIntent("countries"), wantsCountryList: true } as any, {
+      forceCountryList,
+    });
+
+    if (dataBlock && /COUNTRIES/i.test(dataBlock)) {
+      return NextResponse.json({
+        content: dataBlock,
+        sources: [],
+        // clear the clarifier on the client so it doesn’t keep sending it
+        meta: { clarify: false, expect: null, mode: "anon", usedSnippets: 0, summary: dataBlock.slice(0, 300) },
+      });
+    }
+
+    // If, for some reason, we have no data, fall through to general flow.
   }
+
 
   if (!expectedIntent) {
     const clarifier = buildClarifyingQuestion(intent, q);
