@@ -1,132 +1,96 @@
 // src/app/api/public/visible-catalog/route.ts
 import { NextResponse } from "next/server";
-import { getVisibleCatalog } from "@/server/homepage-catalog";
+import { createClient } from "@supabase/supabase-js";
 
 const API_BASE = process.env.NEXT_PUBLIC_SITE_ORIGIN || "https://www.paceshuttles.com";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Ensure this route is always fresh (your loader can add its own caching)
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false },
+});
+
+// ensure no caching by Next.js
 export const dynamic = "force-dynamic";
 
-type Rowed<T> = { ok?: boolean; rows?: T[] };
+async function loadVisibleCatalog() {
+  const { data: routes, error: rErr } = await supabase
+    .from("visible_routes_v")
+    .select(
+      `id as route_id,
+       name as route_name,
+       country_id,
+       country_name,
+       destination_id,
+       destination_name,
+       pickup_id,
+       pickup_name,
+       vehicle_type_id,
+       vehicle_type_name`
+    );
 
-type Country = {
-  id?: string | null;
-  name: string;
-  description?: string | null;
-  hero_image_url?: string | null;
-};
+  if (rErr) throw rErr;
 
-type Destination = {
-  name: string;
-  country_name?: string | null;
-  description?: string | null;
-  address1?: string | null;
-  address2?: string | null;
-  town?: string | null;
-  region?: string | null;
-  postal_code?: string | null;
-  phone?: string | null;
-  website_url?: string | null;
-  image_url?: string | null;
-  directions_url?: string | null;
-  type?: string | null;
-  tags?: string[] | null;
-  active?: boolean | null;
-};
-
-type Pickup = { name: string; country_name?: string | null; directions_url?: string | null };
-type VehicleType = { id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null };
-
-type VisibleRoute = {
-  route_id: string;
-  route_name: string;
-  country_id?: string | null;
-  country_name?: string | null;
-  destination_id?: string | null;
-  destination_name?: string | null;
-  pickup_id?: string | null;
-  pickup_name?: string | null;
-  vehicle_type_id?: string | null;
-  vehicle_type_name?: string | null;
-};
-
-async function safeJson<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${txt || res.statusText}`);
-  }
-  return res.json() as Promise<T>;
-}
-async function getRows<T>(url: string): Promise<T[]> {
-  const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-  const data = await safeJson<Rowed<T> | T[]>(res);
-  if (Array.isArray(data)) return data as T[];
-  if (data && "rows" in data && Array.isArray((data as any).rows)) return (data as Rowed<T>).rows as T[];
-  return [];
-}
-
-/**
- * Fallback: derive a useful public catalog ONLY from public endpoints,
- * filtered to "active" where available. No prices/routes here.
- */
-async function fallbackPublicCatalog() {
-  const [countries, destinations, pickups, vehicle_types] = await Promise.all([
-    getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
-    getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(() => []),
-    getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
-    getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(() => []),
-  ]);
-
-  const activeDestinations = destinations.filter((d) => d.active !== false);
-
-  // Derive countries from destinations present (keeps this honest without hard-coding)
-  const visibleCountryNames = Array.from(
-    new Set(activeDestinations.map((d) => (d.country_name || "").trim()).filter(Boolean))
-  );
-
-  const derivedCountries = countries.filter((c) => visibleCountryNames.includes(c.name));
+  const { data: countries } = await supabase
+    .from("countries")
+    .select("id,name,description,hero_image_url");
+  const { data: destinations } = await supabase
+    .from("destinations")
+    .select("name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags");
+  const { data: pickups } = await supabase
+    .from("pickup_points")
+    .select("name,country_name,directions_url");
+  const { data: vehicle_types } = await supabase
+    .from("transport_types")
+    .select("id,name,description,icon_url,capacity,features");
 
   return {
     ok: true,
-    // No route discovery in fallback (prevents calling /api/quote without IDs)
-    routes: [] as VisibleRoute[],
-    countries: derivedCountries,
-    destinations: activeDestinations,
+    fallback: false,
+    routes: routes ?? [],
+    countries: countries ?? [],
+    destinations: destinations ?? [],
+    pickups: pickups ?? [],
+    vehicle_types: vehicle_types ?? [],
+  };
+}
+
+async function fallbackPublicCatalog() {
+  const [countries, destinations, pickups, vehicle_types] = await Promise.all([
+    fetch(`${API_BASE}/api/public/countries`).then((r) => r.json()).catch(() => []),
+    fetch(`${API_BASE}/api/public/destinations`).then((r) => r.json()).catch(() => []),
+    fetch(`${API_BASE}/api/public/pickups`).then((r) => r.json()).catch(() => []),
+    fetch(`${API_BASE}/api/public/vehicle-types`).then((r) => r.json()).catch(() => []),
+  ]);
+
+  return {
+    ok: true,
+    fallback: true,
+    routes: [],
+    countries,
+    destinations,
     pickups,
     vehicle_types,
-    fallback: true as const,
   };
 }
 
 export async function GET() {
   try {
-    // PHASE 2: call the homepage’s real loader (best case)
-    try {
-      const cat = await getVisibleCatalog(); // must be wired by you in src/server/homepage-catalog.ts
-      if (cat && Array.isArray(cat.routes) && cat.routes.length > 0) {
-        return NextResponse.json(
-          {
-            ok: true,
-            routes: cat.routes,
-            countries: cat.countries ?? [],
-            destinations: cat.destinations ?? [],
-            pickups: cat.pickups ?? [],
-            vehicle_types: cat.vehicle_types ?? [],
-            fallback: false,
-          },
-          { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } }
-        );
-      }
-    } catch (e) {
-      // swallow and drop to fallback
-      console.warn("[visible-catalog] primary loader failed; using fallback:", (e as any)?.message || e);
+    const cat = await loadVisibleCatalog();
+    if (cat.routes.length > 0) {
+      return NextResponse.json(cat, {
+        headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+      });
     }
 
-    // PHASE 1: graceful fallback—still useful (countries/destinations/types)
     const fallback = await fallbackPublicCatalog();
-    return NextResponse.json(fallback, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
+    return NextResponse.json(fallback);
   } catch (err: any) {
-    console.error("[visible-catalog] fatal:", err?.message || err);
-    return NextResponse.json({ ok: false, error: "visible_catalog_failed" }, { status: 500 });
+    console.warn("[visible-catalog] fallback triggered:", err.message);
+    const fb = await fallbackPublicCatalog();
+    return NextResponse.json(fb);
   }
 }
