@@ -2,22 +2,22 @@
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-export const dynamic = "force-dynamic";   // always fresh
-export const runtime = "nodejs";           // supabase-js friendly
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const API_BASE = process.env.NEXT_PUBLIC_SITE_ORIGIN || "https://www.paceshuttles.com";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE || ""; // do NOT silently fall back to anon
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!; // keep anon as last resort if you prefer
 
-function sb(): SupabaseClient | null {
-  if (!SUPABASE_URL || !SERVICE_KEY) return null;
+function sb(): SupabaseClient {
   return createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 }
 
-/* ---------- helpers to read public endpoints (fallback) ---------- */
 type Rowed<T> = { ok?: boolean; rows?: T[] } | T[];
+const lc = (s?: string | null) => (s ?? "").toLowerCase();
 
 async function safeJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -32,20 +32,17 @@ async function getRows<T>(url: string): Promise<T[]> {
   if (data && "rows" in data && Array.isArray((data as any).rows)) return (data as any).rows as T[];
   return [];
 }
-const lc = (s?: string | null) => (s ?? "").toLowerCase();
 
-/* ---------- primary loader (SSOT via Supabase view) ---------- */
+/* ---------- Primary (SSOT via view) ---------- */
 async function loadVisibleCatalog() {
   const supabase = sb();
-  if (!supabase) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE)");
 
-  // IMPORTANT: Supabase aliasing is `alias:column`, not `column as alias`
+  // ✅ Select the columns that actually exist in the view (no aliasing)
   const { data: routes, error: rErr } = await supabase
     .from("visible_routes_v")
-    .select(
-      `
-      route_id:id,
-      route_name:name,
+    .select(`
+      route_id,
+      route_name,
       country_id,
       country_name,
       destination_id,
@@ -54,10 +51,10 @@ async function loadVisibleCatalog() {
       pickup_name,
       vehicle_type_id,
       vehicle_type_name
-    `
-    );
+    `);
 
   if (rErr) throw rErr;
+
   const routesSafe = (routes ?? []) as Array<{
     route_id: string;
     route_name: string;
@@ -71,26 +68,17 @@ async function loadVisibleCatalog() {
     vehicle_type_name?: string | null;
   }>;
 
-  // Short-circuit if no routes
   if (!routesSafe.length) {
-    return {
-      ok: true,
-      fallback: false,
-      routes: [],
-      countries: [],
-      destinations: [],
-      pickups: [],
-      vehicle_types: [],
-    };
+    return { ok: true, fallback: false, routes: [], countries: [], destinations: [], pickups: [], vehicle_types: [] };
   }
 
   // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(new Set(routesSafe.map(r => r.country_name).filter(Boolean) as string[]));
-  const visibleDestNamesLC = new Set(routesSafe.map(r => lc(r.destination_name)).filter(Boolean));
-  const visiblePickupNamesLC = new Set(routesSafe.map(r => lc(r.pickup_name)).filter(Boolean));
-  const visibleVehicleTypeIds = Array.from(new Set(routesSafe.map(r => r.vehicle_type_id).filter(Boolean) as string[]));
+  const visibleDestLC = new Set(routesSafe.map(r => lc(r.destination_name)).filter(Boolean));
+  const visiblePickupLC = new Set(routesSafe.map(r => lc(r.pickup_name)).filter(Boolean));
+  const visibleTypeIds = Array.from(new Set(routesSafe.map(r => r.vehicle_type_id).filter(Boolean) as string[]));
 
-  // Base tables (unfiltered)
+  // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] = await Promise.all([
     supabase.from("countries").select("id,name,description,hero_image_url"),
     supabase.from("destinations").select("name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"),
@@ -99,39 +87,32 @@ async function loadVisibleCatalog() {
 
   // Filter to visible-only
   const countries = (countriesAll ?? []).filter(c => visibleCountryNames.includes(c.name));
-  const destinations = (destAll ?? []).filter(d => visibleDestNamesLC.has(lc(d.name)));
-  const pickups = (pickupsAll ?? []).filter(p => visiblePickupNamesLC.has(lc(p.name)));
+  const destinations = (destAll ?? []).filter(d => visibleDestLC.has(lc(d.name)));
+  const pickups = (pickupsAll ?? []).filter(p => visiblePickupLC.has(lc(p.name)));
 
   // Transport/vehicle types (prefer transport_types; fall back to vehicle_types)
-  let vehicle_types: Array<{ id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null }> = [];
-  if (visibleVehicleTypeIds.length) {
+  let vehicle_types:
+    | Array<{ id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null }>
+    = [];
+  if (visibleTypeIds.length) {
     const { data: ttypes } = await supabase
       .from("transport_types")
       .select("id,name,description,icon_url,capacity,features")
-      .in("id", visibleVehicleTypeIds);
-    if (ttypes?.length) {
-      vehicle_types = ttypes as any;
-    } else {
+      .in("id", visibleTypeIds);
+    if (ttypes?.length) vehicle_types = ttypes as any;
+    else {
       const { data: vtypes } = await supabase
         .from("vehicle_types")
         .select("id,name,description,icon_url,capacity,features")
-        .in("id", visibleVehicleTypeIds);
+        .in("id", visibleTypeIds);
       vehicle_types = (vtypes ?? []) as any;
     }
   }
 
-  return {
-    ok: true,
-    fallback: false,
-    routes: routesSafe,
-    countries,
-    destinations,
-    pickups,
-    vehicle_types,
-  };
+  return { ok: true, fallback: false, routes: routesSafe, countries, destinations, pickups, vehicle_types };
 }
 
-/* ---------- graceful fallback (public endpoints only) ---------- */
+/* ---------- Fallback (public endpoints only) ---------- */
 async function fallbackPublicCatalog(reason?: string) {
   type Country = { id?: string | null; name: string; description?: string | null; hero_image_url?: string | null };
   type Destination = { name: string; country_name?: string | null; description?: string | null; address1?: string | null; address2?: string | null; town?: string | null; region?: string | null; postal_code?: string | null; phone?: string | null; website_url?: string | null; image_url?: string | null; directions_url?: string | null; type?: string | null; tags?: string[] | null; active?: boolean | null };
@@ -161,7 +142,7 @@ async function fallbackPublicCatalog(reason?: string) {
   };
 }
 
-/* ---------- GET handler ---------- */
+/* ---------- GET ---------- */
 export async function GET() {
   try {
     try {
@@ -175,7 +156,6 @@ export async function GET() {
       return NextResponse.json(fb, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
     }
 
-    // No routes from primary but also no throw → fallback
     const fb = await fallbackPublicCatalog("no_routes");
     return NextResponse.json(fb, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
   } catch (err: any) {
