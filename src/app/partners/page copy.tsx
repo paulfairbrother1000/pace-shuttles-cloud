@@ -8,91 +8,32 @@ function Theme({ children }: { children: React.ReactNode }) {
   return (
     <div className="ps-theme min-h-screen bg-app text-app">
       <style jsx global>{`
-        /* Light, high-contrast, human-friendly palette */
         .ps-theme {
-          --bg: #f8fafc;                 /* slate-50 */
-          --card: #ffffff;               /* white */
-          --border: #e2e8f0;             /* slate-200 */
-          --text: #0f172a;               /* slate-900 */
-          --muted: #475569;              /* slate-600 */
-          --accent: #2563eb;             /* blue-600 */
-          --accent-contrast: #ffffff;    /* white */
-          --focus: #93c5fd;              /* blue-300 */
+          --bg: #0f1a2a;
+          --card: #15243a;
+          --border: #20334d;
+          --text: #eaf2ff;
+          --muted: #a3b3cc;
+          --accent: #2a6cd6;
+          --accent-contrast: #ffffff;
           --radius: 14px;
-          --shadow: 0 6px 20px rgba(2, 6, 23, 0.08); /* soft shadow */
+          --shadow: 0 6px 20px rgba(0,0,0,.25);
           color: var(--text);
           background: var(--bg);
           font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-          font-size: 16px;
-          line-height: 1.6;
         }
-
-        /* Cards / tiles */
-        .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
-        .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
-        .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
-
-        /* Pills (selector buttons) */
-        .pill {
-          border-radius: 9999px;
-          padding: .5rem .85rem;
-          font-size: .95rem;
-          border: 1px solid var(--border);
-          background: #ffffff;
-          color: var(--text);
-          transition: background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
-        }
-        .pill:hover { border-color: #cbd5e1; }
-        .pill:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
-        .pill-active { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
-
-        /* Buttons */
-        .btn {
-          border-radius: var(--radius);
-          padding: .65rem 1rem;
-          border: 1px solid var(--border);
-          background: var(--card);
-          color: var(--text);
-          transition: transform .02s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease;
-        }
-        .btn:hover { border-color: #cbd5e1; }
-        .btn:active { transform: translateY(1px); }
-        .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
-
-        .btn-primary {
-          background: var(--accent);
-          color: var(--accent-contrast);
-          border-color: transparent;
-        }
-        .btn-primary:hover { filter: brightness(0.98); }
-        .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
-
-        /* Inputs / selects / textareas */
-        .input {
-          width: 100%;
-          border-radius: 10px;
-          padding: .65rem .75rem;
-          background: #ffffff;
-          color: var(--text);
-          box-shadow: 0 0 0 1px var(--border) inset;
-          transition: box-shadow .15s ease, border-color .15s ease, background .15s ease;
-        }
-        .input::placeholder { color: #94a3b8; } /* slate-400 */
-        .input:focus { outline: none; box-shadow: 0 0 0 2px var(--focus), 0 0 0 1px var(--accent) inset; }
-
-        /* Labels & muted text */
-        .label { margin-bottom: .35rem; display: block; font-size: .95rem; color: var(--muted); font-weight: 600; }
-        .muted { color: var(--muted); }
-
-        /* Links: switch from colored-on-blue to readable blue on light bg */
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { text-decoration: underline; }
-
-        /* Checkboxes alignment */
-        input[type="checkbox"] { accent-color: var(--accent); }
-
-        /* Headings spacing tweak for readability */
-        h1, h2, h3 { line-height: 1.25; }
+        .tile{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow)}
+        .tile-border{box-shadow:0 0 0 1px var(--border) inset}
+        .subtle-border{box-shadow:0 0 0 1px var(--border) inset}
+        .pill{border-radius:9999px;padding:.4rem .75rem;font-size:.875rem;border:1px solid var(--border);background:transparent;color:var(--text)}
+        .pill-active{background:var(--accent);color:var(--accent-contrast);border-color:transparent}
+        .btn{border-radius:var(--radius);padding:.6rem .9rem;border:1px solid var(--border);background:var(--card);color:var(--text)}
+        .btn-primary{background:var(--accent);color:var(--accent-contrast);border-color:transparent}
+        .input{width:100%;border-radius:10px;padding:.6rem .75rem;background:var(--card);color:var(--text);box-shadow:0 0 0 1px var(--border) inset}
+        .input::placeholder{color:var(--muted)}
+        .label{margin-bottom:.25rem;display:block;font-size:.9rem;color:var(--muted)}
+        .muted{color:var(--muted)}
+        a{color:var(--text)} a:hover{color:var(--accent)}
       `}</style>
       {children}
     </div>
@@ -344,7 +285,7 @@ export default function PartnersApplyPage() {
         </header>
 
         {msg && (
-          <div className="rounded-md tile-border bg-[rgba(255,193,7,.12)] p-3 text-sm" style={{color:"#8a6d00"}}>
+          <div className="rounded-md tile-border bg-[rgba(255,193,7,.12)] p-3 text-sm" style={{color:"#ffd88a"}}>
             {msg}
           </div>
         )}
