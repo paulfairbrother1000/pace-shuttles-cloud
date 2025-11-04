@@ -4,46 +4,57 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 
 /* ---------------- Theme (scoped to this page) ---------------- */
+/* Brand-preserving dark blue theme with higher contrast, clearer edges,
+   stronger borders, and visible focus states. */
 function Theme({ children }: { children: React.ReactNode }) {
   return (
     <div className="ps-theme min-h-screen bg-app text-app">
       <style jsx global>{`
-        /* Light, high-contrast, human-friendly palette */
         .ps-theme {
-          --bg: #f8fafc;                 /* slate-50 */
-          --card: #ffffff;               /* white */
-          --border: #e2e8f0;             /* slate-200 */
-          --text: #0f172a;               /* slate-900 */
-          --muted: #475569;              /* slate-600 */
-          --accent: #2563eb;             /* blue-600 */
-          --accent-contrast: #ffffff;    /* white */
-          --focus: #93c5fd;              /* blue-300 */
+          /* Brand blues (dark) with improved contrast */
+          --bg: #0b1628;                 /* deep navy background */
+          --card: #11233f;               /* slightly lighter card */
+          --surface: #142a50;            /* input/select surface */
+          --border: #3a5a8e;             /* brighter, visible border */
+          --divider: #1e3558;            /* subtle dividers */
+          --text: #eaf2ff;               /* light text */
+          --muted: #b8c7dd;              /* muted text */
+          --accent: #3b82f6;             /* blue-500 for actions */
+          --accent-contrast: #ffffff;    /* white text on accent */
+          --focus: #60a5fa;              /* blue-400 focus ring */
           --radius: 14px;
-          --shadow: 0 6px 20px rgba(2, 6, 23, 0.08); /* soft shadow */
+          --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
           color: var(--text);
-          background: var(--bg);
+          background: radial-gradient(1200px 800px at 20% -10%, #0f1f38 0%, var(--bg) 40%, #081120 100%);
           font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
           font-size: 16px;
-          line-height: 1.6;
+          line-height: 1.55;
         }
 
         /* Cards / tiles */
-        .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
-        .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
-        .subtle-border { box-shadow: 0 0 0 1px var(--border) inset; }
+        .tile {
+          background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.04)) , var(--card);
+          border-radius: var(--radius);
+          box-shadow: var(--shadow);
+        }
+        .tile-border {
+          box-shadow: 0 0 0 1px var(--border) inset, 0 1px 0 0 rgba(255,255,255,0.04) inset;
+        }
+        .subtle-border { box-shadow: 0 0 0 1px var(--divider) inset; }
 
         /* Pills (selector buttons) */
         .pill {
           border-radius: 9999px;
-          padding: .5rem .85rem;
+          padding: .55rem .9rem;
           font-size: .95rem;
           border: 1px solid var(--border);
-          background: #ffffff;
+          background: rgba(255,255,255,0.02);
           color: var(--text);
-          transition: background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
+          transition: background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease, transform .02s ease;
         }
-        .pill:hover { border-color: #cbd5e1; }
-        .pill:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+        .pill:hover { background: rgba(255,255,255,0.05); }
+        .pill:active { transform: translateY(1px); }
+        .pill:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(96,165,250,.45); }
         .pill-active { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
 
         /* Buttons */
@@ -51,48 +62,78 @@ function Theme({ children }: { children: React.ReactNode }) {
           border-radius: var(--radius);
           padding: .65rem 1rem;
           border: 1px solid var(--border);
-          background: var(--card);
+          background: var(--surface);
           color: var(--text);
           transition: transform .02s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease;
         }
-        .btn:hover { border-color: #cbd5e1; }
+        .btn:hover { border-color: #5b7fb4; background: #183464; }
         .btn:active { transform: translateY(1px); }
-        .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+        .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(96,165,250,.45); }
 
         .btn-primary {
-          background: var(--accent);
+          background: linear-gradient(180deg, #4f8ef8, #2f6eea);
           color: var(--accent-contrast);
-          border-color: transparent;
+          border-color: #2f6eea;
         }
         .btn-primary:hover { filter: brightness(0.98); }
-        .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+        .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(96,165,250,.5); }
 
         /* Inputs / selects / textareas */
         .input {
           width: 100%;
-          border-radius: 10px;
-          padding: .65rem .75rem;
-          background: #ffffff;
+          border-radius: 12px;
+          padding: .7rem .8rem;
+          background: var(--surface);
           color: var(--text);
-          box-shadow: 0 0 0 1px var(--border) inset;
+          box-shadow:
+            0 0 0 1px var(--border) inset,
+            0 2px 0 0 rgba(0,0,0,0.25);
           transition: box-shadow .15s ease, border-color .15s ease, background .15s ease;
         }
-        .input::placeholder { color: #94a3b8; } /* slate-400 */
-        .input:focus { outline: none; box-shadow: 0 0 0 2px var(--focus), 0 0 0 1px var(--accent) inset; }
+        .input::placeholder { color: #9fb2cc; } /* lighter placeholder */
+        .input:focus {
+          outline: none;
+          box-shadow:
+            0 0 0 2px rgba(96,165,250,.55),
+            0 0 0 1px var(--accent) inset,
+            0 2px 0 0 rgba(0,0,0,0.25);
+        }
 
         /* Labels & muted text */
-        .label { margin-bottom: .35rem; display: block; font-size: .95rem; color: var(--muted); font-weight: 600; }
+        .label {
+          margin-bottom: .4rem;
+          display: block;
+          font-size: 0.95rem;
+          color: var(--muted);
+          font-weight: 700;            /* stronger label weight for clarity */
+          letter-spacing: .01em;
+        }
         .muted { color: var(--muted); }
 
-        /* Links: switch from colored-on-blue to readable blue on light bg */
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        /* Links (brand blue, readable on dark bg) */
+        a { color: #8ec5ff; text-decoration: none; }
+        a:hover { color: #b7daff; text-decoration: underline; }
 
-        /* Checkboxes alignment */
+        /* Checkbox + grid items */
         input[type="checkbox"] { accent-color: var(--accent); }
 
-        /* Headings spacing tweak for readability */
+        /* Place chips – clearer edges */
+        .place-chip {
+          background: rgba(255,255,255,0.02);
+          box-shadow: 0 0 0 1px var(--divider) inset, 0 1px 0 rgba(255,255,255,0.04) inset;
+        }
+
+        /* Headings spacing tweak */
         h1, h2, h3 { line-height: 1.25; }
+
+        /* Message banner (warning/info) – clearer contrast on dark */
+        .banner {
+          background: rgba(255, 193, 7, 0.12);
+          color: #ffe3a3;
+          border-radius: 10px;
+          padding: .75rem .9rem;
+          box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.35) inset;
+        }
       `}</style>
       {children}
     </div>
@@ -344,9 +385,7 @@ export default function PartnersApplyPage() {
         </header>
 
         {msg && (
-          <div className="rounded-md tile-border bg-[rgba(255,193,7,.12)] p-3 text-sm" style={{color:"#8a6d00"}}>
-            {msg}
-          </div>
+          <div className="banner">{msg}</div>
         )}
 
         {loading ? (
@@ -425,7 +464,7 @@ export default function PartnersApplyPage() {
                     filteredPlaces.length ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {filteredPlaces.map((p) => (
-                          <label key={p.id} className="flex items-center gap-2 tile-border rounded-lg px-3 py-2">
+                          <label key={p.id} className="place-chip flex items-center gap-2 rounded-lg px-3 py-2">
                             <input
                               type="checkbox"
                               className="h-4 w-4"
