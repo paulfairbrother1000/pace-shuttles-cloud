@@ -255,7 +255,7 @@ export default function AdminRoutesPage() {
           {showNewButton && (
             <Link
               prefetch={false}
-              href="/operator-admin/routes/edit/new"
+              href="/operator-admin/route-editor/new"
               className="rounded-full px-4 py-2 text-white text-sm"
               style={{ backgroundColor: "#2563eb" }}
               title="Create a new route"
@@ -292,7 +292,7 @@ export default function AdminRoutesPage() {
                 <Link
                   key={r.id}
                   prefetch={false}
-                  href={`/operator-admin/routes/edit/${r.id}${opCtx}`}
+                  href={`/operator-admin/route-editor/${r.id}${opCtx}`}
                   className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden"
                   title={isSiteAdmin ? "Edit route" : "View route"}
                 >
