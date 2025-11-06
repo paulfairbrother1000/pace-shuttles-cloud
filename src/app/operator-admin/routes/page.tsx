@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
@@ -225,7 +225,7 @@ export default function AdminRoutesPage() {
             </div>
           )}
 
-          {/* Country filter — site admin only */}
+          {/* Country filter — site admin only; disabled when previewing an operator */}
           {isSiteAdmin && (
             <select
               className="border rounded-lg px-3 py-2 text-sm"
@@ -255,7 +255,7 @@ export default function AdminRoutesPage() {
           {showNewButton && (
             <Link
               prefetch={false}
-              href="/operator-admin/route-editor/new"
+              href="/operator-admin/routes/edit/new"
               className="rounded-full px-4 py-2 text-white text-sm"
               style={{ backgroundColor: "#2563eb" }}
               title="Create a new route"
@@ -292,7 +292,7 @@ export default function AdminRoutesPage() {
                 <Link
                   key={r.id}
                   prefetch={false}
-                  href={`/operator-admin/route-editor/${r.id}${opCtx}`}
+                  href={`/operator-admin/routes/edit/${r.id}${opCtx}`}
                   className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden"
                   title={isSiteAdmin ? "Edit route" : "View route"}
                 >

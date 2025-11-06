@@ -1,7 +1,7 @@
 // src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
-/* Force client rendering / no SSR data dependencies on this route */
+/* Ensure this route never SSRs any browser-only code */
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
@@ -13,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* ───────── Supabase (client-only) ───────── */
+/* Supabase (client-only) */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -24,7 +24,7 @@ const sb =
       )
     : null;
 
-/* ───────── Types ───────── */
+/* Types */
 type UUID = string;
 
 type PsUser = {
@@ -71,7 +71,6 @@ type Destination = { id: string; name: string; picture_url: string | null };
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/* ───────── Component ───────── */
 export default function AdminRouteEditPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -82,8 +81,7 @@ export default function AdminRouteEditPage() {
   const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
 
-  /* During the server pass for /edit/new, return a harmless shell so SSR never throws.
-     The real form mounts client-side immediately after hydration. */
+  /* During SSR for /edit/new, render a tiny shell so the server pass never hits client APIs */
   if (typeof window === "undefined" && isCreate) {
     return (
       <div className="p-4">
@@ -129,7 +127,7 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups (journey types, operator type permissions, destinations) */
+  /* Lookups */
   useEffect(() => {
     if (!sb) return;
     (async () => {
@@ -360,7 +358,6 @@ export default function AdminRouteEditPage() {
     }
   }
 
-  /* ───────── Render ───────── */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
