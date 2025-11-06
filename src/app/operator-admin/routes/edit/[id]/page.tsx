@@ -2,10 +2,12 @@
 "use client";
 
 /* Make this route strictly client-rendered to avoid any SSR pass trying to read localStorage */
+// keep "use client" at the top if you already have it
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 export const dynamicParams = true;
+
 
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
