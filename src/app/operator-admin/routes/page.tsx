@@ -51,7 +51,7 @@ function publicImage(input?: string | null): string | undefined {
           ? `https://${supaHost}/storage/v1/object/public/${m[1]}?v=5`
           : `${raw}?v=5`;
       }
-      return raw; // already a normal absolute URL
+      return raw; // already absolute URL
     } catch {
       /* ignore */
     }
@@ -77,6 +77,8 @@ const sb =
       )
     : null;
 
+const ALL = "__ALL__";
+
 export default function OperatorRoutesTilesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id);
@@ -98,9 +100,13 @@ export default function OperatorRoutesTilesPage() {
       setPsUser(u);
       if (u?.operator_admin && u.operator_id) {
         setOperatorId((cur) => cur || u.operator_id!);
+      } else {
+        // Site Admins start on "All operators"
+        setOperatorId((cur) => cur || ALL);
       }
     } catch {
       setPsUser(null);
+      setOperatorId(ALL);
     }
   }, []);
 
@@ -162,22 +168,19 @@ export default function OperatorRoutesTilesPage() {
 
   // which journey types are allowed for current operator?
   const allowedTypeIds = useMemo(() => {
-    if (!operatorId) return new Set<string>();
+    if (!operatorId || operatorId === ALL) return new Set<string>();
     return new Set(opTypeRels.filter(r => r.operator_id === operatorId).map(r => r.journey_type_id));
   }, [opTypeRels, operatorId]);
 
   // filter by operator's allowed journey types + search
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-
-    // If operator is selected (or locked), only show routes whose journey_type_id
-    // is allowed for that operator. (If a route has null journey_type_id, hide it.)
-    const base = operatorId
-      ? routes.filter(r => r.journey_type_id && allowedTypeIds.has(r.journey_type_id))
-      : routes;
-
-    if (!s) return base;
-    return base.filter((r) =>
+    const byOpTypes =
+      !operatorId || operatorId === ALL
+        ? routes
+        : routes.filter(r => r.journey_type_id && allowedTypeIds.has(r.journey_type_id));
+    if (!s) return byOpTypes;
+    return byOpTypes.filter((r) =>
       `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`
         .toLowerCase()
         .includes(s)
@@ -192,7 +195,7 @@ export default function OperatorRoutesTilesPage() {
       : "";
 
   // NEW: determine create URL & enabled state
-  const effectiveOp = isOpAdmin ? (psUser?.operator_id || "") : operatorId;
+  const effectiveOp = isOpAdmin ? (psUser?.operator_id || "") : (operatorId === ALL ? "" : operatorId);
   const canCreate = Boolean(effectiveOp);
 
   return (
@@ -211,6 +214,7 @@ export default function OperatorRoutesTilesPage() {
               value={operatorId}
               onChange={(e) => setOperatorId(e.target.value)}
             >
+              <option value={ALL}>All operators</option>
               <option value="">— Select —</option>
               {operators.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -249,7 +253,7 @@ export default function OperatorRoutesTilesPage() {
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {loading ? (
           <div className="col-span-full p-4">Loading…</div>
-        ) : !operatorId && !isOpAdmin ? (
+        ) : (!operatorId && !isOpAdmin) ? (
           <div className="col-span-full p-4">Choose an Operator to manage assignments.</div>
         ) : filtered.length === 0 ? (
           <div className="col-span-full p-4">No routes.</div>
@@ -257,10 +261,8 @@ export default function OperatorRoutesTilesPage() {
           filtered.map((r) => {
             const pImg = publicImage(r.pickup?.picture_url);
             const dImg = publicImage(r.destination?.picture_url);
-
-            // ✅ Link back to the existing detail page path; pass op so edit locks operator
-            const effectiveOp = isOpAdmin ? (psUser?.operator_id || "") : operatorId;
-            const href = `/operator-admin/routes/edit/${r.id}?op=${encodeURIComponent(effectiveOp)}`;
+            const opCtx = isOpAdmin ? (psUser?.operator_id || "") : (operatorId === ALL ? "" : operatorId);
+            const href = `/operator-admin/routes/edit/${r.id}?op=${encodeURIComponent(opCtx)}`;
 
             return (
               <Link
@@ -268,7 +270,6 @@ export default function OperatorRoutesTilesPage() {
                 href={href}
                 className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden"
               >
-                {/* Two images area */}
                 <div className="relative w-full aspect-[16/7] grid grid-cols-2">
                   <div className="relative">
                     {pImg ? (

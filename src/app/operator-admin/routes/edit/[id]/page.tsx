@@ -23,6 +23,7 @@ type Vehicle = {
   maxseats: number | string;
   active: boolean | null;
   operator_id: string | null;
+  journey_type_id: string | null; // NEW
 };
 
 type Assignment = {
@@ -42,7 +43,10 @@ type RouteRow = {
   pickup_time: string | null;
   approx_duration_mins: number | null;
   approximate_distance_miles: number | null;
+  journey_type_id: string | null; // NEW
 };
+
+type JourneyType = { id: string; name: string };
 
 /* ---------- Public-image helper ---------- */
 function publicImage(input?: string | null): string | undefined {
@@ -92,7 +96,7 @@ export default function OperatorRouteDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
-  const isCreate = params.id === "new"; // ← NEW
+  const isCreate = params.id === "new";
 
   /* Operator context is LOCKED from the tiles page via ?op=... */
   const opFromQuery = search.get("op") || "";
@@ -105,8 +109,10 @@ export default function OperatorRouteDetailPage() {
   const [route, setRoute] = useState<RouteRow | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [journeyTypes, setJourneyTypes] = useState<JourneyType[]>([]); // NEW
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [savingJT, setSavingJT] = useState(false); // NEW
 
   // Read ps_user and lock operatorId
   useEffect(() => {
@@ -126,11 +132,19 @@ export default function OperatorRouteDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load journey types once
+  useEffect(() => {
+    if (!sb) return;
+    (async () => {
+      const { data } = await sb.from("journey_types").select("id,name").order("name");
+      setJourneyTypes((data as JourneyType[]) || []);
+    })();
+  }, []);
+
   // Load route + current assignments (global) — skip in CREATE mode
   useEffect(() => {
     if (!sb) return;
     if (isCreate) {
-      // Creating a new route: nothing to fetch by id
       setRoute(null);
       setMsg(null);
       setLoading(false);
@@ -154,6 +168,7 @@ export default function OperatorRouteDetailPage() {
             pickup_time,
             approx_duration_mins,
             approximate_distance_miles,
+            journey_type_id,
             pickup:pickup_id ( name, picture_url ),
             destination:destination_id ( name, picture_url )
           `
@@ -180,6 +195,7 @@ export default function OperatorRouteDetailPage() {
           pickup_time: row.pickup_time ?? null,
           approx_duration_mins: row.approx_duration_mins ?? null,
           approximate_distance_miles: row.approximate_distance_miles ?? null,
+          journey_type_id: row.journey_type_id ?? null,
           pickup: row.pickup
             ? { name: row.pickup.name as string, picture_url: row.pickup.picture_url as string | null }
             : null,
@@ -197,14 +213,14 @@ export default function OperatorRouteDetailPage() {
     };
   }, [params.id, isCreate]);
 
-  // Load vehicles for the LOCKED operator
+  // Load vehicles for the LOCKED operator (include journey_type_id)
   useEffect(() => {
-    if (!sb || !operatorId || isCreate) return; // ← NEW guard: no need in create mode
+    if (!sb || !operatorId || isCreate) return;
     let off = false;
     (async () => {
       const { data, error } = await sb
         .from("vehicles")
-        .select("id,name,minseats,maxseats,active,operator_id")
+        .select("id,name,minseats,maxseats,active,operator_id,journey_type_id")
         .eq("operator_id", operatorId)
         .eq("active", true)
         .order("name");
@@ -219,7 +235,7 @@ export default function OperatorRouteDetailPage() {
   }, [operatorId, isCreate]);
 
   const assignedForThisRoute = useMemo(() => {
-    if (isCreate) return []; // ← NEW
+    if (isCreate) return [];
     const ids = new Set(vehicles.map((v) => v.id));
     return assignments.filter((a) => a.route_id === params.id && ids.has(a.vehicle_id));
   }, [assignments, vehicles, params.id, isCreate]);
@@ -228,7 +244,7 @@ export default function OperatorRouteDetailPage() {
   const assignedIds = new Set(assignedForThisRoute.map((a) => a.vehicle_id));
 
   async function reloadAssignments() {
-    if (isCreate) return; // ← NEW
+    if (isCreate) return;
     const { data, error } = await sb!
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
@@ -236,9 +252,24 @@ export default function OperatorRouteDetailPage() {
     if (!error) setAssignments((data as Assignment[]) || []);
   }
 
+  // NEW: Guard to prevent mismatched transport types
+  function isVehicleTypeAllowed(vehicleId: string): boolean {
+    if (!route?.journey_type_id) return false; // routes must have a type to assign
+    const v = vehicles.find((x) => x.id === vehicleId);
+    if (!v?.journey_type_id) return false;
+    return v.journey_type_id === route.journey_type_id;
+  }
+
   async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
-    if (isCreate) return; // ← NEW
+    if (isCreate) return;
     try {
+      if (!currentlyAssigned) {
+        if (!isVehicleTypeAllowed(vehicleId)) {
+          alert("This vehicle’s transport type does not match the route’s transport type.");
+          return;
+        }
+      }
+
       if (currentlyAssigned) {
         const { error } = await sb!
           .from("route_vehicle_assignments")
@@ -262,8 +293,13 @@ export default function OperatorRouteDetailPage() {
   }
 
   async function setPreferred(routeId: string, vehicleId: string) {
-    if (isCreate) return; // ← NEW
+    if (isCreate) return;
     try {
+      if (!isVehicleTypeAllowed(vehicleId)) {
+        alert("Preferred vehicle must match the route’s transport type.");
+        return;
+      }
+
       const { error: clearErr } = await sb!
         .from("route_vehicle_assignments")
         .update({ preferred: false })
@@ -282,6 +318,24 @@ export default function OperatorRouteDetailPage() {
       await reloadAssignments();
     } catch (e: any) {
       alert(e.message ?? "Unable to set preferred");
+    }
+  }
+
+  // NEW: Save journey type on the route
+  async function saveRouteJourneyType(journeyTypeId: string) {
+    if (!sb || !route?.id) return;
+    try {
+      setSavingJT(true);
+      const { error } = await sb
+        .from("routes")
+        .update({ journey_type_id: journeyTypeId || null })
+        .eq("id", route.id);
+      if (error) throw error;
+      setRoute((r) => (r ? { ...r, journey_type_id: journeyTypeId || null } : r));
+    } catch (e: any) {
+      alert(e.message ?? "Unable to save transport type.");
+    } finally {
+      setSavingJT(false);
     }
   }
 
@@ -305,12 +359,40 @@ export default function OperatorRouteDetailPage() {
 
       {msg && <div className="text-sm text-red-600">{msg}</div>}
 
-      {/* When creating, no UUID exists yet, so we show a gentle note instead of trying to load/assign */}
+      {/* NEW: Transport type editor (only once route exists) */}
+      {!isCreate && (
+        <section className="rounded-2xl border bg-white shadow p-4">
+          <div className="text-sm mb-2 text-neutral-600">Transport type</div>
+          <div className="flex gap-2 items-center">
+            <select
+              className="border rounded-full px-3 py-2 text-sm"
+              value={route?.journey_type_id || ""}
+              onChange={(e) => saveRouteJourneyType(e.target.value)}
+              disabled={savingJT}
+            >
+              <option value="">— Not set —</option>
+              {journeyTypes.map((jt) => (
+                <option key={jt.id} value={jt.id}>
+                  {jt.name}
+                </option>
+              ))}
+            </select>
+            {savingJT && <span className="text-xs text-neutral-500">Saving…</span>}
+          </div>
+          <p className="mt-2 text-xs text-neutral-500">
+            Assignments are restricted: vehicles must match the selected transport type.
+          </p>
+        </section>
+      )}
+
+      {/* When creating, no UUID exists yet */}
       {isCreate ? (
         <div className="rounded-2xl border bg-white shadow p-4 text-sm">
-          <p>
-            You’re creating a new route. After saving the route details on the edit form,
-            you’ll be able to return here to assign vehicles and set a preferred vehicle.
+          <p className="mb-2">
+            You’re creating a new route. Use the “New route” button from the list after selecting an operator.
+          </p>
+          <p className="text-neutral-600">
+            After saving the core details on your edit form, return here to assign vehicles and set a preferred vehicle.
           </p>
         </div>
       ) : (
@@ -364,7 +446,7 @@ export default function OperatorRouteDetailPage() {
               <div>
                 <div className="text-neutral-500">Distance</div>
                 <div className="font-medium">
-                  {route?.approximate_distance_miles != null ? `${route.approximate_distance_miles} mi` : "—"}
+                  {route?.approximate_distance_miles != null ? `${route?.approximate_distance_miles} mi` : "—"}
                 </div>
               </div>
             </div>
@@ -384,17 +466,25 @@ export default function OperatorRouteDetailPage() {
                   {vehicles.map((v) => {
                     const assigned = assignedIds.has(v.id);
                     const isPref = preferred?.vehicle_id === v.id;
+                    const allowed = route?.journey_type_id && v.journey_type_id === route.journey_type_id;
+
                     return (
                       <div
                         key={v.id}
                         className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
                           assigned ? "bg-black text-white border-black" : "bg-white"
-                        }`}
+                        } ${!allowed ? "opacity-50" : ""}`}
+                        title={
+                          allowed
+                            ? ""
+                            : "Transport type mismatch (vehicle vs route). Fix the route’s transport type above."
+                        }
                       >
                         <button
-                          className="outline-none"
+                          className="outline-none disabled:opacity-60"
                           title={assigned ? "Unassign" : "Assign to route"}
                           onClick={() => toggleAssign(params.id, v.id, assigned)}
+                          disabled={!allowed}
                         >
                           {v.name} ({v.minseats}–{v.maxseats})
                         </button>
@@ -404,6 +494,7 @@ export default function OperatorRouteDetailPage() {
                           }`}
                           title="Mark as preferred"
                           onClick={() => setPreferred(params.id, v.id)}
+                          disabled={!allowed}
                         >
                           ★
                         </button>
