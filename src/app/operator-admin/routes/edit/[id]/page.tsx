@@ -50,8 +50,18 @@ type RouteRow = {
   route_name: string | null;
   name: string | null;
   frequency: string | null;
-  pickup?: { id?: string; name: string; picture_url: string | null } | null;
-  destination?: { id?: string; name: string; picture_url: string | null } | null;
+  pickup?: {
+    id?: string;
+    name: string;
+    picture_url: string | null;
+    country_id?: string | null;
+  } | null; // ← from pickup_points
+  destination?: {
+    id?: string;
+    name: string;
+    picture_url: string | null;
+    country_id?: string | null;
+  } | null; // ← from destinations
   pickup_time: string | null;
   approx_duration_mins: number | null;
   approximate_distance_miles: number | null;
@@ -60,15 +70,28 @@ type RouteRow = {
 
 type JourneyType = { id: string; name: string };
 type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
-type Destination = { id: string; name: string; picture_url: string | null };
+type Country = { id: string; name: string };
+type Destination = {
+  id: string;
+  name: string;
+  picture_url: string | null;
+  country_id: string | null;
+  active?: boolean | null;
+};
+type PickupPoint = {
+  id: string;
+  name: string;
+  picture_url: string | null;
+  country_id: string;
+  active: boolean | null;
+};
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /* ───────────────────────── Page ───────────────────────── */
 export default function AdminRouteEditPage() {
-  // Absolute SSR guard: never attempt to render on the server
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined") return null; // hard SSR guard
 
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -88,14 +111,19 @@ export default function AdminRouteEditPage() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [types, setTypes] = useState<JourneyType[]>([]);
   const [rels, setRels] = useState<OperatorTypeRel[]>([]);
+
+  const [countries, setCountries] = useState<Country[]>([]);
   const [destinations, setDestinations] = useState<Destination[]>([]);
+  const [pickups, setPickups] = useState<PickupPoint[]>([]);
+  const [selectedCountryId, setSelectedCountryId] = useState<string>("");
+
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const isSiteAdmin = Boolean(psUser?.site_admin);
   const isReadOnly = !isSiteAdmin;
 
-  /* ps_user + lock operator context from ?op= or operator-admin user */
+  /* ps_user + operator lock (from ?op= or operator-admin) */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -113,22 +141,34 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups (journey types, operator type permissions, destinations) */
+  /* Lookups: countries, journey types, operator perms, all active destinations + pickups */
   useEffect(() => {
     if (!sb) return;
     (async () => {
-      const [tQ, relQ, dQ] = await Promise.all([
+      const [cQ, tQ, relQ, dQ, pQ] = await Promise.all([
+        sb.from("countries").select("id,name").order("name"),
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
-        sb.from("destinations").select("id,name,picture_url").order("name"),
+        sb
+          .from("destinations")
+          .select("id,name,picture_url,country_id,active")
+          .eq("active", true)
+          .order("name"),
+        sb
+          .from("pickup_points")
+          .select("id,name,picture_url,country_id,active")
+          .eq("active", true)
+          .order("name"),
       ]);
+      setCountries((cQ.data || []) as Country[]);
       setTypes((tQ.data || []) as JourneyType[]);
       setRels((relQ.data || []) as OperatorTypeRel[]);
       setDestinations((dQ.data || []) as Destination[]);
+      setPickups((pQ.data || []) as PickupPoint[]);
     })();
   }, []);
 
-  /* Initialize “new” shell (client) */
+  /* Init new vs. load existing route */
   useEffect(() => {
     if (!sb) return;
 
@@ -153,14 +193,17 @@ export default function AdminRouteEditPage() {
     let off = false;
     (async () => {
       setMsg(null);
+      // IMPORTANT: pickup joins pickup_points; destination joins destinations
       const [rQ, aQ] = await Promise.all([
         sb
           .from("routes")
-          .select(`
+          .select(
+            `
             id, route_name, name, frequency, pickup_time, approx_duration_mins, approximate_distance_miles, journey_type_id,
-            pickup:pickup_id ( id, name, picture_url ),
-            destination:destination_id ( id, name, picture_url )
-          `)
+            pickup:pickup_id ( id, name, picture_url, country_id ),
+            destination:destination_id ( id, name, picture_url, country_id )
+          `
+          )
           .eq("id", id)
           .single(),
         sb
@@ -174,7 +217,7 @@ export default function AdminRouteEditPage() {
       if (rQ.error || !rQ.data) setMsg(rQ.error?.message ?? "Route not found.");
       else {
         const row = rQ.data as any;
-        setRoute({
+        const nextRoute: RouteRow = {
           id: row.id,
           route_name: row.route_name ?? "",
           name: row.name ?? "",
@@ -184,13 +227,32 @@ export default function AdminRouteEditPage() {
           approximate_distance_miles: row.approximate_distance_miles ?? null,
           journey_type_id: row.journey_type_id ?? "",
           pickup: row.pickup
-            ? { id: row.pickup.id, name: row.pickup.name, picture_url: row.pickup.picture_url }
+            ? {
+                id: row.pickup.id,
+                name: row.pickup.name,
+                picture_url: row.pickup.picture_url,
+                country_id: row.pickup.country_id,
+              }
             : null,
           destination: row.destination
-            ? { id: row.destination.id, name: row.destination.name, picture_url: row.destination.picture_url }
+            ? {
+                id: row.destination.id,
+                name: row.destination.name,
+                picture_url: row.destination.picture_url,
+                country_id: row.destination.country_id,
+              }
             : null,
-        });
+        };
+        setRoute(nextRoute);
+
+        // infer country from pickup then destination if present
+        const inferred =
+          nextRoute.pickup?.country_id ||
+          nextRoute.destination?.country_id ||
+          "";
+        if (inferred) setSelectedCountryId(inferred);
       }
+
       if (aQ.data) setAssignments((aQ.data as Assignment[]) || []);
     })();
 
@@ -199,7 +261,7 @@ export default function AdminRouteEditPage() {
     };
   }, [id, isCreate, looksLikeUuid]);
 
-  /* Vehicles for locked operator (only when editing an existing route) */
+  /* Vehicles for operator (existing route only) */
   useEffect(() => {
     if (!sb || !operatorId || isCreate || !looksLikeUuid) return;
     let off = false;
@@ -237,10 +299,44 @@ export default function AdminRouteEditPage() {
 
   const assignmentAllowed = Boolean(route?.journey_type_id && opAllowedTypes.has(route.journey_type_id!));
 
+  const countryOptions = countries;
+
+  const pickupOptions = useMemo(
+    () =>
+      pickups.filter((p) =>
+        selectedCountryId ? p.country_id === selectedCountryId : true
+      ),
+    [pickups, selectedCountryId]
+  );
+
+  const destinationOptions = useMemo(
+    () =>
+      destinations.filter((d) =>
+        selectedCountryId ? d.country_id === selectedCountryId : true
+      ),
+    [destinations, selectedCountryId]
+  );
+
   /* Helpers */
   function setField<K extends keyof RouteRow>(key: K, val: RouteRow[K]) {
-    if (!isSiteAdmin) return; // read-only for operator admins
+    if (isReadOnly) return;
     setRoute((r) => (r ? { ...r, [key]: val } : r));
+  }
+
+  function onChangeCountry(nextCountryId: string) {
+    if (isReadOnly) return;
+    setSelectedCountryId(nextCountryId);
+    setRoute((r) =>
+      r
+        ? {
+            ...r,
+            pickup:
+              r.pickup && r.pickup.country_id !== nextCountryId ? null : r.pickup,
+            destination:
+              r.destination && r.destination.country_id !== nextCountryId ? null : r.destination,
+          }
+        : r
+    );
   }
 
   async function reloadAssignments() {
@@ -253,7 +349,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
-    if (isCreate || !looksLikeUuid || !isSiteAdmin) return;
+    if (isCreate || !looksLikeUuid || isReadOnly) return;
     try {
       if (!currentlyAssigned && !assignmentAllowed) {
         alert("This operator isn’t permitted to run the selected transport type.");
@@ -282,7 +378,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function setPreferred(routeId: string, vehicleId: string) {
-    if (isCreate || !looksLikeUuid || !isSiteAdmin) return;
+    if (isCreate || !looksLikeUuid || isReadOnly) return;
     try {
       if (!assignmentAllowed) {
         alert("Preferred vehicle blocked by transport type policy.");
@@ -310,7 +406,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function saveCore() {
-    if (!sb || !route || !isSiteAdmin) return;
+    if (!sb || !route || isReadOnly) return;
     try {
       setSaving(true);
       const payload: any = {
@@ -323,8 +419,8 @@ export default function AdminRouteEditPage() {
         journey_type_id: route.journey_type_id || null,
         is_active: true,
       };
-      if (route.pickup?.id) payload.pickup_id = route.pickup.id;
-      if (route.destination?.id) payload.destination_id = route.destination.id;
+      if (route.pickup?.id) payload.pickup_id = route.pickup.id; // ← pickup_points.id
+      if (route.destination?.id) payload.destination_id = route.destination.id; // ← destinations.id
 
       if (isCreate || !looksLikeUuid) {
         const { data, error } = await sb.from("routes").insert(payload).select("id").single();
@@ -377,7 +473,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.route_name || ""}
               onChange={(e) => setField("route_name", e.target.value)}
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
           <div>
@@ -386,7 +482,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.name || ""}
               onChange={(e) => setField("name", e.target.value)}
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
           <div>
@@ -395,43 +491,83 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.frequency || ""}
               onChange={(e) => setField("frequency", e.target.value)}
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
 
+          {/* Country → filters pickup & destination */}
           <div>
-            <div className="text-xs text-neutral-600 mb-1">Pickup</div>
+            <div className="text-xs text-neutral-600 mb-1">Country</div>
             <select
               className="w-full border rounded px-3 py-2"
-              value={route?.pickup?.id || ""}
-              onChange={(e) => {
-                const d = destinations.find((x) => x.id === e.target.value) || null;
-                setField("pickup", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
-              }}
-              disabled={!isSiteAdmin}
+              value={selectedCountryId}
+              onChange={(e) => onChangeCountry(e.target.value)}
+              disabled={isReadOnly}
             >
-              <option value="">— Select —</option>
-              {destinations.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
+              <option value="">— Select country —</option>
+              {countryOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
                 </option>
               ))}
             </select>
           </div>
 
+          {/* Pickup from pickup_points */}
           <div>
-            <div className="text-xs text-neutral-600 mb-1">Destination</div>
+            <div className="text-xs text-neutral-600 mb-1">Pickup (pickup_points)</div>
+            <select
+              className="w-full border rounded px-3 py-2"
+              value={route?.pickup?.id || ""}
+              onChange={(e) => {
+                const p = pickups.find((x) => x.id === e.target.value) || null;
+                setField(
+                  "pickup",
+                  p
+                    ? {
+                        id: p.id,
+                        name: p.name,
+                        picture_url: p.picture_url,
+                        country_id: p.country_id,
+                      }
+                    : null
+                );
+              }}
+              disabled={isReadOnly || !selectedCountryId}
+            >
+              <option value="">— Select —</option>
+              {pickupOptions.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Destination from destinations */}
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Destination (destinations)</div>
             <select
               className="w-full border rounded px-3 py-2"
               value={route?.destination?.id || ""}
               onChange={(e) => {
                 const d = destinations.find((x) => x.id === e.target.value) || null;
-                setField("destination", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
+                setField(
+                  "destination",
+                  d
+                    ? {
+                        id: d.id,
+                        name: d.name,
+                        picture_url: d.picture_url,
+                        country_id: d.country_id,
+                      }
+                    : null
+                );
               }}
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly || !selectedCountryId}
             >
               <option value="">— Select —</option>
-              {destinations.map((d) => (
+              {destinationOptions.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
@@ -446,7 +582,7 @@ export default function AdminRouteEditPage() {
               value={route?.pickup_time || ""}
               onChange={(e) => setField("pickup_time", e.target.value)}
               placeholder="e.g. 13:30"
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
 
@@ -457,9 +593,12 @@ export default function AdminRouteEditPage() {
               type="number"
               value={route?.approx_duration_mins ?? ""}
               onChange={(e) =>
-                setField("approx_duration_mins", e.target.value ? Number(e.target.value) : null)
+                setField(
+                  "approx_duration_mins",
+                  e.target.value ? Number(e.target.value) : null
+                )
               }
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
 
@@ -470,9 +609,12 @@ export default function AdminRouteEditPage() {
               type="number"
               value={route?.approximate_distance_miles ?? ""}
               onChange={(e) =>
-                setField("approximate_distance_miles", e.target.value ? Number(e.target.value) : null)
+                setField(
+                  "approximate_distance_miles",
+                  e.target.value ? Number(e.target.value) : null
+                )
               }
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             />
           </div>
 
@@ -482,7 +624,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.journey_type_id || ""}
               onChange={(e) => setField("journey_type_id", e.target.value)}
-              disabled={!isSiteAdmin}
+              disabled={isReadOnly}
             >
               <option value="">— Not set —</option>
               {types.map((t) => (
@@ -505,7 +647,7 @@ export default function AdminRouteEditPage() {
         )}
       </section>
 
-      {/* Visuals (only meaningful for existing routes) */}
+      {/* Visuals (existing route only) */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow overflow-hidden">
           <div className="grid grid-cols-2 gap-0">
@@ -539,7 +681,7 @@ export default function AdminRouteEditPage() {
         </section>
       )}
 
-      {/* Vehicle assignment (only when editing an existing route) */}
+      {/* Vehicle assignment */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
           {!operatorId ? (
@@ -564,13 +706,13 @@ export default function AdminRouteEditPage() {
                       key={v.id}
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
                         assigned ? "bg-black text-white border-black" : "bg-white"
-                      } ${!assignmentAllowed || !isSiteAdmin ? "opacity-50" : ""}`}
+                      } ${!assignmentAllowed || isReadOnly ? "opacity-50" : ""}`}
                       title={!assignmentAllowed ? "Not permitted for this transport type" : ""}
                     >
                       <button
                         className="outline-none disabled:opacity-60"
                         onClick={() => toggleAssign(id, v.id, assigned)}
-                        disabled={!assignmentAllowed || !isSiteAdmin}
+                        disabled={!assignmentAllowed || isReadOnly}
                         title={assigned ? "Unassign" : "Assign to route"}
                       >
                         {v.name} ({v.minseats}–{v.maxseats})
@@ -580,7 +722,7 @@ export default function AdminRouteEditPage() {
                           isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
                         }`}
                         onClick={() => setPreferred(id, v.id)}
-                        disabled={!assignmentAllowed || !isSiteAdmin}
+                        disabled={!assignmentAllowed || isReadOnly}
                         title="Mark as preferred"
                       >
                         ★
