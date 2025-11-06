@@ -2,10 +2,10 @@
 "use client";
 
 /* Force client rendering and disable all caching for this route */
-export const dynamic = "force-dynamic" as const;
-export const revalidate = 0 as const;            // must be a literal number or false
-export const fetchCache = "force-no-store" as const;
-export const dynamicParams = true as const;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;              // must be a literal number or false
+export const fetchCache = "force-no-store";
+export const dynamicParams = true;
 
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
@@ -81,7 +81,7 @@ export default function AdminRouteEditPage() {
   const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
 
-  /* During the server render for /edit/new, return a minimal shell */
+  // During the server render for /edit/new, return a minimal shell
   if (typeof window === "undefined" && isCreate) {
     return (
       <div className="p-4">
