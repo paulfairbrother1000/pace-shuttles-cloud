@@ -1,5 +1,12 @@
 "use client";
 
+// Avoid any Server Components pre-rendering / caching surprises
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
+import Image from "next/image";
+import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
@@ -19,292 +26,552 @@ const sb =
 type UUID = string;
 type PsUser = {
   id: UUID;
-  first_name?: string | null;
   site_admin?: boolean | null;
   operator_admin?: boolean | null;
   operator_id?: string | null;
   operator_name?: string | null;
 };
 
-type Operator = { id: UUID; name: string; country_id?: string | null };
-type JourneyType = { id: UUID; name: string };
+type Vehicle = {
+  id: UUID;
+  name: string;
+  minseats: number | string;
+  maxseats: number | string;
+  active: boolean | null;
+  operator_id: string | null;
+};
+
+type Assignment = {
+  route_id: string;
+  vehicle_id: string;
+  is_active: boolean;
+  preferred: boolean;
+};
 
 type RouteRow = {
   id: UUID;
   route_name: string | null;
   name: string | null;
   frequency: string | null;
+  pickup?: { id?: string; name: string; picture_url: string | null } | null;
+  destination?: { id?: string; name: string; picture_url: string | null } | null;
+  pickup_time: string | null;
+  approx_duration_mins: number | null;
+  approximate_distance_miles: number | null;
   journey_type_id: string | null;
-  country_id: string | null; // ← needed for per-operator country filter
-  pickup?: { name: string; picture_url: string | null } | null;
-  destination?: { name: string; picture_url: string | null } | null;
 };
 
+type JourneyType = { id: string; name: string };
 type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
+type Destination = { id: string; name: string; picture_url: string | null };
 
-const ALL = "__ALL__";
+export default function AdminRouteEditPage() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const search = useSearchParams();
+  const isCreate = params.id === "new";
+  const opFromQuery = search.get("op") || "";
 
-export default function AdminRoutesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
+  const [operatorId, setOperatorId] = useState<string>("");
+  const isSiteAdmin = Boolean(psUser?.site_admin);
+  const isReadOnly = !isSiteAdmin;
 
-  const [operators, setOperators] = useState<Operator[]>([]);
+  const [route, setRoute] = useState<RouteRow | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [types, setTypes] = useState<JourneyType[]>([]);
   const [rels, setRels] = useState<OperatorTypeRel[]>([]);
-  const [rows, setRows] = useState<RouteRow[]>([]);
+  const [destinations, setDestinations] = useState<Destination[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState("");
-  const [operatorId, setOperatorId] = useState<string>("");
-
-  const isSiteAdmin = Boolean(psUser?.site_admin);
-  const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id && !isSiteAdmin);
-
-  // Load user & default operator selection
+  /* ps_user + operator context */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
       const u = raw ? (JSON.parse(raw) as PsUser) : null;
       setPsUser(u);
-      if (u?.site_admin) setOperatorId(ALL);
-      else if (u?.operator_admin && u.operator_id) setOperatorId(u.operator_id);
-      else setOperatorId(ALL);
+      const locked =
+        opFromQuery || (u?.operator_admin && u.operator_id)
+          ? (opFromQuery || u!.operator_id!)
+          : "";
+      setOperatorId(locked);
     } catch {
       setPsUser(null);
-      setOperatorId(ALL);
+      setOperatorId(opFromQuery || "");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Lookups + routes
+  /* Lookups */
   useEffect(() => {
+    if (!sb) return;
+    (async () => {
+      const [tQ, relQ, dQ] = await Promise.all([
+        sb.from("journey_types").select("id,name").order("name"),
+        sb.from("operator_transport_types").select("operator_id,journey_type_id"),
+        sb.from("destinations").select("id,name,picture_url").order("name"),
+      ]);
+      setTypes((tQ.data || []) as JourneyType[]);
+      setRels((relQ.data || []) as OperatorTypeRel[]);
+      setDestinations((dQ.data || []) as Destination[]);
+    })();
+  }, []);
+
+  /* Route + assignments */
+  useEffect(() => {
+    if (!sb) return;
+    if (isCreate) {
+      setRoute({
+        id: "new" as any,
+        route_name: "",
+        name: "",
+        frequency: "",
+        pickup: null,
+        destination: null,
+        pickup_time: "",
+        approx_duration_mins: null,
+        approximate_distance_miles: null,
+        journey_type_id: "",
+      });
+      setAssignments([]);
+      return;
+    }
     let off = false;
     (async () => {
-      if (!sb) {
-        setErr("Supabase client is not configured.");
-        setLoading(false);
-        return;
+      const [rQ, aQ] = await Promise.all([
+        sb
+          .from("routes")
+          .select(`
+            id, route_name, name, frequency, pickup_time, approx_duration_mins, approximate_distance_miles, journey_type_id,
+            pickup:pickup_id ( id, name, picture_url ),
+            destination:destination_id ( id, name, picture_url )
+          `)
+          .eq("id", params.id)
+          .single(),
+        sb
+          .from("route_vehicle_assignments")
+          .select("route_id,vehicle_id,is_active,preferred")
+          .eq("is_active", true),
+      ]);
+      if (off) return;
+      if (rQ.error || !rQ.data) setMsg(rQ.error?.message ?? "Route not found.");
+      else {
+        const row = rQ.data as any;
+        setRoute({
+          id: row.id,
+          route_name: row.route_name ?? "",
+          name: row.name ?? "",
+          frequency: row.frequency ?? "",
+          pickup_time: row.pickup_time ?? "",
+          approx_duration_mins: row.approx_duration_mins ?? null,
+          approximate_distance_miles: row.approximate_distance_miles ?? null,
+          journey_type_id: row.journey_type_id ?? "",
+          pickup: row.pickup
+            ? { id: row.pickup.id, name: row.pickup.name, picture_url: row.pickup.picture_url }
+            : null,
+          destination: row.destination
+            ? { id: row.destination.id, name: row.destination.name, picture_url: row.destination.picture_url }
+            : null,
+        });
       }
-      setLoading(true);
-      setErr(null);
-      try {
-        const [opsQ, typesQ, relsQ, routesQ] = await Promise.all([
-          sb.from("operators").select("id,name,country_id").order("name"),
-          sb.from("journey_types").select("id,name").order("name"),
-          sb.from("operator_transport_types").select("operator_id,journey_type_id"),
-          sb
-            .from("routes")
-            .select(`
-              id, route_name, name, frequency, journey_type_id, country_id,
-              pickup:pickup_id ( name, picture_url ),
-              destination:destination_id ( name, picture_url )
-            `)
-            .eq("is_active", true)
-            .order("created_at", { ascending: false }),
-        ]);
+      if (aQ.data) setAssignments((aQ.data as Assignment[]) || []);
+    })();
+    return () => {
+      off = true;
+    };
+  }, [params.id, isCreate]);
 
-        if (opsQ.error) throw opsQ.error;
-        if (typesQ.error) throw typesQ.error;
-        if (relsQ.error) throw relsQ.error;
-        if (routesQ.error) throw routesQ.error;
-
-        if (off) return;
-
-        setOperators((opsQ.data || []) as Operator[]);
-        setTypes((typesQ.data || []) as JourneyType[]);
-        setRels((relsQ.data || []) as OperatorTypeRel[]);
-        setRows(((routesQ.data as any[]) || []).map((r) => ({
-          id: r.id,
-          route_name: r.route_name ?? null,
-          name: r.name ?? null,
-          frequency: r.frequency ?? null,
-          journey_type_id: r.journey_type_id ?? null,
-          country_id: r.country_id ?? null,
-          pickup: r.pickup ? { name: r.pickup.name, picture_url: r.pickup.picture_url } : null,
-          destination: r.destination ? { name: r.destination.name, picture_url: r.destination.picture_url } : null,
-        })));
-      } catch (e: any) {
-        if (!off) setErr(e?.message ?? String(e));
-      } finally {
-        if (!off) setLoading(false);
+  /* Operator vehicles */
+  useEffect(() => {
+    if (!sb || !operatorId || isCreate) return;
+    let off = false;
+    (async () => {
+      const { data, error } = await sb
+        .from("vehicles")
+        .select("id,name,minseats,maxseats,active,operator_id")
+        .eq("operator_id", operatorId)
+        .eq("active", true)
+        .order("name");
+      if (!off) {
+        if (error) setMsg(error.message);
+        setVehicles((data as Vehicle[]) || []);
       }
     })();
     return () => {
       off = true;
     };
-  }, []);
+  }, [operatorId, isCreate]);
 
-  const jtName = (id: string | null) =>
-    types.find((t) => t.id === id)?.name ?? "—";
+  const assignedForThisRoute = useMemo(() => {
+    if (isCreate) return [];
+    const ids = new Set(vehicles.map((v) => v.id));
+    return assignments.filter((a) => a.route_id === params.id && ids.has(a.vehicle_id));
+  }, [assignments, vehicles, params.id, isCreate]);
 
-  const selectedOperator = useMemo(
-    () => (operatorId && operatorId !== ALL ? operators.find((o) => o.id === operatorId) || null : null),
-    [operators, operatorId]
-  );
+  const preferred = assignedForThisRoute.find((a) => a.preferred);
+  const assignedIds = new Set(assignedForThisRoute.map((a) => a.vehicle_id));
 
-  const allowedTypeIds = useMemo(() => {
-    if (!operatorId || operatorId === ALL) return new Set<string>();
+  const opAllowedTypes = useMemo(() => {
+    if (!operatorId) return new Set<string>();
     return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id));
   }, [rels, operatorId]);
 
-  // Core filter:
-  // - Site Admin + ALL → no op-based filters
-  // - Site Admin + specific operator → filter to operator's country + allowed types
-  // - Operator Admin (locked to their operator) → same filter
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    let base = rows;
+  const assignmentAllowed = Boolean(route?.journey_type_id && opAllowedTypes.has(route.journey_type_id!));
 
-    const previewingOperator = (isSiteAdmin && operatorId && operatorId !== ALL) || isOpAdmin;
-    if (previewingOperator && selectedOperator) {
-      const countryId = selectedOperator.country_id ?? null;
-      base = base.filter((r) => {
-        const typeOk = r.journey_type_id ? allowedTypeIds.has(r.journey_type_id) : false;
-        const countryOk = countryId ? r.country_id === countryId : true; // if operator has no country, don't hide everything
-        return typeOk && countryOk;
-      });
-    }
-
-    if (!s) return base;
-    return base.filter((r) =>
-      `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`
-        .toLowerCase()
-        .includes(s)
-    );
-  }, [rows, q, isSiteAdmin, isOpAdmin, operatorId, selectedOperator, allowedTypeIds]);
-
-  // Show the New Route button?
-  // - Site Admin + ALL → show button
-  // - Site Admin + specific operator → hide (because you’re previewing operator’s view)
-  // - Operator Admin → never show
-  const showNewButton = isSiteAdmin && operatorId === ALL;
-
-  function goNew() {
-    // Creating a route does not require an operator context (assignments happen later).
-    window.location.href = `/admin/routes/edit/new`;
+  /* Helpers */
+  function setField<K extends keyof RouteRow>(key: K, val: RouteRow[K]) {
+    if (isReadOnly) return;
+    setRoute((r) => (r ? { ...r, [key]: val } : r));
   }
 
-  const subtitle = isSiteAdmin
-    ? operatorId === ALL
-      ? "All operators. Create routes, then assign to operators on the edit screen."
-      : "Previewing this operator’s view (no create)."
-    : "Read-only (Operator Admin).";
+  async function reloadAssignments() {
+    if (isCreate) return;
+    const { data, error } = await sb!
+      .from("route_vehicle_assignments")
+      .select("route_id,vehicle_id,is_active,preferred")
+      .eq("is_active", true);
+    if (!error) setAssignments((data as Assignment[]) || []);
+  }
+
+  async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
+    if (isCreate || isReadOnly) return;
+    try {
+      if (!currentlyAssigned && !assignmentAllowed) {
+        alert("This operator isn’t permitted to run the selected transport type.");
+        return;
+      }
+      if (currentlyAssigned) {
+        const { error } = await sb!
+          .from("route_vehicle_assignments")
+          .update({ is_active: false, preferred: false })
+          .eq("route_id", routeId)
+          .eq("vehicle_id", vehicleId);
+        if (error) throw error;
+      } else {
+        const { error } = await sb!
+          .from("route_vehicle_assignments")
+          .upsert(
+            { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: false },
+            { onConflict: "route_id,vehicle_id" }
+          );
+        if (error) throw error;
+      }
+      await reloadAssignments();
+    } catch (e: any) {
+      alert(e.message ?? "Unable to update");
+    }
+  }
+
+  async function setPreferred(routeId: string, vehicleId: string) {
+    if (isCreate || isReadOnly) return;
+    try {
+      if (!assignmentAllowed) {
+        alert("Preferred vehicle blocked by transport type policy.");
+        return;
+      }
+      const { error: clearErr } = await sb!
+        .from("route_vehicle_assignments")
+        .update({ preferred: false })
+        .eq("route_id", routeId)
+        .eq("preferred", true);
+      if (clearErr) throw clearErr;
+
+      const { error: upErr } = await sb!
+        .from("route_vehicle_assignments")
+        .upsert(
+          { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: true },
+          { onConflict: "route_id,vehicle_id" }
+        );
+      if (upErr) throw upErr;
+
+      await reloadAssignments();
+    } catch (e: any) {
+      alert(e.message ?? "Unable to set preferred");
+    }
+  }
+
+  async function saveCore() {
+    if (!sb || !route || !isSiteAdmin) return;
+    try {
+      setSaving(true);
+      const payload: any = {
+        route_name: route.route_name || null,
+        name: route.name || null,
+        frequency: route.frequency || null,
+        pickup_time: route.pickup_time || null,
+        approx_duration_mins: route.approx_duration_mins ?? null,
+        approximate_distance_miles: route.approximate_distance_miles ?? null,
+        journey_type_id: route.journey_type_id || null,
+      };
+      if (route.pickup?.id) payload.pickup_id = route.pickup.id;
+      if (route.destination?.id) payload.destination_id = route.destination.id;
+
+      if (isCreate) {
+        const { data, error } = await sb
+          .from("routes")
+          .insert({ ...payload, is_active: true })
+          .select("id")
+          .single();
+        if (error) throw error;
+        router.push(`/admin/routes/edit/${data.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`);
+      } else {
+        const { error } = await sb.from("routes").update(payload).eq("id", route.id);
+        if (error) throw error;
+      }
+    } catch (e: any) {
+      alert(e.message ?? "Unable to save.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
-    <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-5">
-      <header className="flex flex-wrap items-center gap-3 justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Admin • Routes</h1>
-          <p className="text-neutral-600 text-sm">{subtitle}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {!isOpAdmin ? (
+    <div className="p-4 space-y-5">
+      <div className="flex items-center gap-2">
+        <button
+          className="rounded-full border px-3 py-1.5 text-sm"
+          onClick={() => router.push("/admin/routes")}
+        >
+          ← Back
+        </button>
+        <h1 className="text-2xl font-semibold">
+          {isCreate
+            ? "New Route"
+            : route
+            ? `${route.pickup?.name ?? "—"} → ${route.destination?.name ?? "—"}`
+            : "Route"}
+        </h1>
+      </div>
+
+      {msg && <div className="text-sm text-red-600">{msg}</div>}
+
+      {/* Core editor */}
+      <section className="rounded-2xl border bg-white shadow p-4 space-y-3">
+        {!isSiteAdmin && (
+          <div className="text-sm text-neutral-600">Read-only (Operator Admin).</div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Route name (internal)</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={route?.route_name || ""}
+              onChange={(e) => setField("route_name", e.target.value)}
+              disabled={isReadOnly}
+            />
+          </div>
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Display name</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={route?.name || ""}
+              onChange={(e) => setField("name", e.target.value)}
+              disabled={isReadOnly}
+            />
+          </div>
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Frequency</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={route?.frequency || ""}
+              onChange={(e) => setField("frequency", e.target.value)}
+              disabled={isReadOnly}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Pickup</div>
             <select
-              className="border rounded-lg px-3 py-2 text-sm"
-              value={operatorId}
-              onChange={(e) => setOperatorId(e.target.value)}
-              title="Filter / preview by operator"
+              className="w-full border rounded px-3 py-2"
+              value={route?.pickup?.id || ""}
+              onChange={(e) => {
+                const d = destinations.find((x) => x.id === e.target.value) || null;
+                setField("pickup", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
+              }}
+              disabled={isReadOnly}
             >
-              <option value={ALL}>All operators</option>
               <option value="">— Select —</option>
-              {operators.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
+              {destinations.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
                 </option>
               ))}
             </select>
-          ) : (
-            <div className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm bg-neutral-50">
-              <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
-              {psUser?.operator_name || psUser?.operator_id}
-            </div>
-          )}
-
-          <input
-            className="border rounded-lg px-3 py-2 text-sm w-64"
-            placeholder="Search routes…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          {showNewButton && (
-            <button
-              className="rounded-full px-4 py-2 text-white text-sm"
-              style={{ backgroundColor: "#2563eb" }}
-              onClick={goNew}
-              title="Create a new route"
-            >
-              New route
-            </button>
-          )}
-        </div>
-      </header>
-
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
-          {err}
-        </div>
-      )}
-
-      <section>
-        {loading ? (
-          <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-        ) : filtered.length === 0 ? (
-          <div className="p-4 border rounded-xl bg-white shadow">No routes found.</div>
-        ) : (
-          <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Optional “New” tile ONLY in Site Admin + ALL view */}
-            {showNewButton && (
-              <button
-                onClick={goNew}
-                className="h-[260px] rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden flex items-center justify-center"
-                title="Create a new route"
-              >
-                <span className="text-blue-600 font-medium">+ New Route</span>
-              </button>
-            )}
-
-            {filtered.map((r) => {
-              const pImg = publicImage(r.pickup?.picture_url) || "";
-              const dImg = publicImage(r.destination?.picture_url) || "";
-              const line = `${r.pickup?.name ?? "—"} → ${r.destination?.name ?? "—"}`;
-              const tName = jtName(r.journey_type_id);
-              const opCtx = isSiteAdmin && operatorId !== ALL ? operatorId : ""; // pass operator context only when previewing
-
-              return (
-                <article
-                  key={r.id}
-                  className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden cursor-pointer"
-                  onClick={() =>
-                    (window.location.href = `/admin/routes/edit/${r.id}${opCtx ? `?op=${encodeURIComponent(opCtx)}` : ""}`)
-                  }
-                  title={isSiteAdmin && operatorId === ALL ? "Edit route" : "View route"}
-                >
-                  <div className="grid grid-cols-2 h-[150px] w-full overflow-hidden">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={pImg || "/placeholder.png"} alt="Pickup" className="w-full h-full object-cover" />
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={dImg || "/placeholder.png"} alt="Destination" className="w-full h-full object-cover" />
-                  </div>
-
-                  <div className="p-3">
-                    <div className="font-medium">{line}</div>
-                    <div className="text-xs text-neutral-600">
-                      {(r.route_name || r.name || "").trim() || line}
-                    </div>
-                    <div className="mt-2 flex gap-2 items-center">
-                      <span className="inline-block text-xs px-2 py-0.5 rounded-full border border-neutral-300 text-neutral-600">
-                        {r.frequency || "—"}
-                      </span>
-                      <span className="inline-block text-xs px-2 py-0.5 rounded-full border border-blue-300 text-blue-700">
-                        {tName}
-                      </span>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
           </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Destination</div>
+            <select
+              className="w-full border rounded px-3 py-2"
+              value={route?.destination?.id || ""}
+              onChange={(e) => {
+                const d = destinations.find((x) => x.id === e.target.value) || null;
+                setField("destination", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
+              }}
+              disabled={isReadOnly}
+            >
+              <option value="">— Select —</option>
+              {destinations.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Pickup time (local)</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={route?.pickup_time || ""}
+              onChange={(e) => setField("pickup_time", e.target.value)}
+              placeholder="e.g. 13:30"
+              disabled={isReadOnly}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Duration (mins)</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              type="number"
+              value={route?.approx_duration_mins ?? ""}
+              onChange={(e) => setField("approx_duration_mins", e.target.value ? Number(e.target.value) : null)}
+              disabled={isReadOnly}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Distance (miles)</div>
+            <input
+              className="w-full border rounded px-3 py-2"
+              type="number"
+              value={route?.approximate_distance_miles ?? ""}
+              onChange={(e) => setField("approximate_distance_miles", e.target.value ? Number(e.target.value) : null)}
+              disabled={isReadOnly}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-neutral-600 mb-1">Transport type</div>
+            <select
+              className="w-full border rounded px-3 py-2"
+              value={route?.journey_type_id || ""}
+              onChange={(e) => setField("journey_type_id", e.target.value)}
+              disabled={isReadOnly}
+            >
+              <option value="">— Not set —</option>
+              {types.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {isSiteAdmin && (
+          <button
+            className="rounded-full px-4 py-2 bg-blue-600 text-white disabled:opacity-60"
+            onClick={saveCore}
+            disabled={saving}
+          >
+            {isCreate ? "Create route" : "Save changes"}
+          </button>
         )}
       </section>
+
+      {/* Visuals */}
+      {!isCreate && (
+        <section className="rounded-2xl border bg-white shadow overflow-hidden">
+          <div className="grid grid-cols-2 gap-0">
+            <div className="relative aspect-[16/7]">
+              {publicImage(route?.pickup?.picture_url) ? (
+                <Image
+                  src={publicImage(route?.pickup?.picture_url)!}
+                  alt={route?.pickup?.name || "Pickup"}
+                  fill
+                  unoptimized
+                  className="object-cover"
+                />
+              ) : (
+                <div className="absolute inset-0 bg-neutral-100" />
+              )}
+            </div>
+            <div className="relative aspect-[16/7]">
+              {publicImage(route?.destination?.picture_url) ? (
+                <Image
+                  src={publicImage(route?.destination?.picture_url)!}
+                  alt={route?.destination?.name || "Destination"}
+                  fill
+                  unoptimized
+                  className="object-cover"
+                />
+              ) : (
+                <div className="absolute inset-0 bg-neutral-100" />
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Vehicle assignments */}
+      {!isCreate && (
+        <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
+          {!operatorId ? (
+            <div className="text-sm text-neutral-500">
+              No operator selected. Open this page from the routes list (which sets the operator context).
+            </div>
+          ) : vehicles.length === 0 ? (
+            <div className="text-sm text-neutral-500">No active vehicles for this operator.</div>
+          ) : (
+            <>
+              {!assignmentAllowed && (
+                <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                  This operator isn’t permitted to run the selected transport type.
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {vehicles.map((v) => {
+                  const assigned = assignedIds.has(v.id);
+                  const isPref = preferred?.vehicle_id === v.id;
+                  return (
+                    <div
+                      key={v.id}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
+                        assigned ? "bg-black text-white border-black" : "bg-white"
+                      } ${!assignmentAllowed || isReadOnly ? "opacity-50" : ""}`}
+                      title={!assignmentAllowed ? "Not permitted for this transport type" : ""}
+                    >
+                      <button
+                        className="outline-none disabled:opacity-60"
+                        onClick={() => toggleAssign(params.id, v.id, assigned)}
+                        disabled={!assignmentAllowed || isReadOnly}
+                        title={assigned ? "Unassign" : "Assign to route"}
+                      >
+                        {v.name} ({v.minseats}–{v.maxseats})
+                      </button>
+                      <button
+                        className={`rounded-full border px-2 py-0.5 text-xs ${
+                          isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
+                        }`}
+                        onClick={() => setPreferred(params.id, v.id)}
+                        disabled={!assignmentAllowed || isReadOnly}
+                        title="Mark as preferred"
+                      >
+                        ★
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </section>
+      )}
     </div>
   );
 }

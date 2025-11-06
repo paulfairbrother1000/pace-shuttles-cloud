@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* Supabase */
+/* Supabase (client) */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -59,12 +59,12 @@ export default function AdminRoutesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [operatorId, setOperatorId] = useState<string>("");
-  const [countryFilter, setCountryFilter] = useState<string>(ALL); // site admin only
+  const [countryFilter, setCountryFilter] = useState<string>(ALL);
 
   const isSiteAdmin = Boolean(psUser?.site_admin);
   const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id && !isSiteAdmin);
 
-  // Load user & default operator selection
+  /* Load user & default operator selection */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -79,7 +79,7 @@ export default function AdminRoutesPage() {
     }
   }, []);
 
-  // Lookups + routes
+  /* Lookups + routes */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -156,15 +156,12 @@ export default function AdminRoutesPage() {
     return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id));
   }, [rels, operatorId]);
 
-  // Distinct countries that actually have routes (for site-admin filter)
   const countriesWithRoutes = useMemo(() => {
     const ids = new Set(rows.map((r) => r.country_id).filter(Boolean) as string[]);
     return countries.filter((c) => ids.has(c.id));
   }, [rows, countries]);
 
-  // Core filter:
-  // - Site Admin + specific operator OR Operator Admin → filter by that operator’s country AND allowed journey types.
-  // - Site Admin + All operators → no op-based filter; optional countryFilter applies.
+  /* Core filter */
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     let base = rows;
@@ -189,7 +186,7 @@ export default function AdminRoutesPage() {
     );
   }, [rows, q, isSiteAdmin, isOpAdmin, operatorId, selectedOperator, allowedTypeIds, countryFilter]);
 
-  // New Route button: ALWAYS for site admin, NEVER for operator admin
+  /* New Route button: ALWAYS for site admin, NEVER for operator admin */
   const showNewButton = isSiteAdmin;
 
   const subtitle = isSiteAdmin
@@ -235,7 +232,7 @@ export default function AdminRoutesPage() {
               value={countryFilter}
               onChange={(e) => setCountryFilter(e.target.value)}
               title="Filter by country (routes with data)"
-              disabled={operatorId !== ALL} // when previewing an operator, their country applies
+              disabled={operatorId !== ALL}
             >
               <option value={ALL}>All countries</option>
               {countriesWithRoutes.map((c) => (
@@ -257,6 +254,7 @@ export default function AdminRoutesPage() {
           {/* New Route */}
           {showNewButton && (
             <Link
+              prefetch={false}
               href="/admin/routes/edit/new"
               className="rounded-full px-4 py-2 text-white text-sm"
               style={{ backgroundColor: "#2563eb" }}
@@ -281,8 +279,6 @@ export default function AdminRoutesPage() {
           <div className="p-4 border rounded-xl bg-white shadow">No routes found.</div>
         ) : (
           <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Optional “New” tile removed since button is always present for Site Admin */}
-
             {filtered.map((r) => {
               const pImg = publicImage(r.pickup?.picture_url) || "";
               const dImg = publicImage(r.destination?.picture_url) || "";
@@ -295,6 +291,7 @@ export default function AdminRoutesPage() {
               return (
                 <Link
                   key={r.id}
+                  prefetch={false}
                   href={`/admin/routes/edit/${r.id}${opCtx}`}
                   className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden"
                   title={isSiteAdmin ? "Edit route" : "View route"}
