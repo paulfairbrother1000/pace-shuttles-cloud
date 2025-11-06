@@ -35,8 +35,18 @@ type PsUser = {
 };
 
 type Country = { id: UUID; name: string };
-type PickupPoint = { id: UUID; name: string; country_id: UUID; picture_url: string | null };
-type Destination = { id: UUID; name: string; country_id: UUID | null; picture_url: string | null };
+type PickupPoint = {
+  id: UUID;
+  name: string;
+  country_id: UUID;
+  picture_url: string | null;
+};
+type Destination = {
+  id: UUID;
+  name: string;
+  country_id: UUID | null;
+  picture_url: string | null;
+};
 
 type JourneyType = { id: string; name: string };
 type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
@@ -63,8 +73,18 @@ type RouteRow = {
   route_name: string | null;
   name: string | null;
   frequency: string | null;
-  pickup?: { id?: string; name: string; picture_url: string | null } | null;
-  destination?: { id?: string; name: string; picture_url: string | null } | null;
+  pickup?: {
+    id?: string;
+    name: string;
+    picture_url: string | null;
+    country_id?: UUID | null;
+  } | null;
+  destination?: {
+    id?: string;
+    name: string;
+    picture_url: string | null;
+    country_id?: UUID | null;
+  } | null;
   pickup_time: string | null;
   approx_duration_mins: number | null;
   approximate_distance_miles: number | null;
@@ -144,7 +164,11 @@ export default function AdminRouteEditPage() {
       const [cQ, pQ, dQ, tQ, relQ] = await Promise.all([
         sb.from("countries").select("id,name").order("name"),
         sb.from("pickup_points").select("id,name,country_id,picture_url").order("name"),
-        sb.from("destinations").select("id,name,country_id,picture_url").eq("active", true).order("name"),
+        sb
+          .from("destinations")
+          .select("id,name,country_id,picture_url")
+          .eq("active", true)
+          .order("name"),
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
       ]);
@@ -187,11 +211,13 @@ export default function AdminRouteEditPage() {
       const [rQ, aQ] = await Promise.all([
         sb
           .from("routes")
-          .select(`
+          .select(
+            `
             id, country_id, route_name, name, frequency, pickup_time, approx_duration_mins, approximate_distance_miles, journey_type_id,
-            pickup:pickup_id ( id, name, picture_url ),
-            destination:destination_id ( id, name, picture_url )
-          `)
+            pickup:pickup_id ( id, name, picture_url, country_id ),
+            destination:destination_id ( id, name, picture_url, country_id )
+          `
+          )
           .eq("id", id)
           .single(),
         sb
@@ -205,7 +231,7 @@ export default function AdminRouteEditPage() {
       if (rQ.error || !rQ.data) setMsg(rQ.error?.message ?? "Route not found.");
       else {
         const row = rQ.data as any;
-        setRoute({
+        const nextRoute: RouteRow = {
           id: row.id,
           country_id: row.country_id ?? null,
           route_name: row.route_name ?? "",
@@ -216,13 +242,31 @@ export default function AdminRouteEditPage() {
           approximate_distance_miles: row.approximate_distance_miles ?? null,
           journey_type_id: row.journey_type_id ?? "",
           pickup: row.pickup
-            ? { id: row.pickup.id, name: row.pickup.name, picture_url: row.pickup.picture_url }
+            ? {
+                id: row.pickup.id,
+                name: row.pickup.name,
+                picture_url: row.pickup.picture_url,
+                country_id: row.pickup.country_id ?? null,
+              }
             : null,
           destination: row.destination
-            ? { id: row.destination.id, name: row.destination.name, picture_url: row.destination.picture_url }
+            ? {
+                id: row.destination.id,
+                name: row.destination.name,
+                picture_url: row.destination.picture_url,
+                country_id: row.destination.country_id ?? null,
+              }
             : null,
-        });
-        setCountryId(row.country_id ?? "");
+        };
+        setRoute(nextRoute);
+
+        // Prefer explicit route.country_id; otherwise derive from pickup/destination
+        const derivedCountryId =
+          nextRoute.country_id ||
+          (nextRoute.pickup?.country_id as string | undefined) ||
+          (nextRoute.destination?.country_id as string | undefined) ||
+          "";
+        setCountryId(derivedCountryId);
       }
       if (aQ.data) setAssignments((aQ.data as Assignment[]) || []);
     })();
@@ -463,7 +507,10 @@ export default function AdminRouteEditPage() {
               value={route?.pickup?.id || ""}
               onChange={(e) => {
                 const d = pickups.find((x) => x.id === e.target.value) || null;
-                setField("pickup", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
+                setField(
+                  "pickup",
+                  d ? { id: d.id, name: d.name, picture_url: d.picture_url, country_id: d.country_id } : null
+                );
               }}
               disabled={isReadOnly || !countryId}
             >
@@ -483,7 +530,10 @@ export default function AdminRouteEditPage() {
               value={route?.destination?.id || ""}
               onChange={(e) => {
                 const d = destinations.find((x) => x.id === e.target.value) || null;
-                setField("destination", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
+                setField(
+                  "destination",
+                  d ? { id: d.id, name: d.name, picture_url: d.picture_url, country_id: d.country_id } : null
+                );
               }}
               disabled={isReadOnly || !countryId}
             >

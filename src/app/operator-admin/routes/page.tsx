@@ -1,35 +1,38 @@
-// src/app/operator-admin/routes/page.tsx
+/* --- src/app/operator-admin/routes/page.tsx --- */
 "use client";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+export const dynamicParams = true;
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient, SupabaseClient } from "@supabase/ssr";
+import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
 
-type PsUser = {
-  id: string;
-  site_admin?: boolean | null;
-  operator_admin?: boolean | null;
-  operator_id?: string | null;
-  operator_name?: string | null;
-};
+/* Types */
+type UUID = string;
 
-type RouteTile = {
-  id: string;
-  country_id: string | null;
+type RouteRow = {
+  id: UUID;
+  name: string | null;
+  route_name: string | null;
   frequency: string | null;
   pickup_time: string | null;
   approx_duration_mins: number | null;
-  journey_type_id: string | null;
-  pickup: { id: string; name: string; picture_url: string | null } | null;
-  destination: { id: string; name: string; picture_url: string | null } | null;
+  journey_type_id: UUID | null;
+  pickup?: { id: UUID; name: string; picture_url: string | null; country_id: UUID | null } | null;
+  destination?: { id: UUID; name: string; picture_url: string | null; country_id: UUID | null } | null;
 };
 
-type JourneyType = { id: string; name: string };
-type Country = { id: string; name: string };
+type JourneyType = { id: UUID; name: string };
+type Country = { id: UUID; name: string };
 
+/* Helpers */
 const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
 
-export default function OperatorRoutesIndex() {
+export default function RoutesIndex() {
+  /* safe client */
   const sb: SupabaseClient | null =
     typeof window !== "undefined" &&
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -41,55 +44,42 @@ export default function OperatorRoutesIndex() {
       : null;
   if (!sb) return null;
 
-  const [psUser, setPsUser] = useState<PsUser | null>(null);
-  const [rows, setRows] = useState<RouteTile[]>([]);
   const [countries, setCountries] = useState<Country[]>([]);
   const [types, setTypes] = useState<JourneyType[]>([]);
+  const [rows, setRows] = useState<RouteRow[]>([]);
   const [q, setQ] = useState("");
+  const [countryId, setCountryId] = useState("");
+  const [typeId, setTypeId] = useState("");
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
-
-  const operatorLocked = !!(psUser?.operator_admin && psUser.operator_id);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("ps_user");
-      const u = raw ? (JSON.parse(raw) as PsUser) : null;
-      setPsUser(u || null);
-    } catch {}
-  }, []);
 
   useEffect(() => {
     let off = false;
     (async () => {
       setLoading(true);
-
-      // countries + types (for chips)
-      const [cQ, tQ] = await Promise.all([
+      const [cQ, tQ, rQ] = await Promise.all([
         sb.from("countries").select("id,name").order("name"),
         sb.from("journey_types").select("id,name").order("name"),
-      ]);
-      setCountries((cQ.data || []) as Country[]);
-      setTypes((tQ.data || []) as JourneyType[]);
-
-      // routes list
-      const rQ = await sb
-        .from("routes")
-        .select(
+        sb
+          .from("routes")
+          .select(
+            `
+            id, name, route_name, frequency, pickup_time, approx_duration_mins, journey_type_id,
+            pickup:pickup_id ( id, name, picture_url, country_id ),
+            destination:destination_id ( id, name, picture_url, country_id )
           `
-          id, country_id, frequency, pickup_time, approx_duration_mins, journey_type_id,
-          pickup:pickup_id ( id, name, picture_url ),
-          destination:destination_id ( id, name, picture_url )
-        `
-        )
-        .order("created_at", { ascending: false });
+          )
+          .order("created_at", { ascending: false }),
+      ]);
 
       if (off) return;
 
-      if (rQ.error) {
-        setMsg(rQ.error.message);
+      if (cQ.error || tQ.error || rQ.error) {
+        setMsg(cQ.error?.message || tQ.error?.message || rQ.error?.message || "Load failed");
       } else {
-        setRows((rQ.data as RouteTile[]) || []);
+        setCountries((cQ.data as Country[]) || []);
+        setTypes((tQ.data as JourneyType[]) || []);
+        setRows((rQ.data as RouteRow[]) || []);
       }
       setLoading(false);
     })();
@@ -98,41 +88,77 @@ export default function OperatorRoutesIndex() {
     };
   }, []);
 
-  const countryName = (id: string | null | undefined) =>
-    countries.find((c) => c.id === id)?.name ?? "—";
-  const typeName = (id: string | null | undefined) =>
-    types.find((t) => t.id === id)?.name ?? "—";
-
   const filtered = useMemo(() => {
+    let base = rows;
+    if (countryId) {
+      base = base.filter((r) => {
+        const c1 = r.pickup?.country_id || null;
+        const c2 = r.destination?.country_id || null;
+        return c1 === countryId || c2 === countryId;
+      });
+    }
+    if (typeId) base = base.filter((r) => (r.journey_type_id || "") === typeId);
+
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((r) => {
-      const lhs = `${r.pickup?.name ?? ""} ${r.destination?.name ?? ""} ${countryName(
-        r.country_id
-      )} ${typeName(r.journey_type_id)}`.toLowerCase();
-      return lhs.includes(s);
-    });
-  }, [rows, q, countries.length, types.length]);
+    if (!s) return base;
+
+    const includes = (v?: string | null) => (v || "").toLowerCase().includes(s);
+    return base.filter(
+      (r) =>
+        includes(r.name) ||
+        includes(r.route_name) ||
+        includes(r.pickup?.name) ||
+        includes(r.destination?.name)
+    );
+  }, [rows, q, countryId, typeId]);
+
+  const countryName = (id?: string | null) =>
+    countries.find((c) => c.id === id)?.name || "";
 
   return (
     <div className="bg-white min-h-[calc(100vh-6rem)] p-4 space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Routes</h1>
         <p className="text-neutral-600">
-          {operatorLocked
-            ? "Operator Admin view."
-            : "Search and click a route to edit."}
+          Manage route definitions and preferred vehicle assignments.
         </p>
       </header>
 
-      {/* Controls (NO operator/site-admin segmented control) */}
+      {/* Controls (no Operator/Site toggle) */}
       <div className="flex flex-wrap gap-2 items-center">
+        <select
+          className="border rounded-lg px-3 py-2"
+          value={countryId}
+          onChange={(e) => setCountryId(e.target.value)}
+        >
+          <option value="">All Countries</option>
+          {countries.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="border rounded-lg px-3 py-2"
+          value={typeId}
+          onChange={(e) => setTypeId(e.target.value)}
+        >
+          <option value="">All Transport Types</option>
+          {types.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+
         <input
           className="border rounded-lg px-3 py-2"
           placeholder="Search routes…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
+
         <Link
           href="/operator-admin/routes/edit/new"
           className="ml-auto inline-flex items-center rounded-full px-4 py-2 bg-black text-white text-sm"
@@ -141,78 +167,84 @@ export default function OperatorRoutesIndex() {
         </Link>
       </div>
 
-      {/* Tiles */}
-      <section>
-        {msg && (
-          <div className="mb-2 p-3 rounded-lg border bg-rose-50 text-rose-700 text-sm">{msg}</div>
-        )}
+      {msg && (
+        <div className="p-3 rounded-lg border bg-rose-50 text-rose-700 text-sm">{msg}</div>
+      )}
 
-        {loading ? (
-          <div className="p-4 rounded-2xl border bg-white shadow">Loading…</div>
-        ) : filtered.length === 0 ? (
-          <div className="p-4 rounded-2xl border bg-white shadow">No routes found.</div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {filtered.map((r) => (
+      {/* Tiles */}
+      {loading ? (
+        <div className="p-4 rounded-2xl border bg-white shadow">Loading…</div>
+      ) : filtered.length === 0 ? (
+        <div className="p-4 rounded-2xl border bg-white shadow">No routes found.</div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {filtered.map((r) => {
+            const countryIdBest = r.pickup?.country_id || r.destination?.country_id || "";
+            const country = countryName(countryIdBest);
+            const title =
+              r.name ||
+              `${r.pickup?.name || "—"} → ${r.destination?.name || "—"}`;
+
+            return (
               <Link
                 key={r.id}
                 href={`/operator-admin/routes/edit/${r.id}`}
                 className="block rounded-2xl overflow-hidden border bg-white shadow hover:shadow-md transition"
               >
-                {/* Image collage */}
+                {/* Simple side-by-side images */}
                 <div className="grid grid-cols-2">
-                  <div className="relative h-28 sm:h-36">
-                    {r.pickup?.picture_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={r.pickup.picture_url}
-                        alt={r.pickup.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-neutral-100" />
-                    )}
-                  </div>
-                  <div className="relative h-28 sm:h-36">
-                    {r.destination?.picture_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={r.destination.picture_url}
-                        alt={r.destination.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-neutral-100" />
-                    )}
-                  </div>
+                  <Thumb src={r.pickup?.picture_url} alt={r.pickup?.name || "Pickup"} />
+                  <Thumb
+                    src={r.destination?.picture_url}
+                    alt={r.destination?.name || "Destination"}
+                  />
                 </div>
 
-                {/* Body */}
                 <div className="p-3 space-y-1">
-                  <h3 className="font-medium leading-tight">
-                    {(r.pickup?.name ?? "—") + " → " + (r.destination?.name ?? "—")}
-                  </h3>
+                  <h3 className="font-medium leading-tight">{title}</h3>
+
                   <p className="text-sm text-neutral-600">
-                    {r.frequency || "—"}
-                    {r.pickup_time ? ` • ${r.pickup_time}` : ""}
-                    {r.approx_duration_mins != null ? ` • ${r.approx_duration_mins} mins` : ""}
+                    {r.frequency || "—"} • {r.pickup_time || "—"}
+                    {typeof r.approx_duration_mins === "number"
+                      ? ` • ${r.approx_duration_mins} mins`
+                      : ""}
                   </p>
 
-                  {/* chips: country + type */}
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <span className="text-xs px-2 py-[2px] rounded-full border bg-neutral-50">
-                      {countryName(r.country_id)}
-                    </span>
-                    <span className="text-xs px-2 py-[2px] rounded-full border bg-neutral-50">
-                      {typeName(r.journey_type_id)}
-                    </span>
+                  <div className="flex gap-2 flex-wrap text-xs mt-1">
+                    {country && (
+                      <span className="px-2 py-[2px] rounded-full border bg-neutral-50">
+                        {country}
+                      </span>
+                    )}
                   </div>
                 </div>
               </Link>
-            ))}
-          </div>
-        )}
-      </section>
+            );
+          })}
+        </div>
+      )}
     </div>
+  );
+}
+
+function Thumb({ src, alt }: { src?: string | null; alt: string }) {
+  if (!src) {
+    return (
+      <div className="w-full h-40 sm:h-48 bg-neutral-100 grid place-items-center text-neutral-400">
+        No image
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="w-full h-40 sm:h-48 object-cover"
+      // If you use storage paths instead of URLs, you can replace this with a resolver.
+      onError={(e) => {
+        // avoid broken icon
+        (e.currentTarget as HTMLImageElement).style.display = "none";
+      }}
+    />
   );
 }
