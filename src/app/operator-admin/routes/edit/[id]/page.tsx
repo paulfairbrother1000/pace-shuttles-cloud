@@ -1,9 +1,11 @@
+// src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
-/* Prevent any server pre-render surprises */
+/* Force client rendering / no SSR data dependencies on this route */
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
+export const dynamicParams = true;
 
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
@@ -11,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* Supabase */
+/* ───────── Supabase (client-only) ───────── */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -22,8 +24,9 @@ const sb =
       )
     : null;
 
-/* Types */
+/* ───────── Types ───────── */
 type UUID = string;
+
 type PsUser = {
   id: UUID;
   site_admin?: boolean | null;
@@ -49,7 +52,7 @@ type Assignment = {
 };
 
 type RouteRow = {
-  id: UUID;
+  id: UUID | "new";
   route_name: string | null;
   name: string | null;
   frequency: string | null;
@@ -68,15 +71,31 @@ type Destination = { id: string; name: string; picture_url: string | null };
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/* ───────── Component ───────── */
 export default function AdminRouteEditPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
 
-  const isCreate = params.id === "new";
-  const looksLikeUuid = UUID_RE.test(params.id);
+  const id = params.id;
+  const isCreate = id === "new";
+  const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
 
+  /* During the server pass for /edit/new, return a harmless shell so SSR never throws.
+     The real form mounts client-side immediately after hydration. */
+  if (typeof window === "undefined" && isCreate) {
+    return (
+      <div className="p-4">
+        <div className="flex items-center gap-2">
+          <div className="rounded-full border px-3 py-1.5 text-sm opacity-60">← Back</div>
+          <h1 className="text-2xl font-semibold">New Route</h1>
+        </div>
+      </div>
+    );
+  }
+
+  /* State */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [operatorId, setOperatorId] = useState<string>("");
 
@@ -92,7 +111,7 @@ export default function AdminRouteEditPage() {
   const isSiteAdmin = Boolean(psUser?.site_admin);
   const isReadOnly = !isSiteAdmin;
 
-  /* ps_user + operator context */
+  /* ps_user + lock operator context from ?op= or operator-admin user */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -110,7 +129,7 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups (always safe; no route id needed) */
+  /* Lookups (journey types, operator type permissions, destinations) */
   useEffect(() => {
     if (!sb) return;
     (async () => {
@@ -125,13 +144,14 @@ export default function AdminRouteEditPage() {
     })();
   }, []);
 
-  /* Route + assignments (ONLY when editing an existing UUID) */
+  /* Route + assignments (edit mode only) */
   useEffect(() => {
     if (!sb) return;
+
     if (isCreate || !looksLikeUuid) {
-      // initialize empty draft for "new"
+      // Initialize a blank draft for "new"
       setRoute({
-        id: "new" as any,
+        id: "new",
         route_name: "",
         name: "",
         frequency: "",
@@ -143,11 +163,13 @@ export default function AdminRouteEditPage() {
         journey_type_id: "",
       });
       setAssignments([]);
+      setVehicles([]);
       return;
     }
 
     let off = false;
     (async () => {
+      setMsg(null);
       const [rQ, aQ] = await Promise.all([
         sb
           .from("routes")
@@ -156,14 +178,16 @@ export default function AdminRouteEditPage() {
             pickup:pickup_id ( id, name, picture_url ),
             destination:destination_id ( id, name, picture_url )
           `)
-          .eq("id", params.id)
+          .eq("id", id)
           .single(),
         sb
           .from("route_vehicle_assignments")
           .select("route_id,vehicle_id,is_active,preferred")
           .eq("is_active", true),
       ]);
+
       if (off) return;
+
       if (rQ.error || !rQ.data) setMsg(rQ.error?.message ?? "Route not found.");
       else {
         const row = rQ.data as any;
@@ -186,12 +210,13 @@ export default function AdminRouteEditPage() {
       }
       if (aQ.data) setAssignments((aQ.data as Assignment[]) || []);
     })();
+
     return () => {
       off = true;
     };
-  }, [params.id, isCreate, looksLikeUuid]);
+  }, [id, isCreate, looksLikeUuid]);
 
-  /* Operator vehicles */
+  /* Vehicles for locked operator (only when editing an existing route) */
   useEffect(() => {
     if (!sb || !operatorId || isCreate || !looksLikeUuid) return;
     let off = false;
@@ -212,11 +237,12 @@ export default function AdminRouteEditPage() {
     };
   }, [operatorId, isCreate, looksLikeUuid]);
 
+  /* Derived */
   const assignedForThisRoute = useMemo(() => {
     if (isCreate || !looksLikeUuid) return [];
     const ids = new Set(vehicles.map((v) => v.id));
-    return assignments.filter((a) => a.route_id === params.id && ids.has(a.vehicle_id));
-  }, [assignments, vehicles, params.id, isCreate, looksLikeUuid]);
+    return assignments.filter((a) => a.route_id === id && ids.has(a.vehicle_id));
+  }, [assignments, vehicles, id, isCreate, looksLikeUuid]);
 
   const preferred = assignedForThisRoute.find((a) => a.preferred);
   const assignedIds = new Set(assignedForThisRoute.map((a) => a.vehicle_id));
@@ -312,20 +338,19 @@ export default function AdminRouteEditPage() {
         approx_duration_mins: route.approx_duration_mins ?? null,
         approximate_distance_miles: route.approximate_distance_miles ?? null,
         journey_type_id: route.journey_type_id || null,
+        is_active: true,
       };
       if (route.pickup?.id) payload.pickup_id = route.pickup.id;
       if (route.destination?.id) payload.destination_id = route.destination.id;
 
       if (isCreate || !looksLikeUuid) {
-        const { data, error } = await sb
-          .from("routes")
-          .insert({ ...payload, is_active: true })
-          .select("id")
-          .single();
+        const { data, error } = await sb.from("routes").insert(payload).select("id").single();
         if (error) throw error;
-        router.replace(`/operator-admin/routes/edit/${data.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`);
+        router.replace(
+          `/operator-admin/routes/edit/${data!.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`
+        );
       } else {
-        const { error } = await sb.from("routes").update(payload).eq("id", route.id);
+        const { error } = await sb.from("routes").update(payload).eq("id", route.id as string);
         if (error) throw error;
       }
     } catch (e: any) {
@@ -335,6 +360,7 @@ export default function AdminRouteEditPage() {
     }
   }
 
+  /* ───────── Render ───────── */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
@@ -447,7 +473,9 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               type="number"
               value={route?.approx_duration_mins ?? ""}
-              onChange={(e) => setField("approx_duration_mins", e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) =>
+                setField("approx_duration_mins", e.target.value ? Number(e.target.value) : null)
+              }
               disabled={isReadOnly}
             />
           </div>
@@ -458,7 +486,9 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               type="number"
               value={route?.approximate_distance_miles ?? ""}
-              onChange={(e) => setField("approximate_distance_miles", e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) =>
+                setField("approximate_distance_miles", e.target.value ? Number(e.target.value) : null)
+              }
               disabled={isReadOnly}
             />
           </div>
@@ -492,7 +522,7 @@ export default function AdminRouteEditPage() {
         )}
       </section>
 
-      {/* Visuals */}
+      {/* Visuals (only meaningful for existing routes) */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow overflow-hidden">
           <div className="grid grid-cols-2 gap-0">
@@ -526,7 +556,7 @@ export default function AdminRouteEditPage() {
         </section>
       )}
 
-      {/* Vehicle assignments */}
+      {/* Vehicle assignment (only when editing an existing route) */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
           {!operatorId ? (
@@ -556,7 +586,7 @@ export default function AdminRouteEditPage() {
                     >
                       <button
                         className="outline-none disabled:opacity-60"
-                        onClick={() => toggleAssign(params.id, v.id, assigned)}
+                        onClick={() => toggleAssign(id, v.id, assigned)}
                         disabled={!assignmentAllowed || isReadOnly}
                         title={assigned ? "Unassign" : "Assign to route"}
                       >
@@ -566,7 +596,7 @@ export default function AdminRouteEditPage() {
                         className={`rounded-full border px-2 py-0.5 text-xs ${
                           isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
                         }`}
-                        onClick={() => setPreferred(params.id, v.id)}
+                        onClick={() => setPreferred(id, v.id)}
                         disabled={!assignmentAllowed || isReadOnly}
                         title="Mark as preferred"
                       >
