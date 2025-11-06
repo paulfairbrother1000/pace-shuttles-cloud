@@ -4,15 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* -------- Supabase (client) -------- */
+/* Supabase */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
     : null;
 
-/* -------- Types -------- */
+/* Types */
 type UUID = string;
 type PsUser = {
   id: UUID;
@@ -24,7 +27,7 @@ type PsUser = {
 };
 
 type Operator = { id: UUID; name: string };
-type TransportType = { id: UUID; name: string };
+type JourneyType = { id: UUID; name: string };
 
 type RouteRow = {
   id: UUID;
@@ -33,17 +36,17 @@ type RouteRow = {
   frequency: string | null;
   pickup?: { name: string; picture_url: string | null } | null;
   destination?: { name: string; picture_url: string | null } | null;
-  transport_type_id: string | null; // <-- aligned with your schema naming
+  journey_type_id: string | null; // ← aligned to schema
 };
 
-type OperatorTypeRel = { operator_id: UUID; transport_type_id: UUID };
+type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
 
 const ALL = "__ALL__";
 
 export default function AdminRoutesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [operators, setOperators] = useState<Operator[]>([]);
-  const [types, setTypes] = useState<TransportType[]>([]);
+  const [types, setTypes] = useState<JourneyType[]>([]);
   const [rels, setRels] = useState<OperatorTypeRel[]>([]);
   const [rows, setRows] = useState<RouteRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,12 +84,12 @@ export default function AdminRoutesPage() {
       try {
         const [opsQ, typesQ, relsQ, routesQ] = await Promise.all([
           sb.from("operators").select("id,name").order("name"),
-          sb.from("transport_types").select("id,name").order("name"),
-          sb.from("operator_transport_types").select("operator_id,transport_type_id"),
+          sb.from("journey_types").select("id,name").order("name"),
+          sb.from("operator_transport_types").select("operator_id,journey_type_id"),
           sb
             .from("routes")
             .select(`
-              id, route_name, name, frequency, transport_type_id,
+              id, route_name, name, frequency, journey_type_id,
               pickup:pickup_id ( name, picture_url ),
               destination:destination_id ( name, picture_url )
             `)
@@ -100,14 +103,15 @@ export default function AdminRoutesPage() {
 
         if (off) return;
         setOperators((opsQ.data || []) as Operator[]);
-        setTypes((typesQ.data || []) as TransportType[]);
+        setTypes((typesQ.data || []) as JourneyType[]);
         setRels((relsQ.data || []) as OperatorTypeRel[]);
+
         const mapped: RouteRow[] = (routesQ.data as any[]).map((r) => ({
           id: r.id,
           route_name: r.route_name ?? null,
           name: r.name ?? null,
           frequency: r.frequency ?? null,
-          transport_type_id: r.transport_type_id ?? null,
+          journey_type_id: r.journey_type_id ?? null,
           pickup: r.pickup ? { name: r.pickup.name, picture_url: r.pickup.picture_url } : null,
           destination: r.destination ? { name: r.destination.name, picture_url: r.destination.picture_url } : null,
         }));
@@ -123,27 +127,30 @@ export default function AdminRoutesPage() {
     };
   }, []);
 
-  const typeName = (id: string | null) => types.find((t) => t.id === id)?.name ?? "—";
+  const jtName = (id: string | null) =>
+    types.find((t) => t.id === id)?.name ?? "—";
 
   const allowedTypeIds = useMemo(() => {
     if (!operatorId || operatorId === ALL) return new Set<string>();
-    return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.transport_type_id));
+    return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id));
   }, [rels, operatorId]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     let base = rows;
-    // If a specific operator is selected/locked, show only routes matching types that operator is allowed to run
+
     if (operatorId && operatorId !== ALL) {
-      base = base.filter((r) => r.transport_type_id && allowedTypeIds.has(r.transport_type_id));
+      base = base.filter((r) => r.journey_type_id && allowedTypeIds.has(r.journey_type_id));
     }
     if (!s) return base;
+
     return base.filter((r) =>
-      `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`.toLowerCase().includes(s)
+      `${r.route_name || r.name || ""} ${r.pickup?.name || ""} ${r.destination?.name || ""}`
+        .toLowerCase()
+        .includes(s)
     );
   }, [rows, q, operatorId, allowedTypeIds]);
 
-  // Site Admin can create when a specific operator is selected
   const canCreate = isSiteAdmin && operatorId && operatorId !== ALL;
   const opCtx = isSiteAdmin ? (operatorId === ALL ? "" : operatorId) : psUser?.operator_id || "";
 
@@ -205,7 +212,11 @@ export default function AdminRoutesPage() {
         </div>
       </header>
 
-      {err && <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">{err}</div>}
+      {err && (
+        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
+          {err}
+        </div>
+      )}
 
       <section>
         {loading ? (
@@ -214,7 +225,7 @@ export default function AdminRoutesPage() {
           <div className="p-4 border rounded-xl bg-white shadow">No routes found.</div>
         ) : (
           <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {/* New tile (same affordance as pickups) */}
+            {/* Optional “New” tile for parity with other admin pages */}
             {isSiteAdmin && (
               <button
                 onClick={goNew}
@@ -230,7 +241,7 @@ export default function AdminRoutesPage() {
               const pImg = publicImage(r.pickup?.picture_url) || "";
               const dImg = publicImage(r.destination?.picture_url) || "";
               const line = `${r.pickup?.name ?? "—"} → ${r.destination?.name ?? "—"}`;
-              const tName = typeName(r.transport_type_id);
+              const tName = jtName(r.journey_type_id);
 
               return (
                 <article
@@ -250,7 +261,9 @@ export default function AdminRoutesPage() {
 
                   <div className="p-3">
                     <div className="font-medium">{line}</div>
-                    <div className="text-xs text-neutral-600">{(r.route_name || r.name || "").trim() || line}</div>
+                    <div className="text-xs text-neutral-600">
+                      {(r.route_name || r.name || "").trim() || line}
+                    </div>
                     <div className="mt-2 flex gap-2 items-center">
                       <span className="inline-block text-xs px-2 py-0.5 rounded-full border border-neutral-300 text-neutral-600">
                         {r.frequency || "—"}
