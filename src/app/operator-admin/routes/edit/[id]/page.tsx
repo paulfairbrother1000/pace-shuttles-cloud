@@ -1,7 +1,7 @@
 // src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
-/* Ensure this route never SSRs any browser-only code */
+/* Make this route strictly client-rendered to avoid any SSR pass trying to read localStorage */
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
@@ -13,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* Supabase (client-only) */
+/* Supabase (client) */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -81,7 +81,7 @@ export default function AdminRouteEditPage() {
   const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
 
-  /* During SSR for /edit/new, render a tiny shell so the server pass never hits client APIs */
+  /* During the server render for /edit/new, return a minimal shell */
   if (typeof window === "undefined" && isCreate) {
     return (
       <div className="p-4">
@@ -127,7 +127,7 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups */
+  /* Lookups (journey types, operator type permissions, destinations) */
   useEffect(() => {
     if (!sb) return;
     (async () => {
@@ -358,6 +358,7 @@ export default function AdminRouteEditPage() {
     }
   }
 
+  /* Render */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">

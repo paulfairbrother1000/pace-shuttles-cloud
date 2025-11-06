@@ -1,3 +1,4 @@
+// src/app/operator-admin/routes/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -225,7 +226,7 @@ export default function AdminRoutesPage() {
             </div>
           )}
 
-          {/* Country filter — site admin only; disabled when previewing an operator */}
+          {/* Country filter — site admin only (disabled when previewing an operator) */}
           {isSiteAdmin && (
             <select
               className="border rounded-lg px-3 py-2 text-sm"
