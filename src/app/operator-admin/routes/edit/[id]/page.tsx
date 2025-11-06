@@ -1,19 +1,13 @@
 // src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
-/* Force client rendering and disable all caching for this route */
-export const dynamic = "force-dynamic";
-export const revalidate = 0;              // must be a literal number or false
-export const fetchCache = "force-no-store";
-export const dynamicParams = true;
-
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
 
-/* Supabase (client) */
+/* ───────────────────────── Supabase (client) ───────────────────────── */
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -24,7 +18,7 @@ const sb =
       )
     : null;
 
-/* Types */
+/* ───────────────────────── Types ───────────────────────── */
 type UUID = string;
 
 type PsUser = {
@@ -71,7 +65,11 @@ type Destination = { id: string; name: string; picture_url: string | null };
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/* ───────────────────────── Page ───────────────────────── */
 export default function AdminRouteEditPage() {
+  // Absolute SSR guard: never attempt to render on the server
+  if (typeof window === "undefined") return null;
+
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
@@ -80,18 +78,6 @@ export default function AdminRouteEditPage() {
   const isCreate = id === "new";
   const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
-
-  // During the server render for /edit/new, return a minimal shell
-  if (typeof window === "undefined" && isCreate) {
-    return (
-      <div className="p-4">
-        <div className="flex items-center gap-2">
-          <div className="rounded-full border px-3 py-1.5 text-sm opacity-60">← Back</div>
-          <h1 className="text-2xl font-semibold">New Route</h1>
-        </div>
-      </div>
-    );
-  }
 
   /* State */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
@@ -142,12 +128,11 @@ export default function AdminRouteEditPage() {
     })();
   }, []);
 
-  /* Route + assignments (edit mode only) */
+  /* Initialize “new” shell (client) */
   useEffect(() => {
     if (!sb) return;
 
     if (isCreate || !looksLikeUuid) {
-      // Initialize a blank draft for "new"
       setRoute({
         id: "new",
         route_name: "",
@@ -254,7 +239,7 @@ export default function AdminRouteEditPage() {
 
   /* Helpers */
   function setField<K extends keyof RouteRow>(key: K, val: RouteRow[K]) {
-    if (isReadOnly) return;
+    if (!isSiteAdmin) return; // read-only for operator admins
     setRoute((r) => (r ? { ...r, [key]: val } : r));
   }
 
@@ -268,7 +253,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
-    if (isCreate || !looksLikeUuid || isReadOnly) return;
+    if (isCreate || !looksLikeUuid || !isSiteAdmin) return;
     try {
       if (!currentlyAssigned && !assignmentAllowed) {
         alert("This operator isn’t permitted to run the selected transport type.");
@@ -297,7 +282,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function setPreferred(routeId: string, vehicleId: string) {
-    if (isCreate || !looksLikeUuid || isReadOnly) return;
+    if (isCreate || !looksLikeUuid || !isSiteAdmin) return;
     try {
       if (!assignmentAllowed) {
         alert("Preferred vehicle blocked by transport type policy.");
@@ -358,7 +343,7 @@ export default function AdminRouteEditPage() {
     }
   }
 
-  /* Render */
+  /* ───────────────────────── Render ───────────────────────── */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
@@ -392,7 +377,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.route_name || ""}
               onChange={(e) => setField("route_name", e.target.value)}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
           <div>
@@ -401,7 +386,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.name || ""}
               onChange={(e) => setField("name", e.target.value)}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
           <div>
@@ -410,7 +395,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.frequency || ""}
               onChange={(e) => setField("frequency", e.target.value)}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
 
@@ -423,7 +408,7 @@ export default function AdminRouteEditPage() {
                 const d = destinations.find((x) => x.id === e.target.value) || null;
                 setField("pickup", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
               }}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             >
               <option value="">— Select —</option>
               {destinations.map((d) => (
@@ -443,7 +428,7 @@ export default function AdminRouteEditPage() {
                 const d = destinations.find((x) => x.id === e.target.value) || null;
                 setField("destination", d ? { id: d.id, name: d.name, picture_url: d.picture_url } : null);
               }}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             >
               <option value="">— Select —</option>
               {destinations.map((d) => (
@@ -461,7 +446,7 @@ export default function AdminRouteEditPage() {
               value={route?.pickup_time || ""}
               onChange={(e) => setField("pickup_time", e.target.value)}
               placeholder="e.g. 13:30"
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
 
@@ -474,7 +459,7 @@ export default function AdminRouteEditPage() {
               onChange={(e) =>
                 setField("approx_duration_mins", e.target.value ? Number(e.target.value) : null)
               }
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
 
@@ -487,7 +472,7 @@ export default function AdminRouteEditPage() {
               onChange={(e) =>
                 setField("approximate_distance_miles", e.target.value ? Number(e.target.value) : null)
               }
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             />
           </div>
 
@@ -497,7 +482,7 @@ export default function AdminRouteEditPage() {
               className="w-full border rounded px-3 py-2"
               value={route?.journey_type_id || ""}
               onChange={(e) => setField("journey_type_id", e.target.value)}
-              disabled={isReadOnly}
+              disabled={!isSiteAdmin}
             >
               <option value="">— Not set —</option>
               {types.map((t) => (
@@ -579,13 +564,13 @@ export default function AdminRouteEditPage() {
                       key={v.id}
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
                         assigned ? "bg-black text-white border-black" : "bg-white"
-                      } ${!assignmentAllowed || isReadOnly ? "opacity-50" : ""}`}
+                      } ${!assignmentAllowed || !isSiteAdmin ? "opacity-50" : ""}`}
                       title={!assignmentAllowed ? "Not permitted for this transport type" : ""}
                     >
                       <button
                         className="outline-none disabled:opacity-60"
                         onClick={() => toggleAssign(id, v.id, assigned)}
-                        disabled={!assignmentAllowed || isReadOnly}
+                        disabled={!assignmentAllowed || !isSiteAdmin}
                         title={assigned ? "Unassign" : "Assign to route"}
                       >
                         {v.name} ({v.minseats}–{v.maxseats})
@@ -595,7 +580,7 @@ export default function AdminRouteEditPage() {
                           isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
                         }`}
                         onClick={() => setPreferred(id, v.id)}
-                        disabled={!assignmentAllowed || isReadOnly}
+                        disabled={!assignmentAllowed || !isSiteAdmin}
                         title="Mark as preferred"
                       >
                         ★
