@@ -1,5 +1,13 @@
 "use client";
 
+/**
+ * Hard opt-out of any static generation / caching for this client page.
+ */
+export const prerender = false;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "default-no-store";
+
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
@@ -16,8 +24,6 @@ function StaffTileImage({ src, alt }: { src: string; alt: string }) {
       style={{ objectPosition: objPos }}
       onLoad={(e) => {
         const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
-        // Heuristic:
-        // very portrait => show a lot more top; slightly portrait => show some more top; otherwise center
         if (h > w * 1.35) setObjPos("50% 8%");
         else if (h > w * 1.05) setObjPos("50% 20%");
         else setObjPos("50% 50%");
@@ -26,11 +32,16 @@ function StaffTileImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-/* ---------- Supabase (browser) ---------- */
-const sb = createBrowserClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+/* ---------- Supabase (browser) with guard ---------- */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
 /* ---------- Types ---------- */
 type PsUser = {
@@ -68,10 +79,9 @@ const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
 async function resolveStorageUrl(pathOrUrl: string | null): Promise<string | null> {
   if (!pathOrUrl) return null;
   if (isHttp(pathOrUrl)) return pathOrUrl;
-  // 1) public URL
+  if (!sb) return null;
   const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
   if (pub) return pub;
-  // 2) signed fallback
   const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
   return data?.signedUrl ?? null;
 }
@@ -114,6 +124,11 @@ export default function OperatorStaffTilesPage() {
   useEffect(() => {
     let off = false;
     (async () => {
+      if (!sb) {
+        setMsg("Supabase client is not configured in this environment.");
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       const [ops, types, staff] = await Promise.all([
         sb.from("operators").select("id,name").order("name"),
@@ -127,7 +142,6 @@ export default function OperatorStaffTilesPage() {
       if (staff.error) setMsg(staff.error.message);
       setRows((staff.data as StaffRow[]) || []);
 
-      // operator lock for op-admins
       if (isOpAdmin && psUser?.operator_id) {
         setOperatorId(psUser.operator_id);
       }
@@ -222,8 +236,8 @@ export default function OperatorStaffTilesPage() {
             onChange={(e) => setQ(e.target.value)}
           />
 
-          {/* New tile goes to /operator-admin/staff/edit/new */}
           <Link
+            prefetch={false}
             href="/operator-admin/staff/edit/new"
             className="rounded-full px-4 py-2 bg-black text-white text-sm"
           >
@@ -236,8 +250,8 @@ export default function OperatorStaffTilesPage() {
 
       {/* Grid of tiles */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {/* New card first for mobile ergonomics */}
         <Link
+          prefetch={false}
           href="/operator-admin/staff/edit/new"
           className="rounded-2xl border bg-white shadow hover:shadow-md transition overflow-hidden grid place-items-center aspect-[16/10]"
         >
@@ -254,6 +268,7 @@ export default function OperatorStaffTilesPage() {
           filtered.map((r) => (
             <Link
               key={r.id}
+              prefetch={false}
               href={`/operator-admin/staff/edit/${r.id}`}
               className="rounded-2xl border bg-white overflow-hidden shadow hover:shadow-md transition"
             >
