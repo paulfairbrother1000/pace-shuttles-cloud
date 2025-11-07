@@ -1,11 +1,10 @@
 // src/app/operator-admin/layout.tsx
 "use client";
 
-// 🚫 Tell Next.js not to prerender anything in this subtree.
-// This prevents build-time SSG from touching /operator-admin/staff (or routes).
+// Prevent any static generation/prerender across the operator-admin subtree
 export const prerender = false;
 export const dynamic = "force-dynamic";
-export const revalidate = 0; // (explicit; prevents any accidental ISR)
+export const revalidate = 0;
 export const fetchCache = "default-no-store";
 
 import RoleSwitch from "@/components/Nav/RoleSwitch";
@@ -34,7 +33,6 @@ export default function OperatorAdminLayout({
     <div className="min-h-screen bg-white">
       {/* Global SiteHeader is rendered by RootLayout; do NOT render another header here. */}
 
-      {/* Segmented switch (only if user has both roles) */}
       <RoleSwitch
         active="operator"
         show={hasBothRoles}
@@ -42,10 +40,8 @@ export default function OperatorAdminLayout({
         siteHref="/admin"
       />
 
-      {/* Page content */}
       <div className="px-4 py-6">{children}</div>
 
-      {/* Hide any legacy operator tabs older pages/components might inject */}
       <style jsx global>{`
         #operator-tabs,
         .operator-tabs,
