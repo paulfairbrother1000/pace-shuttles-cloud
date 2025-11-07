@@ -1,10 +1,11 @@
 // src/app/operator-admin/layout.tsx
 "use client";
 
-// Make the entire /operator-admin segment dynamic & non-SSG
+// 🚫 Tell Next.js not to prerender anything in this subtree.
+// This prevents build-time SSG from touching /operator-admin/staff (or routes).
 export const prerender = false;
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const revalidate = 0; // (explicit; prevents any accidental ISR)
 export const fetchCache = "default-no-store";
 
 import RoleSwitch from "@/components/Nav/RoleSwitch";
