@@ -1,5 +1,5 @@
 // src/app/operator-admin/staff/edit/[id]/page.tsx
-export const revalidate = 0;
+
 export const dynamic = "force-dynamic";
 export const fetchCache = "default-no-store";
 export const prerender = false;
