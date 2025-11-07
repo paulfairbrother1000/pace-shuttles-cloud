@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Force this page to be purely client-rendered.
+ * Force this page to be purely  client-rendered.
  * Prevent any server prefetch that can cause 500s or “No API key found” noise.
  */
 export const dynamic = "force-dynamic";
