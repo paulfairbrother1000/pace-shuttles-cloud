@@ -4,7 +4,7 @@
 // Prevent any static generation/prerender across the operator-admin subtree
 export const prerender = false;
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
+
 export const fetchCache = "default-no-store";
 
 import RoleSwitch from "@/components/Nav/RoleSwitch";
