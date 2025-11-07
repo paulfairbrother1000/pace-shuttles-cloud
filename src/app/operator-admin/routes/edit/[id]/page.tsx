@@ -127,18 +127,39 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups (journey types, operator type permissions, destinations) */
+  /* Lookups (journey types, operator type permissions, destinations via view/RPC) */
   useEffect(() => {
     if (!sb) return;
     (async () => {
       const [tQ, relQ, dQ] = await Promise.all([
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
-        sb.from("destinations").select("id,name,picture_url").order("name"),
+        // Prefer the RPC (created by your SQL). If missing, fall back to the view.
+        sb.rpc("list_destinations_for_editor").catch(async () =>
+          sb.from("destinations_view").select("id,name,image_url").order("name")
+        ),
       ]);
+
+      if (tQ.error) console.error(tQ.error);
+      if (relQ.error) console.error(relQ.error);
+      if ((dQ as any).error) console.error((dQ as any).error);
+
       setTypes((tQ.data || []) as JourneyType[]);
       setRels((relQ.data || []) as OperatorTypeRel[]);
-      setDestinations((dQ.data || []) as Destination[]);
+
+      // Normalize to { id, name, picture_url } expected by UI
+      const raw = ((dQ as any).data || []) as Array<{
+        id: string;
+        name: string;
+        image_url?: string | null;
+        picture_url?: string | null;
+      }>;
+      const norm = raw.map((d) => ({
+        id: d.id,
+        name: d.name,
+        picture_url: d.picture_url ?? d.image_url ?? null,
+      })) as Destination[];
+      setDestinations(norm);
     })();
   }, []);
 
