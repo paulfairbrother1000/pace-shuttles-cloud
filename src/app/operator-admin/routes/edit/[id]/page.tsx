@@ -1,30 +1,13 @@
 // src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
-/* Force client rendering and disable all caching for this route */
-export const dynamic = "force-dynamic";
-export const revalidate = 0;              // must be a literal number or false
-export const fetchCache = "force-no-store";
-export const dynamicParams = true;
-
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
+import { sb } from "@/lib/supabaseClient"; // ← shared client (same as Vehicles)
 import { publicImage } from "@/lib/publicImage";
 
-/* Supabase (client) */
-const sb =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
-
-/* Types */
+/* ───────────────────────── Types ───────────────────────── */
 type UUID = string;
 
 type PsUser = {
@@ -71,6 +54,7 @@ type Destination = { id: string; name: string; picture_url: string | null };
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/* ───────────────────────── Page ───────────────────────── */
 export default function AdminRouteEditPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -81,35 +65,10 @@ export default function AdminRouteEditPage() {
   const looksLikeUuid = UUID_RE.test(id);
   const opFromQuery = search.get("op") || "";
 
-  // During the server render for /edit/new, return a minimal shell
-  if (typeof window === "undefined" && isCreate) {
-    return (
-      <div className="p-4">
-        <div className="flex items-center gap-2">
-          <div className="rounded-full border px-3 py-1.5 text-sm opacity-60">← Back</div>
-          <h1 className="text-2xl font-semibold">New Route</h1>
-        </div>
-      </div>
-    );
-  }
-
-  /* State */
+  /* ps_user + lock operator context from ?op= or operator-admin user */
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [operatorId, setOperatorId] = useState<string>("");
 
-  const [route, setRoute] = useState<RouteRow | null>(null);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [types, setTypes] = useState<JourneyType[]>([]);
-  const [rels, setRels] = useState<OperatorTypeRel[]>([]);
-  const [destinations, setDestinations] = useState<Destination[]>([]);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const isSiteAdmin = Boolean(psUser?.site_admin);
-  const isReadOnly = !isSiteAdmin;
-
-  /* ps_user + lock operator context from ?op= or operator-admin user */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -127,48 +86,58 @@ export default function AdminRouteEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* Lookups (journey types, operator type permissions, destinations via view/RPC) */
+  /* Lookups (journey types, operator type permissions, destinations via RPC/view) */
+  const [types, setTypes] = useState<JourneyType[]>([]);
+  const [rels, setRels] = useState<OperatorTypeRel[]>([]);
+  const [destinations, setDestinations] = useState<Destination[]>([]);
+
   useEffect(() => {
-    if (!sb) return;
+    let off = false;
     (async () => {
       const [tQ, relQ, dQ] = await Promise.all([
         sb.from("journey_types").select("id,name").order("name"),
         sb.from("operator_transport_types").select("operator_id,journey_type_id"),
-        // Prefer the RPC (created by your SQL). If missing, fall back to the view.
+        // Prefer SECURITY DEFINER RPC; fall back to view if RPC missing
         sb.rpc("list_destinations_for_editor").catch(async () =>
           sb.from("destinations_view").select("id,name,image_url").order("name")
         ),
       ]);
 
-      if (tQ.error) console.error(tQ.error);
-      if (relQ.error) console.error(relQ.error);
-      if ((dQ as any).error) console.error((dQ as any).error);
-
-      setTypes((tQ.data || []) as JourneyType[]);
-      setRels((relQ.data || []) as OperatorTypeRel[]);
-
-      // Normalize to { id, name, picture_url } expected by UI
-      const raw = ((dQ as any).data || []) as Array<{
-        id: string;
-        name: string;
-        image_url?: string | null;
-        picture_url?: string | null;
-      }>;
-      const norm = raw.map((d) => ({
-        id: d.id,
-        name: d.name,
-        picture_url: d.picture_url ?? d.image_url ?? null,
-      })) as Destination[];
-      setDestinations(norm);
+      if (!off) {
+        if (tQ.data) setTypes(tQ.data as JourneyType[]);
+        if (relQ.data) setRels(relQ.data as OperatorTypeRel[]);
+        const raw =
+          (((dQ as any).data || []) as Array<{
+            id: string;
+            name: string;
+            image_url?: string | null;
+            picture_url?: string | null;
+          }>) || [];
+        const norm = raw.map((d) => ({
+          id: d.id,
+          name: d.name,
+          picture_url: d.picture_url ?? d.image_url ?? null,
+        })) as Destination[];
+        setDestinations(norm);
+      }
     })();
+    return () => {
+      off = true;
+    };
   }, []);
 
   /* Route + assignments (edit mode only) */
-  useEffect(() => {
-    if (!sb) return;
+  const [route, setRoute] = useState<RouteRow | null>(null);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
+  const isSiteAdmin = Boolean(psUser?.site_admin);
+  const isReadOnly = !isSiteAdmin;
+
+  useEffect(() => {
     if (isCreate || !looksLikeUuid) {
-      // Initialize a blank draft for "new"
       setRoute({
         id: "new",
         route_name: "",
@@ -237,7 +206,7 @@ export default function AdminRouteEditPage() {
 
   /* Vehicles for locked operator (only when editing an existing route) */
   useEffect(() => {
-    if (!sb || !operatorId || isCreate || !looksLikeUuid) return;
+    if (!operatorId || isCreate || !looksLikeUuid) return;
     let off = false;
     (async () => {
       const { data, error } = await sb
@@ -257,6 +226,12 @@ export default function AdminRouteEditPage() {
   }, [operatorId, isCreate, looksLikeUuid]);
 
   /* Derived */
+  const relsForOp = useMemo(
+    () => new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)),
+    [rels, operatorId]
+  );
+  const assignmentAllowed = Boolean(route?.journey_type_id && relsForOp.has(route.journey_type_id!));
+
   const assignedForThisRoute = useMemo(() => {
     if (isCreate || !looksLikeUuid) return [];
     const ids = new Set(vehicles.map((v) => v.id));
@@ -266,13 +241,6 @@ export default function AdminRouteEditPage() {
   const preferred = assignedForThisRoute.find((a) => a.preferred);
   const assignedIds = new Set(assignedForThisRoute.map((a) => a.vehicle_id));
 
-  const opAllowedTypes = useMemo(() => {
-    if (!operatorId) return new Set<string>();
-    return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id));
-  }, [rels, operatorId]);
-
-  const assignmentAllowed = Boolean(route?.journey_type_id && opAllowedTypes.has(route.journey_type_id!));
-
   /* Helpers */
   function setField<K extends keyof RouteRow>(key: K, val: RouteRow[K]) {
     if (isReadOnly) return;
@@ -281,7 +249,7 @@ export default function AdminRouteEditPage() {
 
   async function reloadAssignments() {
     if (isCreate || !looksLikeUuid) return;
-    const { data, error } = await sb!
+    const { data, error } = await sb
       .from("route_vehicle_assignments")
       .select("route_id,vehicle_id,is_active,preferred")
       .eq("is_active", true);
@@ -296,14 +264,14 @@ export default function AdminRouteEditPage() {
         return;
       }
       if (currentlyAssigned) {
-        const { error } = await sb!
+        const { error } = await sb
           .from("route_vehicle_assignments")
           .update({ is_active: false, preferred: false })
           .eq("route_id", routeId)
           .eq("vehicle_id", vehicleId);
         if (error) throw error;
       } else {
-        const { error } = await sb!
+        const { error } = await sb
           .from("route_vehicle_assignments")
           .upsert(
             { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: false },
@@ -324,14 +292,14 @@ export default function AdminRouteEditPage() {
         alert("Preferred vehicle blocked by transport type policy.");
         return;
       }
-      const { error: clearErr } = await sb!
+      const { error: clearErr } = await sb
         .from("route_vehicle_assignments")
         .update({ preferred: false })
         .eq("route_id", routeId)
         .eq("preferred", true);
       if (clearErr) throw clearErr;
 
-      const { error: upErr } = await sb!
+      const { error: upErr } = await sb
         .from("route_vehicle_assignments")
         .upsert(
           { route_id: routeId, vehicle_id: vehicleId, is_active: true, preferred: true },
@@ -346,7 +314,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function saveCore() {
-    if (!sb || !route || !isSiteAdmin) return;
+    if (!route || !isSiteAdmin) return;
     try {
       setSaving(true);
       const payload: any = {
@@ -365,9 +333,7 @@ export default function AdminRouteEditPage() {
       if (isCreate || !looksLikeUuid) {
         const { data, error } = await sb.from("routes").insert(payload).select("id").single();
         if (error) throw error;
-        router.replace(
-          `/operator-admin/routes/edit/${data!.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`
-        );
+        router.replace(`/operator-admin/routes/edit/${data!.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`);
       } else {
         const { error } = await sb.from("routes").update(payload).eq("id", route.id as string);
         if (error) throw error;
@@ -379,7 +345,7 @@ export default function AdminRouteEditPage() {
     }
   }
 
-  /* Render */
+  /* ───────────────────────── Render ───────────────────────── */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">
@@ -541,7 +507,7 @@ export default function AdminRouteEditPage() {
         )}
       </section>
 
-      {/* Visuals (only meaningful for existing routes) */}
+      {/* Visuals (existing routes only) */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow overflow-hidden">
           <div className="grid grid-cols-2 gap-0">
@@ -575,7 +541,7 @@ export default function AdminRouteEditPage() {
         </section>
       )}
 
-      {/* Vehicle assignment (only when editing an existing route) */}
+      {/* Vehicle assignment (existing routes only) */}
       {!isCreate && looksLikeUuid && (
         <section className="rounded-2xl border bg-white shadow p-4 space-y-4">
           {!operatorId ? (
