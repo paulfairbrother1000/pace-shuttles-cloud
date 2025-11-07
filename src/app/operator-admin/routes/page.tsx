@@ -2,12 +2,12 @@
 "use client";
 
 /**
- * Prevent server prefetch/caching that can trigger SSR Supabase calls.
- * Safe to keep; matches the edit page pattern.
+ * IMPORTANT:
+ * This is a client-only admin page that fetches with the Supabase browser client.
+ * Do not export `revalidate` here (it breaks build by becoming a client shimmed function).
+ * Disable prerendering instead.
  */
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "default-no-store";
+export const prerender = false;
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
