@@ -4,9 +4,9 @@
  * Force this page to be purely  client-rendered.
  * Prevent any server prefetch that can cause 500s or “No API key found” noise.
  */
+
+export const prerender = false;
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "default-no-store";
 
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";

@@ -1,6 +1,12 @@
 // src/app/operator-admin/layout.tsx
 "use client";
 
+// Make the entire /operator-admin segment dynamic & non-SSG
+export const prerender = false;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "default-no-store";
+
 import RoleSwitch from "@/components/Nav/RoleSwitch";
 import { useEffect, useState } from "react";
 
