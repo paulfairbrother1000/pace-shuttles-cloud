@@ -1,33 +1,21 @@
 "use client";
 
 /**
- * Force this page to be purely  client-rendered.
- * Prevent any server prefetch that can cause 500s or “No API key found” noise.
+ * Routes • Editor (client-only)
+ * - No SSR/prerender; uses the same shared `sb` client.
  */
-
 export const prerender = false;
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "default-no-store";
 
 import Image from "next/image";
 import { useRouter, useSearchParams, useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
+import { sb } from "@/lib/supabaseClient";
 import { publicImage } from "@/lib/publicImage";
 
-/* ───────────────────────── Supabase (client) ─────────────────────────
-   Create the browser client only on the client; never at module load on SSR.
------------------------------------------------------------------------ */
-const sb =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
-
-/* ───────────────────────── Types ───────────────────────── */
+/* ───────── Types ───────── */
 type UUID = string;
 
 type PsUser = {
@@ -72,13 +60,11 @@ type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
 type Country = { id: string; name: string };
 type Destination = { id: string; name: string; picture_url: string | null; country_id: string | null };
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/* ───────────────────────── Page ───────────────────────── */
+/* ───────── Page ───────── */
 export default function AdminRouteEditPage() {
-  // Absolute SSR guard: never attempt to render on the server
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined") return null; // hard SSR guard
 
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -276,7 +262,6 @@ export default function AdminRouteEditPage() {
     setRoute((r) => (r ? { ...r, [key]: val } : r));
   }
 
-  // Clear pickup/destination when country changes (keeps data coherent)
   function onChangeCountry(nextCountryId: string) {
     if (!isSiteAdmin) return;
     setSelectedCountryId(nextCountryId);
@@ -393,7 +378,7 @@ export default function AdminRouteEditPage() {
     }
   }
 
-  /* ───────────────────────── Render ───────────────────────── */
+  /* ───────── Render ───────── */
   return (
     <div className="p-4 space-y-5">
       <div className="flex items-center gap-2">

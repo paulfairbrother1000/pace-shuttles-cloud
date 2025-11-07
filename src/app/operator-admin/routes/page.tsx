@@ -1,32 +1,23 @@
-// src/app/operator-admin/routes/page.tsx
 "use client";
 
 /**
- * IMPORTANT:
- * This is a client-only admin page that fetches with the Supabase browser client.
- * Do not export `revalidate` here (it breaks build by becoming a client shimmed function).
- * Disable prerendering instead.
+ * Routes • List (client-only)
+ * - No SSR, no prerender, no server data fetching.
+ * - Uses shared browser Supabase client `sb`.
  */
 export const prerender = false;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "default-no-store";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
+import { sb } from "@/lib/supabaseClient";
 import { publicImage } from "@/lib/publicImage";
 
-/* Browser-only Supabase client (avoid SSR “No API key” errors) */
-const sb =
-  typeof window !== "undefined" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    ? createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      )
-    : null;
-
-/* Types */
+/* ───────── Types ───────── */
 type UUID = string;
+
 type PsUser = {
   id: UUID;
   first_name?: string | null;
@@ -55,6 +46,7 @@ type OperatorTypeRel = { operator_id: UUID; journey_type_id: UUID };
 
 const ALL = "__ALL__";
 
+/* ───────── Page ───────── */
 export default function AdminRoutesPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
 
@@ -67,13 +59,13 @@ export default function AdminRoutesPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [operatorId, setOperatorId] = useState<string>("");
+  const [operatorId, setOperatorId] = useState<string>(ALL);
   const [countryFilter, setCountryFilter] = useState<string>(ALL);
 
   const isSiteAdmin = Boolean(psUser?.site_admin);
   const isOpAdmin = Boolean(psUser?.operator_admin && psUser?.operator_id && !isSiteAdmin);
 
-  /* Load user & default operator selection */
+  /* Load user & default operator selection (client storage only) */
   useEffect(() => {
     try {
       const raw = localStorage.getItem("ps_user");
@@ -88,12 +80,12 @@ export default function AdminRoutesPage() {
     }
   }, []);
 
-  /* Lookups + routes */
+  /* Lookups + routes (client fetch via Supabase) */
   useEffect(() => {
     let off = false;
     (async () => {
       if (!sb) {
-        setErr("Supabase client is not configured.");
+        setErr("Supabase client is not configured in the browser.");
         setLoading(false);
         return;
       }
@@ -150,6 +142,7 @@ export default function AdminRoutesPage() {
     };
   }, []);
 
+  /* Helpers */
   const jtName = (id: string | null) =>
     types.find((t) => t.id === id)?.name ?? "—";
   const countryName = (id: string | null) =>
@@ -195,9 +188,8 @@ export default function AdminRoutesPage() {
     );
   }, [rows, q, isSiteAdmin, isOpAdmin, operatorId, selectedOperator, allowedTypeIds, countryFilter]);
 
-  /* New Route button: ALWAYS for site admin, NEVER for operator admin */
+  /* UI */
   const showNewButton = isSiteAdmin;
-
   const subtitle = isSiteAdmin
     ? "Create routes any time. Select an operator to preview what they see."
     : "Read-only (Operator Admin).";
