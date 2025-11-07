@@ -1,4 +1,3 @@
-// src/app/operator-admin/routes/edit/[id]/page.tsx
 "use client";
 
 import Image from "next/image";
@@ -333,7 +332,9 @@ export default function AdminRouteEditPage() {
       if (isCreate || !looksLikeUuid) {
         const { data, error } = await sb.from("routes").insert(payload).select("id").single();
         if (error) throw error;
-        router.replace(`/operator-admin/routes/edit/${data!.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`);
+        router.replace(
+          `/operator-admin/routes/edit/${data!.id}${operatorId ? `?op=${encodeURIComponent(operatorId)}` : ""}`
+        );
       } else {
         const { error } = await sb.from("routes").update(payload).eq("id", route.id as string);
         if (error) throw error;
