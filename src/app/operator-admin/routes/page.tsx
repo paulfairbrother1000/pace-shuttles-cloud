@@ -1,9 +1,29 @@
+// src/app/operator-admin/routes/page.tsx
 "use client";
+
+/**
+ * Prevent server prefetch/caching that can trigger SSR Supabase calls.
+ * Safe to keep; matches the edit page pattern.
+ */
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "default-no-store";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { sb } from "@/lib/supabaseClient"; // ← use the same shared browser client as Vehicles
+import { createBrowserClient } from "@supabase/ssr";
 import { publicImage } from "@/lib/publicImage";
+
+/* Browser-only Supabase client (avoid SSR “No API key” errors) */
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
 /* Types */
 type UUID = string;
