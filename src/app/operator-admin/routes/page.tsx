@@ -123,6 +123,9 @@ export default function RoutesIndex() {
   const countryName = (id?: string | null) =>
     countries.find((c) => c.id === id)?.name || "";
 
+  const journeyTypeName = (id?: string | null) =>
+    id ? types.find((t) => t.id === id)?.name ?? "" : "";
+
   return (
     <div className="bg-white min-h-[calc(100vh-6rem)] p-4 space-y-6">
       <header className="space-y-1">
@@ -194,6 +197,7 @@ export default function RoutesIndex() {
             const countryIdBest =
               r.pickup?.country_id || r.destination?.country_id || "";
             const country = countryName(countryIdBest);
+            const transportType = journeyTypeName(r.journey_type_id);
             const title =
               r.name ||
               `${r.pickup?.name || "—"} → ${r.destination?.name || "—"}`;
@@ -230,6 +234,11 @@ export default function RoutesIndex() {
                     {country && (
                       <span className="px-2 py-[2px] rounded-full border bg-neutral-50">
                         {country}
+                      </span>
+                    )}
+                    {transportType && (
+                      <span className="px-2 py-[2px] rounded-full border bg-neutral-50">
+                        {transportType}
                       </span>
                     )}
                   </div>
