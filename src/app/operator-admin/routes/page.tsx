@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
+import { publicImage } from "@/lib/publicImage";
 
 /* Types */
 type UUID = string;
@@ -33,11 +34,8 @@ type RouteRow = {
 type JourneyType = { id: UUID; name: string };
 type Country = { id: UUID; name: string };
 
-/* Helpers */
-const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
-
+/* Supabase client (browser only) */
 export default function RoutesIndex() {
-  /* safe client */
   const sb: SupabaseClient | null =
     typeof window !== "undefined" &&
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -246,21 +244,21 @@ export default function RoutesIndex() {
 }
 
 function Thumb({ src, alt }: { src?: string | null; alt: string }) {
-  if (!src) {
+  const url = publicImage(src);
+
+  if (!url) {
     return (
       <div className="w-full h-40 sm:h-48 bg-neutral-100 grid place-items-center text-neutral-400">
         No image
       </div>
     );
   }
+
   return (
     <img
-      src={src}
+      src={url}
       alt={alt}
       className="w-full h-40 sm:h-48 object-cover"
-      onError={(e) => {
-        (e.currentTarget as HTMLImageElement).style.display = "none";
-      }}
     />
   );
 }
