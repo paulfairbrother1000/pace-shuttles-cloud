@@ -1,11 +1,6 @@
 /* --- src/app/operator-admin/routes/page.tsx --- */
 "use client";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-export const fetchCache = "force-no-store";
-export const dynamicParams = true;
-
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, type SupabaseClient } from "@supabase/ssr";
@@ -21,8 +16,18 @@ type RouteRow = {
   pickup_time: string | null;
   approx_duration_mins: number | null;
   journey_type_id: UUID | null;
-  pickup?: { id: UUID; name: string; picture_url: string | null; country_id: UUID | null } | null;
-  destination?: { id: UUID; name: string; picture_url: string | null; country_id: UUID | null } | null;
+  pickup?: {
+    id: UUID;
+    name: string;
+    picture_url: string | null;
+    country_id: UUID | null;
+  } | null;
+  destination?: {
+    id: UUID;
+    name: string;
+    picture_url: string | null;
+    country_id: UUID | null;
+  } | null;
 };
 
 type JourneyType = { id: UUID; name: string };
@@ -75,7 +80,12 @@ export default function RoutesIndex() {
       if (off) return;
 
       if (cQ.error || tQ.error || rQ.error) {
-        setMsg(cQ.error?.message || tQ.error?.message || rQ.error?.message || "Load failed");
+        setMsg(
+          cQ.error?.message ||
+            tQ.error?.message ||
+            rQ.error?.message ||
+            "Load failed"
+        );
       } else {
         setCountries((cQ.data as Country[]) || []);
         setTypes((tQ.data as JourneyType[]) || []);
@@ -168,18 +178,23 @@ export default function RoutesIndex() {
       </div>
 
       {msg && (
-        <div className="p-3 rounded-lg border bg-rose-50 text-rose-700 text-sm">{msg}</div>
+        <div className="p-3 rounded-lg border bg-rose-50 text-rose-700 text-sm">
+          {msg}
+        </div>
       )}
 
       {/* Tiles */}
       {loading ? (
         <div className="p-4 rounded-2xl border bg-white shadow">Loading…</div>
       ) : filtered.length === 0 ? (
-        <div className="p-4 rounded-2xl border bg-white shadow">No routes found.</div>
+        <div className="p-4 rounded-2xl border bg-white shadow">
+          No routes found.
+        </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((r) => {
-            const countryIdBest = r.pickup?.country_id || r.destination?.country_id || "";
+            const countryIdBest =
+              r.pickup?.country_id || r.destination?.country_id || "";
             const country = countryName(countryIdBest);
             const title =
               r.name ||
@@ -193,7 +208,10 @@ export default function RoutesIndex() {
               >
                 {/* Simple side-by-side images */}
                 <div className="grid grid-cols-2">
-                  <Thumb src={r.pickup?.picture_url} alt={r.pickup?.name || "Pickup"} />
+                  <Thumb
+                    src={r.pickup?.picture_url}
+                    alt={r.pickup?.name || "Pickup"}
+                  />
                   <Thumb
                     src={r.destination?.picture_url}
                     alt={r.destination?.name || "Destination"}
@@ -240,9 +258,7 @@ function Thumb({ src, alt }: { src?: string | null; alt: string }) {
       src={src}
       alt={alt}
       className="w-full h-40 sm:h-48 object-cover"
-      // If you use storage paths instead of URLs, you can replace this with a resolver.
       onError={(e) => {
-        // avoid broken icon
         (e.currentTarget as HTMLImageElement).style.display = "none";
       }}
     />
