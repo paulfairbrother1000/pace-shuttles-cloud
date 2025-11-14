@@ -1,6 +1,8 @@
 // src/app/admin/dashboard/page.tsx
 "use client";
 
+import Link from "next/link";
+
 type Trend = "up" | "down" | "none";
 
 interface TileProps {
@@ -8,9 +10,27 @@ interface TileProps {
   value: string | number;
   trend?: Trend;
   filters?: { label: string; value: string }[];
+  href?: string;
 }
 
-function Tile({ title, value, trend = "none", filters = [] }: TileProps) {
+function Tile({ title, value, trend = "none", filters = [], href }: TileProps) {
+  const box = (
+    <div className="border rounded-xl p-6 relative bg-white shadow-sm hover:shadow cursor-pointer transition">
+      <div className="text-3xl font-semibold text-center">{value}</div>
+
+      {trend === "up" && (
+        <span className="absolute top-2 right-3 text-green-600 text-xl font-bold">
+          ▲
+        </span>
+      )}
+      {trend === "down" && (
+        <span className="absolute bottom-2 right-3 text-red-600 text-xl font-bold">
+          ▼
+        </span>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-col mb-10 w-full">
       {/* TILE TITLE */}
@@ -29,21 +49,8 @@ function Tile({ title, value, trend = "none", filters = [] }: TileProps) {
         ))}
       </div>
 
-      {/* TILE BOX */}
-      <div className="border rounded-xl p-6 relative bg-white shadow-sm hover:shadow cursor-pointer transition">
-        <div className="text-3xl font-semibold text-center">{value}</div>
-
-        {trend === "up" && (
-          <span className="absolute top-2 right-3 text-green-600 text-xl font-bold">
-            ▲
-          </span>
-        )}
-        {trend === "down" && (
-          <span className="absolute bottom-2 right-3 text-red-600 text-xl font-bold">
-            ▼
-          </span>
-        )}
-      </div>
+      {/* TILE BOX (optionally clickable link) */}
+      {href ? <Link href={href}>{box}</Link> : box}
     </div>
   );
 }
@@ -76,11 +83,12 @@ export default function Dashboard() {
       <section className="mb-16">
         <SectionHeader title="Overview" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-          <Tile title="Territories" value="4" />
+          <Tile title="Territories" value="4" href="/admin/dashboard/territories" />
 
           <Tile
             title="Operators"
             value="12"
+            href="/admin/dashboard/operators"
             filters={[
               { label: "Territory", value: "Territory: All" },
               { label: "Routes", value: "Routes: All" },
