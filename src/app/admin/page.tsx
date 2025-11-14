@@ -1,6 +1,5 @@
+// src/app/admin/dashboard/page.tsx
 "use client";
-
-import { useState } from "react";
 
 type Trend = "up" | "down" | "none";
 
@@ -14,15 +13,15 @@ interface TileProps {
 function Tile({ title, value, trend = "none", filters = [] }: TileProps) {
   return (
     <div className="flex flex-col mb-10 w-full">
-      {/* TITLE */}
-      <h3 className="text-sm font-medium mb-1">{title}</h3>
+      {/* TILE TITLE */}
+      <h3 className="text-xl font-semibold mb-1">{title}</h3>
 
-      {/* FILTERS */}
+      {/* FILTERS (outside tile box) */}
       <div className="flex flex-wrap gap-2 mb-2">
         {filters.map((f, idx) => (
           <select
             key={idx}
-            className="border rounded-md px-2 py-1 text-sm bg-white"
+            className="border rounded-lg px-3 py-2 text-sm bg-white"
             defaultValue={f.value}
           >
             <option>{f.value}</option>
@@ -49,25 +48,43 @@ function Tile({ title, value, trend = "none", filters = [] }: TileProps) {
   );
 }
 
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="flex items-center justify-between mb-6">
+      <h2 className="text-3xl font-semibold">{title}</h2>
+      <select className="border rounded-lg px-3 py-2 text-sm bg-white">
+        <option>This week</option>
+      </select>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   return (
     <div className="px-8 py-10 bg-white min-h-screen">
-      <h1 className="text-3xl font-bold mb-10">Pace Shuttles Management Dashboard</h1>
+      {/* DASHBOARD HEADER + DATE FILTER */}
+      <header className="flex items-center justify-between mb-10">
+        <h1 className="text-3xl font-bold">
+          Pace Shuttles Management Dashboard
+        </h1>
+        <select className="border rounded-lg px-3 py-2 text-sm bg-white">
+          <option>This week</option>
+        </select>
+      </header>
 
       {/* ========================= OVERVIEW ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Overview</h2>
+        <SectionHeader title="Overview" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
-          <Tile
-            title="Territories"
-            value="4"
-          />
+          <Tile title="Territories" value="4" />
 
           <Tile
             title="Operators"
             value="12"
-            filters={[{ label: "Territory", value: "Territory: All" }]}
+            filters={[
+              { label: "Territory", value: "Territory: All" },
+              { label: "Routes", value: "Routes: All" },
+            ]}
           />
 
           <Tile
@@ -90,9 +107,8 @@ export default function Dashboard() {
 
       {/* ========================= OPERATOR PERFORMANCE ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Operator Performance</h2>
+        <SectionHeader title="Operator Performance" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
           <Tile
             title="Completed Journeys"
             value="15"
@@ -133,15 +149,13 @@ export default function Dashboard() {
               { label: "Transport Type", value: "Transport Type: All" },
             ]}
           />
-
         </div>
       </section>
 
       {/* ========================= FINANCIALS ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Financials</h2>
+        <SectionHeader title="Financials" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
           <Tile
             title="Revenue"
             value="$23,000"
@@ -150,6 +164,7 @@ export default function Dashboard() {
               { label: "Territory", value: "Territory: All" },
               { label: "Operator", value: "Operator: All" },
               { label: "Transport Type", value: "Transport Type: All" },
+              { label: "Routes", value: "Routes: All" },
             ]}
           />
 
@@ -172,6 +187,7 @@ export default function Dashboard() {
               { label: "Territory", value: "Territory: All" },
               { label: "Operator", value: "Operator: All" },
               { label: "Transport Type", value: "Transport Type: All" },
+              { label: "Routes", value: "Routes: All" },
             ]}
           />
 
@@ -190,9 +206,8 @@ export default function Dashboard() {
 
       {/* ========================= MARKETING ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Marketing</h2>
+        <SectionHeader title="Marketing" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
           <Tile
             title="Social Media Mentions"
             value="104"
@@ -201,6 +216,7 @@ export default function Dashboard() {
               { label: "Territory", value: "Territory: All" },
               { label: "Operator", value: "Operator: All" },
               { label: "Platform", value: "Platform: All" },
+              { label: "Destination", value: "Destination: All" },
             ]}
           />
 
@@ -242,9 +258,8 @@ export default function Dashboard() {
 
       {/* ========================= SUPPORT ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Support</h2>
+        <SectionHeader title="Support" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
           <Tile
             title="All Contacts"
             value="104"
@@ -268,7 +283,7 @@ export default function Dashboard() {
           />
 
           <Tile
-            title="Agent Resolved"
+            title="Resolved by AI Agent"
             value="40%"
             trend="down"
             filters={[
@@ -287,6 +302,7 @@ export default function Dashboard() {
               { label: "Route", value: "Route: All" },
               { label: "Destination", value: "Destination: All" },
               { label: "Operator", value: "Operator: All" },
+              { label: "Category", value: "Category: All" },
             ]}
           />
         </div>
@@ -294,9 +310,8 @@ export default function Dashboard() {
 
       {/* ========================= SERVICE DELIVERY ========================= */}
       <section className="mb-16">
-        <h2 className="text-xl font-semibold mb-6">Service Delivery</h2>
+        <SectionHeader title="Service Delivery" />
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-
           <Tile
             title="New Releases"
             value="1"
@@ -317,17 +332,13 @@ export default function Dashboard() {
           <Tile
             title="Availability"
             value="99%"
-            filters={[
-              { label: "Territory", value: "Territory: All" },
-            ]}
+            filters={[{ label: "Territory", value: "Territory: All" }]}
           />
 
           <Tile
             title="Major Incidents"
             value="0"
-            filters={[
-              { label: "Territory", value: "Territory: All" },
-            ]}
+            filters={[{ label: "Territory", value: "Territory: All" }]}
           />
         </div>
       </section>
