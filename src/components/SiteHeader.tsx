@@ -214,17 +214,10 @@ export default function SiteHeader(): JSX.Element {
       `}</style>
 
       <div className="bar flex items-center justify-between">
-        {/* LEFT: burger (mobile) + brand; desktop shows role bar */}
+        {/* LEFT: burger (roles) + brand */}
         <div className="relative flex items-center gap-3 flex-1">
-          {/* Mobile burger: only when roles exist, and only after loading */}
-          <div className="shrink-0 md:hidden">
-            {!loading && hasRole ? (
-              <RoleAwareMenu profile={profile} loading={loading} />
-            ) : null}
-          </div>
-
-          {/* Desktop role bar: show on md+ when roles exist */}
-          <div className="hidden md:block">
+          {/* Burger: only when roles exist, and only after loading */}
+          <div className="shrink-0">
             {!loading && hasRole ? (
               <RoleAwareMenu profile={profile} loading={loading} />
             ) : null}
@@ -238,43 +231,31 @@ export default function SiteHeader(): JSX.Element {
           </div>
         </div>
 
-        {/* RIGHT: Pills */}
+        {/* RIGHT: Chat/Login (unauth) or Support/Account (auth) */}
         <nav className="flex items-center gap-2">
-          {/* While loading, avoid flashing the client menu */}
-          {loading ? null : hasRole ? (
-            // When user has roles, keep the right side minimal (Support + Account)
+          {loading ? null : authEmail ? (
+            // Logged-in (any role)
             <>
               <Link href="/support" className="pill text-sm">
                 Support
               </Link>
-              <Link href="/account" className="pill active text-sm" title={authEmail ?? ""}>
+              <Link
+                href="/account"
+                className="pill active text-sm"
+                title={authEmail ?? ""}
+              >
                 {firstName || "Account"}
               </Link>
             </>
           ) : (
-            // Client-only (no roles): Home + Chat/Support + Login/Account
+            // Unauthenticated
             <>
-              <Link href="/" className="pill active text-sm">
-                Home
+              <Link href="/chat" className="pill text-sm">
+                Chat
               </Link>
-              {authEmail ? (
-                <Link href="/support" className="pill text-sm">
-                  Support
-                </Link>
-              ) : (
-                <Link href="/chat" className="pill text-sm">
-                  Chat
-                </Link>
-              )}
-              {authEmail ? (
-                <Link href="/account" className="pill active text-sm" title={authEmail}>
-                  {firstName || "Account"}
-                </Link>
-              ) : (
-                <Link href="/login" className="pill active text-sm">
-                  Login
-                </Link>
-              )}
+              <Link href="/login" className="pill active text-sm">
+                Login
+              </Link>
             </>
           )}
         </nav>

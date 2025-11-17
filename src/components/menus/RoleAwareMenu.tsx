@@ -148,102 +148,86 @@ export default function RoleAwareMenu({ profile, loading }: Props) {
   }, [profile]);
 
   const effective = profile ?? cache;
-  const { role, burgerItems } = React.useMemo(() => buildMenu(effective), [effective]);
-
-  // Filter out Chat/Support for desktop; header already shows them
-  const desktopItems = React.useMemo(
-    () => burgerItems.filter(it => it.label !== "Chat" && it.label !== "Support"),
-    [burgerItems]
+  const { role, burgerItems } = React.useMemo(
+    () => buildMenu(effective),
+    [effective]
   );
 
-  // No menus at all for guests
-  if (role === "guest") return null;
+  // No menus at all for guests or empty menus
+  if (role === "guest" || burgerItems.length === 0) return null;
 
   return (
-    <>
-      {/* Desktop inline role menu (md and up) */}
-      {desktopItems.length > 0 && (
-        <nav className="hidden md:flex items-center gap-6">
-          {desktopItems.map((it) => (
-            <Link key={it.href} href={it.href} className="text-sm">
-              {it.label}
-            </Link>
-          ))}
-        </nav>
-      )}
+    <div>
+      {burgerItems.length <= 1 ? (
+        // Single direct link
+        <Link href={burgerItems[0].href} className="text-sm">
+          {burgerItems[0].label}
+        </Link>
+      ) : (
+        <>
+          <button
+            aria-label="Open menu"
+            onClick={() => setOpen(true)}
+            className="inline-flex items-center justify-center w-9 h-9"
+          >
+            <span
+              aria-hidden
+              className="relative block w-6 h-[2px] bg-current before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-current before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-current after:translate-y-2"
+            />
+          </button>
 
-      {/* Mobile burger (up to md) */}
-      <div className="md:hidden">
-        {burgerItems.length <= 1 ? (
-          <Link href={burgerItems[0].href} className="text-sm">
-            {burgerItems[0].label}
-          </Link>
-        ) : (
-          <>
-            <button
-              aria-label="Open menu"
-              onClick={() => setOpen(true)}
-              className="inline-flex items-center justify-center w-9 h-9"
-            >
-              <span
+          {open && (
+            <div className="fixed inset-0 z-[60]">
+              <div
+                className="absolute inset-0 bg-black/40"
+                onClick={() => setOpen(false)}
                 aria-hidden
-                className="relative block w-6 h-[2px] bg-current before:content-[''] before:absolute before:w-6 before:h-[2px] before:bg-current before:-translate-y-2 after:content-[''] after:absolute after:w-6 after:h-[2px] after:bg-current after:translate-y-2"
               />
-            </button>
-
-            {open && (
-              <div className="fixed inset-0 z-[60]">
-                <div
-                  className="absolute inset-0 bg-black/40"
-                  onClick={() => setOpen(false)}
-                  aria-hidden
-                />
-                <aside
-                  className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
-                  role="dialog"
-                  aria-label="Main menu"
-                >
-                  <div className="flex items-center justify-between px-4 py-3 border-b">
-                    <div className="font-medium">
-                      {loading
-                        ? "Loading…"
-                        : role === "siteadmin"
-                        ? "Site Admin"
-                        : role === "operator"
-                        ? "Operator Admin"
-                        : role === "crew"
-                        ? "Crew"
-                        : role === "client"
-                        ? "Client"
-                        : "Guest"}
-                    </div>
-                    <button
-                      aria-label="Close menu"
-                      className="w-9 h-9"
-                      onClick={() => setOpen(false)}
-                    >
-                      <span
-                        aria-hidden
-                        className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
-                      />
-                    </button>
+              <aside
+                className="absolute top-0 left-0 h-full w-[80%] max-w-[380px] bg-white text-black shadow-xl"
+                role="dialog"
+                aria-label="Main menu"
+              >
+                <div className="flex items-center justify-between px-4 py-3 border-b">
+                  <div className="font-medium">
+                    {loading
+                      ? "Loading…"
+                      : role === "siteadmin"
+                      ? "Site Admin"
+                      : role === "operator"
+                      ? "Operator Admin"
+                      : role === "crew"
+                      ? "Crew"
+                      : role === "client"
+                      ? "Client"
+                      : "Guest"}
                   </div>
+                  <button
+                    aria-label="Close menu"
+                    className="w-9 h-9"
+                    onClick={() => setOpen(false)}
+                  >
+                    <span
+                      aria-hidden
+                      className="relative block w-5 h-[2px] bg-black rotate-45 before:content-[''] before:absolute before:w-5 before:h-[2px] before:bg-black before:-rotate-90"
+                    />
+                  </button>
+                </div>
 
-                  <nav className="px-5 py-4 space-y-6 text-lg">
-                    {burgerItems.map((it) => (
-                      <div key={it.href}>
-                        <Link href={it.href} onClick={() => setOpen(false)}>
-                          {it.label}
-                        </Link>
-                      </div>
-                    ))}
-                  </nav>
-                </aside>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </>
+                <nav className="px-5 py-4 space-y-6 text-lg">
+                  {burgerItems.map((it) => (
+                    <div key={it.href}>
+                      <Link href={it.href} onClick={() => setOpen(false)}>
+                        {it.label}
+                      </Link>
+                    </div>
+                  ))}
+                </nav>
+              </aside>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
