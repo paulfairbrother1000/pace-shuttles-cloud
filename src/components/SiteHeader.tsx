@@ -168,7 +168,7 @@ export default function SiteHeader(): JSX.Element {
 
   return (
     <header className="ps-header">
-      {/* Theme (unchanged) */}
+      {/* Theme (unchanged apart from sticky positioning) */}
       <style jsx global>{`
         .ps-header {
           --bg: var(--bg, #0f1a2a);
@@ -183,6 +183,9 @@ export default function SiteHeader(): JSX.Element {
           background: var(--nav-bg);
           color: var(--text);
           border-bottom: 1px solid color-mix(in oklab, var(--bg) 70%, white 0%);
+          position: sticky;
+          top: 0;
+          z-index: 40;
         }
         .ps-header .bar {
           max-width: 72rem;
@@ -213,9 +216,9 @@ export default function SiteHeader(): JSX.Element {
         }
       `}</style>
 
-      <div className="bar flex items-center justify-between">
+      <div className="bar relative flex items-center justify-between">
         {/* LEFT: burger (roles) + brand */}
-        <div className="relative flex items-center gap-3 flex-1">
+        <div className="flex items-center gap-3 flex-1">
           {/* Burger: only when roles exist, and only after loading */}
           <div className="shrink-0">
             {!loading && hasRole ? (
