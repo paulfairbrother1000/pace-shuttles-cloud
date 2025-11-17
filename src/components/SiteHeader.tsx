@@ -167,102 +167,115 @@ export default function SiteHeader(): JSX.Element {
     !!profile?.site_admin || !!profile?.operator_admin || !!profile?.operator_id;
 
   return (
-    <header className="ps-header">
-      {/* Theme (unchanged apart from sticky positioning) */}
-      <style jsx global>{`
-        .ps-header {
-          --bg: var(--bg, #0f1a2a);
-          --border: var(--border, #20334d);
-          --text: var(--text, #eaf2ff);
-          --muted: var(--muted, #a3b3cc);
-          --accent: var(--accent, #2a6cd6);
-          --accent-contrast: var(--accent-contrast, #ffffff);
-          --radius: var(--radius, 14px);
-          --nav-bg: color-mix(in oklab, var(--bg) 88%, white);
-          width: 100%;
-          background: var(--nav-bg);
-          color: var(--text);
-          border-bottom: 1px solid color-mix(in oklab, var(--bg) 70%, white 0%);
-          position: sticky;
-          top: 0;
-          z-index: 40;
-        }
-        .ps-header .bar {
-          max-width: 72rem;
-          margin: 0 auto;
-          padding: 0.75rem 1.5rem;
-        }
-        .ps-header a.brand {
-          color: var(--text);
-          text-decoration: none;
-        }
-        .ps-header .pill {
-          border-radius: 9999px;
-          padding: 0.375rem 0.75rem;
-          font-size: 0.85rem;
-          line-height: 1.2;
-          border: 1px solid color-mix(in oklab, var(--bg) 60%, white 0%);
-          color: var(--text);
-          background: transparent;
-          transition: background-color 0.15s ease, opacity 0.15s ease;
-        }
-        .ps-header .pill:hover {
-          background: color-mix(in oklab, var(--bg) 80%, white 0%);
-        }
-        .ps-header .pill.active {
-          background: var(--accent);
-          color: var(--accent-contrast);
-          border-color: transparent;
-        }
-      `}</style>
+    <>
+      <header className="ps-header">
+        {/* Theme (background + fixed position) */}
+        <style jsx global>{`
+          .ps-header {
+            --bg: var(--bg, #0f1a2a);
+            --border: var(--border, #20334d);
+            --text: var(--text, #eaf2ff);
+            --muted: var(--muted, #a3b3cc);
+            --accent: var(--accent, #2a6cd6);
+            --accent-contrast: var(--accent-contrast, #ffffff);
+            --radius: var(--radius, 14px);
+            --nav-bg: color-mix(in oklab, var(--bg) 88%, white);
+            width: 100%;
+            background: var(--nav-bg);
+            color: var(--text);
+            border-bottom: 1px solid
+              color-mix(in oklab, var(--bg) 70%, white 0%);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 40;
+          }
+          .ps-header .bar {
+            max-width: 72rem;
+            margin: 0 auto;
+            padding: 0.75rem 1.5rem;
+          }
+          .ps-header a.brand {
+            color: var(--text);
+            text-decoration: none;
+          }
+          .ps-header .pill {
+            border-radius: 9999px;
+            padding: 0.375rem 0.75rem;
+            font-size: 0.85rem;
+            line-height: 1.2;
+            border: 1px solid
+              color-mix(in oklab, var(--bg) 60%, white 0%);
+            color: var(--text);
+            background: transparent;
+            transition: background-color 0.15s ease, opacity 0.15s ease;
+          }
+          .ps-header .pill:hover {
+            background: color-mix(in oklab, var(--bg) 80%, white 0%);
+          }
+          .ps-header .pill.active {
+            background: var(--accent);
+            color: var(--accent-contrast);
+            border-color: transparent;
+          }
 
-      <div className="bar relative flex items-center justify-between">
-        {/* LEFT: burger (roles) + brand */}
-        <div className="flex items-center gap-3 flex-1">
-          {/* Burger: only when roles exist, and only after loading */}
-          <div className="shrink-0">
-            {!loading && hasRole ? (
-              <RoleAwareMenu profile={profile} loading={loading} />
-            ) : null}
+          /* Add top padding to main app container so content
+             isn't hidden under the fixed header.
+             Adjust if your header height changes. */
+          body {
+            padding-top: 3.25rem;
+          }
+        `}</style>
+
+        <div className="bar relative flex items-center justify-between">
+          {/* LEFT: burger (roles) + brand */}
+          <div className="flex items-center gap-3 flex-1">
+            {/* Burger: only when roles exist, and only after loading */}
+            <div className="shrink-0">
+              {!loading && hasRole ? (
+                <RoleAwareMenu profile={profile} loading={loading} />
+              ) : null}
+            </div>
+
+            {/* Brand */}
+            <div className="absolute left-1/2 -translate-x-1/2 md:static md:translate-x-0">
+              <Link href="/" className="brand font-semibold">
+                Pace Shuttles
+              </Link>
+            </div>
           </div>
 
-          {/* Brand */}
-          <div className="absolute left-1/2 -translate-x-1/2 md:static md:translate-x-0">
-            <Link href="/" className="brand font-semibold">
-              Pace Shuttles
-            </Link>
-          </div>
+          {/* RIGHT: Chat/Login (unauth) or Support/Account (auth) */}
+          <nav className="flex items-center gap-2">
+            {loading ? null : authEmail ? (
+              // Logged-in (any role)
+              <>
+                <Link href="/support" className="pill text-sm">
+                  Support
+                </Link>
+                <Link
+                  href="/account"
+                  className="pill active text-sm"
+                  title={authEmail ?? ""}
+                >
+                  {firstName || "Account"}
+                </Link>
+              </>
+            ) : (
+              // Unauthenticated
+              <>
+                <Link href="/chat" className="pill text-sm">
+                  Chat
+                </Link>
+                <Link href="/login" className="pill active text-sm">
+                  Login
+                </Link>
+              </>
+            )}
+          </nav>
         </div>
-
-        {/* RIGHT: Chat/Login (unauth) or Support/Account (auth) */}
-        <nav className="flex items-center gap-2">
-          {loading ? null : authEmail ? (
-            // Logged-in (any role)
-            <>
-              <Link href="/support" className="pill text-sm">
-                Support
-              </Link>
-              <Link
-                href="/account"
-                className="pill active text-sm"
-                title={authEmail ?? ""}
-              >
-                {firstName || "Account"}
-              </Link>
-            </>
-          ) : (
-            // Unauthenticated
-            <>
-              <Link href="/chat" className="pill text-sm">
-                Chat
-              </Link>
-              <Link href="/login" className="pill active text-sm">
-                Login
-              </Link>
-            </>
-          )}
-        </nav>
-      </div>
-    </header>
+      </header>
+    </>
   );
 }
