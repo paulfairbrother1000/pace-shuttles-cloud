@@ -168,23 +168,18 @@ export default function SiteHeader(): JSX.Element {
 
   return (
     <>
-      {/* Fixed header */}
-      <header className="ps-header fixed top-0 left-0 right-0 z-40">
+      <header className="ps-header">
         <style jsx global>{`
           .ps-header {
-            --bg: var(--bg, #0f1a2a);
-            --border: var(--border, #20334d);
-            --text: var(--text, #eaf2ff);
-            --muted: var(--muted, #a3b3cc);
-            --accent: var(--accent, #2a6cd6);
-            --accent-contrast: var(--accent-contrast, #ffffff);
-            --radius: var(--radius, 14px);
-            --nav-bg: color-mix(in oklab, var(--bg) 88%, white);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 40;
             width: 100%;
-            background: var(--nav-bg);
-            color: var(--text);
-            border-bottom: 1px solid
-              color-mix(in oklab, var(--bg) 70%, white 0%);
+            background-color: #ffffff; /* solid white bar */
+            color: #111827; /* near-black text */
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
           }
           .ps-header .bar {
             max-width: 72rem;
@@ -192,7 +187,7 @@ export default function SiteHeader(): JSX.Element {
             padding: 0.75rem 1.5rem;
           }
           .ps-header a.brand {
-            color: var(--text);
+            color: inherit;
             text-decoration: none;
           }
           .ps-header .pill {
@@ -200,23 +195,21 @@ export default function SiteHeader(): JSX.Element {
             padding: 0.375rem 0.75rem;
             font-size: 0.85rem;
             line-height: 1.2;
-            border: 1px solid
-              color-mix(in oklab, var(--bg) 60%, white 0%);
-            color: var(--text);
+            border: 1px solid rgba(148, 163, 184, 0.8);
+            color: inherit;
             background: transparent;
             transition: background-color 0.15s ease, opacity 0.15s ease;
           }
           .ps-header .pill:hover {
-            background: color-mix(in oklab, var(--bg) 80%, white 0%);
+            background: rgba(148, 163, 184, 0.12);
           }
           .ps-header .pill.active {
-            background: var(--accent);
-            color: var(--accent-contrast);
+            background: #2a6cd6;
+            color: #ffffff;
             border-color: transparent;
           }
 
-          /* Add offset so content doesn't sit under the fixed header.
-             Tweak this value if your header height changes. */
+          /* Create space so content doesn't sit under the fixed header */
           body {
             padding-top: 3.25rem;
           }
