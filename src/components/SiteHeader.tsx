@@ -168,8 +168,8 @@ export default function SiteHeader(): JSX.Element {
 
   return (
     <>
-      <header className="ps-header">
-        {/* Theme (background + fixed position) */}
+      {/* Fixed header */}
+      <header className="ps-header fixed top-0 left-0 right-0 z-40">
         <style jsx global>{`
           .ps-header {
             --bg: var(--bg, #0f1a2a);
@@ -185,11 +185,6 @@ export default function SiteHeader(): JSX.Element {
             color: var(--text);
             border-bottom: 1px solid
               color-mix(in oklab, var(--bg) 70%, white 0%);
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 40;
           }
           .ps-header .bar {
             max-width: 72rem;
@@ -220,9 +215,8 @@ export default function SiteHeader(): JSX.Element {
             border-color: transparent;
           }
 
-          /* Add top padding to main app container so content
-             isn't hidden under the fixed header.
-             Adjust if your header height changes. */
+          /* Add offset so content doesn't sit under the fixed header.
+             Tweak this value if your header height changes. */
           body {
             padding-top: 3.25rem;
           }
@@ -238,7 +232,7 @@ export default function SiteHeader(): JSX.Element {
               ) : null}
             </div>
 
-            {/* Brand */}
+            {/* Brand centred relative to the whole bar */}
             <div className="absolute left-1/2 -translate-x-1/2 md:static md:translate-x-0">
               <Link href="/" className="brand font-semibold">
                 Pace Shuttles
