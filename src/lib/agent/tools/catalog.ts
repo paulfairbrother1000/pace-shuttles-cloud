@@ -17,7 +17,14 @@ type VisibleCatalog = {
   countries: { name: string }[];
   destinations: { name: string; country_name?: string | null }[];
   pickups: { name: string; country_name?: string | null }[];
-  vehicle_types: { name: string }[];
+  vehicle_types: {
+    id: string;
+    name: string;
+    description?: string | null;
+    icon_url?: string | null;
+    capacity?: number | null;
+    features?: string[] | null;
+  }[];
 };
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
@@ -106,6 +113,35 @@ function getAllDestinationsGrouped(cat: VisibleCatalog): { country: string; dest
     }
   }
   return out;
+}
+
+/* ─────────────────────────────────────────────
+   Vehicle / transport types
+   ───────────────────────────────────────────── */
+function getVisibleVehicleTypes(cat: VisibleCatalog): string[] {
+  // Preferred: explicit vehicle_types from transport_types / vehicle_types tables
+  if (cat.vehicle_types && cat.vehicle_types.length) {
+    const names = Array.from(
+      new Set(
+        cat.vehicle_types
+          .map(v => (v.name || "").trim())
+          .filter(Boolean)
+      )
+    );
+    names.sort((a, b) => a.localeCompare(b));
+    return names;
+  }
+
+  // Fallback: names attached to routes (e.g. “Silver Lady”, “Barbados Boat”)
+  const fromRoutes = Array.from(
+    new Set(
+      (cat.routes || [])
+        .map(r => (r.vehicle_type_name || "").trim())
+        .filter(Boolean)
+    )
+  );
+  fromRoutes.sort((a, b) => a.localeCompare(b));
+  return fromRoutes;
 }
 
 /* ─────────────────────────────────────────────
@@ -277,6 +313,50 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
               content:
                 "Here are the destinations we currently visit:\n\n" +
                 lines.join("\n")
+            }
+          ]
+        };
+      }
+    },
+
+    // 4) Global transport / vehicle types
+    {
+      spec: {
+        type: "function",
+        function: {
+          name: "list_transport_types_global",
+          description:
+            "List the transport / vehicle types Pace Shuttles currently uses, based on the visible catalog. Use this when the user asks things like “what types of vehicles do you have?”, “what types of boats do you use?”, or “what kinds of transport do you operate?”.",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false
+          }
+        }
+      },
+      async run(): Promise<ToolExecutionResult> {
+        const cat = await fetchCatalog(baseUrl);
+        const types = getVisibleVehicleTypes(cat);
+
+        if (!types.length) {
+          return {
+            messages: [
+              {
+                role: "assistant",
+                content:
+                  "We don’t currently have any transport types listed in the catalog yet."
+              }
+            ]
+          };
+        }
+
+        const bullets = types.map(t => `• ${t}`).join(" ");
+
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `We currently operate with the following types of transport: ${bullets}`
             }
           ]
         };
