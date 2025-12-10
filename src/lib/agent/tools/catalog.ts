@@ -1,10 +1,13 @@
 // src/lib/agent/tools/catalog.ts
-import type { ToolContext, ToolDefinition, ToolExecutionResult } from "./index";
+import type {
+  ToolContext,
+  ToolDefinition,
+  ToolExecutionResult,
+} from "./index";
 
-/* ─────────────────────────────────────────────
-   Types that mirror /api/public/visible-catalog
-   and /api/public/vehicle-types
-   ───────────────────────────────────────────── */
+/* -------------------------------------------------------------------------- */
+/*  Types mirroring /api/public/visible-catalog                               */
+/* -------------------------------------------------------------------------- */
 
 type VisibleRoute = {
   route_id: string;
@@ -29,23 +32,12 @@ type VisibleCatalog = {
   vehicle_types: any[];
 };
 
-type Rowed<T> = T[] | { ok?: boolean; rows?: T[] };
-
-type VehicleType = {
-  id: string;
-  name: string;
-  description?: string | null;
-};
-
-/* ─────────────────────────────────────────────
-   Small helpers
-   ───────────────────────────────────────────── */
+/* -------------------------------------------------------------------------- */
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
 
 function normaliseCountryName(name: string | null | undefined): string {
   if (!name) return "";
-  // treat "&" and "and" the same, normalise whitespace
   return lc(name).replace(/&/g, "and").replace(/\s+/g, " ");
 }
 
@@ -79,32 +71,21 @@ async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | nul
   return fetchJSON<VisibleCatalog>(`${baseUrl}/api/public/visible-catalog`);
 }
 
-async function loadVehicleTypes(baseUrl: string): Promise<VehicleType[]> {
-  const data = await fetchJSON<Rowed<VehicleType>>(
-    `${baseUrl}/api/public/vehicle-types`
-  );
-  if (!data) return [];
-  if (Array.isArray(data)) return data;
-  if ("rows" in data && Array.isArray(data.rows)) return data.rows;
-  return [];
-}
-
-/* ─────────────────────────────────────────────
-   Tool builders
-   ───────────────────────────────────────────── */
+/* -------------------------------------------------------------------------- */
+/*  Catalog tool implementations                                              */
+/* -------------------------------------------------------------------------- */
 
 export function catalogTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
-  /* 1) Countries where we operate today (live routes only) */
+  /* 1) Countries where we operate */
   const listOperatingCountries: ToolDefinition = {
     spec: {
       type: "function",
       function: {
-        // CHANGED: no dot, legal tool name
-        name: "ps_listOperatingCountries",
+        name: "listOperatingCountries",
         description:
-          "List the countries where Pace Shuttles currently has live, bookable routes according to the public catalog. Use this whenever the user asks which countries Pace Shuttles operates in.",
+          "List the countries where Pace Shuttles currently has live, bookable routes according to the public catalog.",
         parameters: {
           type: "object",
           properties: {},
@@ -126,15 +107,13 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const countries = unique(cat.routes.map(r => r.country_name));
+      const countries = unique(cat.routes.map((r) => r.country_name));
       const content =
         countries.length > 0
           ? `We currently operate in:\n• ${countries.join(" • ")}`
           : "We don’t currently have any live, bookable journeys listed right now. Please check back soon.";
 
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 
@@ -143,10 +122,9 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        // CHANGED
-        name: "ps_listDestinationsInCountry",
+        name: "listDestinationsInCountry",
         description:
-          "Given a country name, list the destinations Pace Shuttles currently visits in that country (beach clubs, restaurants, islands, bays, etc.) based ONLY on the public catalog. Do NOT reveal operator names or vessel names.",
+          "Given a country name, list the destinations Pace Shuttles currently visits in that country (beach clubs, restaurants, islands, bays, etc.) based ONLY on the public catalog.",
         parameters: {
           type: "object",
           properties: {
@@ -179,7 +157,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       }
 
       const inCountry = cat.routes.filter(
-        r => normaliseCountryName(r.country_name) === normQuery
+        (r) => normaliseCountryName(r.country_name) === normQuery
       );
 
       if (!inCountry.length) {
@@ -193,7 +171,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const dests = unique(inCountry.map(r => r.destination_name));
+      const dests = unique(inCountry.map((r) => r.destination_name));
       const prettyCountry = inCountry[0].country_name || countryRaw;
 
       if (!dests.length) {
@@ -211,9 +189,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         " • "
       )}`;
 
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 
@@ -222,8 +198,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        // CHANGED
-        name: "ps_listPickupsInCountry",
+        name: "listPickupsInCountry",
         description:
           "Given a country name, list the pickup / boarding locations for journeys in that country (e.g. marinas, harbours, heliports). Use this when the user asks where journeys begin or where they get on the transport.",
         parameters: {
@@ -258,7 +233,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       }
 
       const inCountry = cat.routes.filter(
-        r => normaliseCountryName(r.country_name) === normQuery
+        (r) => normaliseCountryName(r.country_name) === normQuery
       );
 
       if (!inCountry.length) {
@@ -272,7 +247,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const pickups = unique(inCountry.map(r => r.pickup_name));
+      const pickups = unique(inCountry.map((r) => r.pickup_name));
       const prettyCountry = inCountry[0].country_name || countryRaw;
 
       if (!pickups.length) {
@@ -290,9 +265,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         " • "
       )}`;
 
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 
@@ -301,10 +274,9 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        // CHANGED
-        name: "ps_listRoutesInCountry",
+        name: "listRoutesInCountry",
         description:
-          "Given a country name, list the shuttle routes in that country as pickup → destination pairs based on the public catalog. Do NOT mention operator names or vessel names.",
+          "Given a country name, list the shuttle routes in that country as pickup → destination pairs based on the public catalog.",
         parameters: {
           type: "object",
           properties: {
@@ -337,7 +309,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       }
 
       const inCountry = cat.routes.filter(
-        r => normaliseCountryName(r.country_name) === normQuery
+        (r) => normaliseCountryName(r.country_name) === normQuery
       );
 
       if (!inCountry.length) {
@@ -352,7 +324,9 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       }
 
       const routes = unique(
-        inCountry.map(r => r.route_name || `${r.pickup_name} → ${r.destination_name}`)
+        inCountry.map(
+          (r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`
+        )
       );
       const prettyCountry = inCountry[0].country_name || countryRaw;
 
@@ -360,21 +334,18 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         " • "
       )}`;
 
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 
-  /* 5) High-level transport categories (from transport_types / vehicle-types) */
+  /* 5) High-level transport categories – GENERIC, no vessel names */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
-        // CHANGED
-        name: "ps_listTransportTypes",
+        name: "listTransportTypes",
         description:
-          "List the generic categories of transport used by Pace Shuttles (e.g. luxury boats, helicopters, premium vehicles). Never reveal specific operator names or vessel names. Use this when the user asks what types of vehicles are involved.",
+          "Describe the generic categories of transport used by Pace Shuttles (e.g. luxury boats, helicopters, premium vehicles). Never reveal specific operator or vessel names.",
         parameters: {
           type: "object",
           properties: {},
@@ -383,28 +354,11 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      const types = await loadVehicleTypes(baseUrl);
-      const names = unique(types.map(t => t.name));
-
-      if (!names.length) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                "We use a mix of premium transport types tailored to each route, such as modern boats and other high-end vehicles. As we expand, you’ll see more detailed categories shown in the app.",
-            },
-          ],
-        };
-      }
-
+      // IMPORTANT: we deliberately do NOT read vessel names from the DB here
+      // to avoid leaking operator/vessel identities before bookings.
       const content =
-        "We currently use the following categories of transport:\n• " +
-        names.join(" • ");
-
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+        "We use premium categories of transport tailored to each route, such as luxury boats today, with scope for helicopters and other high-end vehicles in future territories. Specific vessel or operator names are not disclosed in advance of a booking.";
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 

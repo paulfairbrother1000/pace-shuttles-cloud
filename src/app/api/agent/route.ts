@@ -8,12 +8,13 @@ import { buildTools } from "@/lib/agent/tools";
 import {
   AgentRequest,
   AgentResponse,
-  AgentMessage
+  AgentMessage,
 } from "@/lib/agent/agent-schema";
 
-// ---------------------------------------------------------------------------
-// Supabase (server-side client)
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/*  Supabase (server-side client)                                             */
+/* -------------------------------------------------------------------------- */
+
 function getSupabaseClient() {
   const cookieStore = cookies();
   return createServerClient(
@@ -22,19 +23,20 @@ function getSupabaseClient() {
     {
       cookies: {
         getAll: () => cookieStore.getAll(),
-        setAll: (cookies) => {
-          cookies.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          );
+        setAll: (cookiesToSet) => {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+          });
         },
       },
     }
   );
 }
 
-// ---------------------------------------------------------------------------
-// Base URL resolver
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/*  Base URL resolver                                                         */
+/* -------------------------------------------------------------------------- */
+
 function getBaseUrl() {
   const h = headers();
   const proto = h.get("x-forwarded-proto") ?? "https";
@@ -47,68 +49,72 @@ function getBaseUrl() {
   return `${proto}://${host}`;
 }
 
-// ---------------------------------------------------------------------------
-// SYSTEM GUARDRAILS (no description, no narrative)
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/*  System guardrails                                                         */
+/* -------------------------------------------------------------------------- */
+
 const SYSTEM_RULES = `
 You are the Pace Shuttles concierge AI.
 
 RULES:
-- ALWAYS use tools first when asked about: what Pace Shuttles is, how it works,
-  routes, destinations, pickups, vehicle categories, terms, policies.
+- ALWAYS use tools first when asked about what Pace Shuttles is, how it works,
+  where we operate, routes, destinations, pickups, vehicle categories, terms or
+  policies.
 - NEVER invent information.
 - NEVER reveal operator names or vessel names.
-- NEVER discuss airports, airlines, taxis, buses, or unrelated transport.
-- If a tool returns no data, say so politely.
+- Focus on premium coastal and island transfers (beach clubs, restaurants,
+  islands, marinas) – not airports, city buses or generic public transport.
+- If tools return no data, say so politely.
 - Keep responses concise and factual.
-- You are NOT allowed to guess; you must defer to tools.
 `;
 
-// ---------------------------------------------------------------------------
-// POST handler — FULL TOOL-FIRST PIPELINE
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/*  POST handler – tool-first agent                                           */
+/* -------------------------------------------------------------------------- */
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser();
+    await supabase.auth.getUser(); // we don't use user yet, but this keeps auth flow consistent
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // -----------------------------------------------------------------------
-    // ALWAYS enforce tool-first behaviour by placing system message first
-    // -----------------------------------------------------------------------
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...body.messages
+        ...body.messages,
       ],
-      tools: tools.map(t => t.spec),
-      tool_choice: "auto"
+      tools: tools.map((t) => t.spec),
+      tool_choice: "auto",
     });
 
     const msg = completion.choices[0]?.message;
 
     if (!msg) {
-      return NextResponse.json({ error: "Agent produced no message" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Agent produced no message" },
+        { status: 500 }
+      );
     }
 
-    // -----------------------------------------------------------------------
-    // TOOL CALL
-    // -----------------------------------------------------------------------
+    // ----------------------------- Tool call path ---------------------------
     if (msg.tool_calls?.length) {
       const call = msg.tool_calls[0];
-      const impl = tools.find(t => t.spec.function.name === call.function.name);
+      const impl = tools.find(
+        (t) => t.spec.function.name === call.function.name
+      );
 
       if (!impl) {
-        return NextResponse.json({
-          error: `Unknown tool: ${call.function.name}`
-        });
+        return NextResponse.json(
+          { error: `Unknown tool: ${call.function.name}` },
+          { status: 500 }
+        );
       }
 
       const args = call.function.arguments
@@ -117,31 +123,28 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      const toolResponse: AgentMessage = {
+      const toolMessage: AgentMessage = {
         role: "tool",
         name: call.function.name,
-        content: JSON.stringify(result)
+        content: JSON.stringify(result),
       };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolResponse],
-        choices: result.choices ?? []
+        messages: [...body.messages, toolMessage],
+        choices: result.choices ?? [],
       });
     }
 
-    // -----------------------------------------------------------------------
-    // FINAL MESSAGE (after tool call or plain completion)
-    // -----------------------------------------------------------------------
+    // ----------------------------- Plain answer path ------------------------
     const finalMessage: AgentMessage = {
       role: "assistant",
-      content: msg.content ?? ""
+      content: msg.content ?? "",
     };
 
     return NextResponse.json<AgentResponse>({
       messages: [...body.messages, finalMessage],
-      choices: []
+      choices: [],
     });
-
   } catch (err: any) {
     console.error("Agent error:", err);
     return NextResponse.json(

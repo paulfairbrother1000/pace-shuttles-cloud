@@ -1,55 +1,86 @@
 // src/lib/agent/tools/searchKB.ts
-import type { ToolDefinition, ToolContext } from "./index";
-import OpenAI from "openai";
+import type {
+  ToolContext,
+  ToolDefinition,
+  ToolExecutionResult,
+} from "./index";
 
-export function kbTools({ supabase }: ToolContext): ToolDefinition[] {
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+export function kbTools(ctx: ToolContext): ToolDefinition[] {
+  const { baseUrl } = ctx;
 
-  return [
-    {
-      spec: {
-        type: "function",
-        function: {
-          name: "search_kb",
-          description: "Semantic search KB for FAQs",
-          parameters: {
-            type: "object",
-            properties: {
-              query: { type: "string" },
-              audience: { type: "string" }
+  const searchKnowledgeBase: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "searchKnowledgeBase",
+        description:
+          "Search the Pace Shuttles public knowledge base, including PDFs and terms & conditions, to answer questions about how the service works.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description:
+                "Natural language question to search for in the knowledge base.",
             },
-            required: ["query"]
-          }
-        }
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
       },
-      run: async (args) => {
-        const embeddingResp = await openai.embeddings.create({
-          model: "text-embedding-3-small",
-          input: args.query
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const query = String(args.query || "").trim();
+      if (!query) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t understand that well enough to look it up in our documents. Could you rephrase your question?",
+            },
+          ],
+        };
+      }
+
+      try {
+        const res = await fetch(`${baseUrl}/api/tools/searchPublicKB`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
         });
 
-        const embedding = embeddingResp.data[0].embedding;
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
 
-        const { data, error } = await supabase.rpc("match_kb_chunks", {
-          query_embedding: embedding,
-          match_threshold: 0.65,
-          audience_filter: args.audience ?? "public",
-          match_count: 4
-        });
-
-        if (error) throw error;
-
-        const text = data.map((d: any) => d.content).join("\n");
+        const data = (await res.json()) as { answer?: string };
+        const answer =
+          data.answer ||
+          "I couldn’t find a precise answer in our public documents, but I can still explain the service at a high level if you’d like.";
 
         return {
           messages: [
             {
               role: "assistant",
-              content: text || "I couldn’t find anything related to that."
-            }
-          ]
+              content: answer,
+            },
+          ],
+        };
+      } catch (err) {
+        console.error("KB tool error:", err);
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I ran into a problem looking that up in the knowledge base. Please try again in a moment or ask your question in a different way.",
+            },
+          ],
         };
       }
-    }
-  ];
+    },
+  };
+
+  return [searchKnowledgeBase];
 }

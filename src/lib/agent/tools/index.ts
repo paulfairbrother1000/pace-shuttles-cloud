@@ -1,9 +1,9 @@
 // src/lib/agent/tools/index.ts
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { catalogTools } from "./catalog";
+import { kbTools } from "./searchKB";
 import { bookingTools } from "./bookings";
 import { quoteTools } from "./quote";
-import { kbTools } from "./searchKB";
 import type { AgentChoice } from "@/lib/agent/agent-schema";
 
 export type ToolExecutionResult = {
@@ -20,20 +20,20 @@ export type ToolDefinition = {
   spec: {
     type: "function";
     function: {
-      name: string;
+      name: string; // MUST match ^[a-zA-Z0-9_-]+$
       description: string;
-      parameters: Record<string, any>;
+      parameters: any;
     };
   };
-  // NOTE: ctx is closed over when we build the tools – only args are passed at call time.
+  // ctx is closed over when tools are constructed – only args are passed
   run: (args: any) => Promise<ToolExecutionResult>;
 };
 
 export function buildTools(ctx: ToolContext): ToolDefinition[] {
   return [
     ...catalogTools(ctx),
+    ...kbTools(ctx),
     ...bookingTools(ctx),
     ...quoteTools(ctx),
-    ...kbTools(ctx),
   ];
 }
