@@ -119,18 +119,23 @@ function getAllDestinationsGrouped(cat: VisibleCatalog): { country: string; dest
    Vehicle / transport types
    ───────────────────────────────────────────── */
 function getVisibleVehicleTypes(cat: VisibleCatalog): string[] {
-  // Preferred: explicit vehicle_types from transport_types / vehicle_types tables
-  if (cat.vehicle_types && cat.vehicle_types.length) {
-    const names = Array.from(
-      new Set(
-        cat.vehicle_types
-          .map(v => (v.name || "").trim())
-          .filter(Boolean)
-      )
-    );
-    names.sort((a, b) => a.localeCompare(b));
-    return names;
-  }
+  // HARD GUARDRAIL:
+  // Only ever expose generic *type* labels that come from vehicle_types /
+  // transport_types. Never expose individual vessel names or operator names.
+  if (!cat.vehicle_types || !cat.vehicle_types.length) return [];
+
+  const names = Array.from(
+    new Set(
+      cat.vehicle_types
+        .map(v => (v.name || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  names.sort((a, b) => a.localeCompare(b));
+  return names;
+}
+
 
   // Fallback: names attached to routes (e.g. “Silver Lady”, “Barbados Boat”)
   const fromRoutes = Array.from(
@@ -319,14 +324,15 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       }
     },
 
-    // 4) Global transport / vehicle types
+    // 4) Global transport / vehicle types (operator-agnostic)
     {
       spec: {
         type: "function",
         function: {
           name: "list_transport_types_global",
           description:
-            "List the transport / vehicle types Pace Shuttles currently uses, based on the visible catalog. Use this when the user asks things like “what types of vehicles do you have?”, “what types of boats do you use?”, or “what kinds of transport do you operate?”.",
+            "List the generic transport / vehicle TYPES that Pace Shuttles uses (e.g. speed boats, helicopters, shuttle buses). " +
+            "Never disclose operator names or individual vessel names. Use this when the user asks things like “what types of vehicles do you have?”",
           parameters: {
             type: "object",
             properties: {},
@@ -339,12 +345,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         const types = getVisibleVehicleTypes(cat);
 
         if (!types.length) {
+          // Brand-safe fallback – still operator-agnostic
           return {
             messages: [
               {
                 role: "assistant",
                 content:
-                  "We don’t currently have any transport types listed in the catalog yet."
+                  "We use a mix of premium transport types tailored to each route, such as modern boats and other high-end vehicles. " +
+                  "As we expand, you’ll see more detailed categories shown in the app."
               }
             ]
           };
@@ -356,11 +364,10 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
           messages: [
             {
               role: "assistant",
-              content: `We currently operate with the following types of transport: ${bullets}`
+              content:
+                `We currently operate with the following types of transport: ${bullets}`
             }
           ]
         };
       }
     }
-  ];
-}

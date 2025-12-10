@@ -178,10 +178,13 @@ async function loadVisibleCatalog() {
   }
 
   // Transport/vehicle types:
-  // 1) Try transport_types; 2) fallback to vehicle_types; 3) if neither matches by name, return empty (non-fatal).
+  // 1) Try transport_types; 2) fallback to vehicle_types.
+  // IMPORTANT: We only ever expose generic *type* labels here (speedboat, helicopter, bus),
+  // NOT specific vessel names. If the name-based filter yields nothing, we fall back
+  // to all available types instead of leaking per-boat labels.
   let vehicle_types:
     | Array<{
-        id: string | null;
+        id: string;
         name: string;
         description?: string | null;
         icon_url?: string | null;
@@ -190,30 +193,30 @@ async function loadVisibleCatalog() {
       }>
     = [];
 
-  // Load all types (small table), then filter client-side by name if IDs are absent.
+  // Load all types (small table), then (optionally) filter client-side by name.
   const [{ data: ttypesAll }, { data: vtypesAll }] = await Promise.all([
-    supabase.from("transport_types").select("id,name,description,icon_url,capacity,features"),
-    supabase.from("vehicle_types").select("id,name,description,icon_url,capacity,features"),
+    supabase.from("transport_types").select(
+      "id,name,description,icon_url,capacity,features"
+    ),
+    supabase.from("vehicle_types").select(
+      "id,name,description,icon_url,capacity,features"
+    ),
   ]);
 
   const allTypes = [...(ttypesAll ?? []), ...(vtypesAll ?? [])];
 
-  if (visibleTypeNamesLC.size && allTypes.length) {
-    vehicle_types = allTypes.filter(t => visibleTypeNamesLC.has(lc(t.name)));
-  } else if (allTypes.length) {
+  if (!allTypes.length) {
+    vehicle_types = [];
+  } else if (visibleTypeNamesLC.size) {
+    // Try to filter by names referenced on routes…
+    const filtered = allTypes.filter(t => visibleTypeNamesLC.has(lc(t.name)));
+    // …but if that yields nothing (e.g. route names are vessel nicknames),
+    // fall back to the full generic list instead.
+    vehicle_types = filtered.length ? filtered : allTypes;
+  } else {
     vehicle_types = allTypes;
   }
 
-  return {
-    ok: true,
-    fallback: false,
-    routes,
-    countries,
-    destinations,
-    pickups,
-    vehicle_types,
-  };
-}
 
 /* ---------- Fallback (public endpoints only) ---------- */
 type Rowed<T> = { ok?: boolean; rows?: T[] } | T[];
