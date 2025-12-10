@@ -1,12 +1,10 @@
 // src/app/chat/page.tsx
-"use client";
+import { AgentChat } from "@/components/AgentChat";
 
-import AgentChat from "@/components/AgentChat";
-
-export default function ChatPage() {
+export default function Page() {
   return (
-    <main style={{ padding: 16 }}>
-      <AgentChat endpoint="/api/agent" title="Pace Shuttles Assistant" />
-    </main>
+    <div className="min-h-screen p-6 bg-gray-50">
+      <AgentChat />
+    </div>
   );
 }
