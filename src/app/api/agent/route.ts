@@ -123,14 +123,19 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      const toolMessage: AgentMessage = {
-        role: "tool",
-        name: call.function.name,
-        content: JSON.stringify(result),
-      };
+      // Tools return assistant-style messages; unwrap them and send back
+      // a normal assistant reply instead of a tool message / raw JSON.
+      const assistantMessages = result.messages ?? [];
+      const final =
+        assistantMessages[assistantMessages.length - 1] ??
+        ({
+          role: "assistant",
+          content:
+            "I ran an internal tool but it didn’t return any readable answer.",
+        } as const);
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage],
+        messages: [...body.messages, final],
         choices: result.choices ?? [],
       });
     }
