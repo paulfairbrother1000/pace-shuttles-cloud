@@ -101,7 +101,8 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        name: "ps.listOperatingCountries",
+        // CHANGED: no dot, legal tool name
+        name: "ps_listOperatingCountries",
         description:
           "List the countries where Pace Shuttles currently has live, bookable routes according to the public catalog. Use this whenever the user asks which countries Pace Shuttles operates in.",
         parameters: {
@@ -142,7 +143,8 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        name: "ps.listDestinationsInCountry",
+        // CHANGED
+        name: "ps_listDestinationsInCountry",
         description:
           "Given a country name, list the destinations Pace Shuttles currently visits in that country (beach clubs, restaurants, islands, bays, etc.) based ONLY on the public catalog. Do NOT reveal operator names or vessel names.",
         parameters: {
@@ -220,7 +222,8 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        name: "ps.listPickupsInCountry",
+        // CHANGED
+        name: "ps_listPickupsInCountry",
         description:
           "Given a country name, list the pickup / boarding locations for journeys in that country (e.g. marinas, harbours, heliports). Use this when the user asks where journeys begin or where they get on the transport.",
         parameters: {
@@ -298,7 +301,8 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        name: "ps.listRoutesInCountry",
+        // CHANGED
+        name: "ps_listRoutesInCountry",
         description:
           "Given a country name, list the shuttle routes in that country as pickup → destination pairs based on the public catalog. Do NOT mention operator names or vessel names.",
         parameters: {
@@ -367,7 +371,8 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     spec: {
       type: "function",
       function: {
-        name: "ps.listTransportTypes",
+        // CHANGED
+        name: "ps_listTransportTypes",
         description:
           "List the generic categories of transport used by Pace Shuttles (e.g. luxury boats, helicopters, premium vehicles). Never reveal specific operator names or vessel names. Use this when the user asks what types of vehicles are involved.",
         parameters: {
