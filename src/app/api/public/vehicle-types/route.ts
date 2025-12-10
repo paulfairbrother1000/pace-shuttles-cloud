@@ -1,37 +1,44 @@
+// src/app/api/public/vehicle-types/route.ts
 import { NextResponse } from "next/server";
-import { supaAnon } from "../_lib/db";
+import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "edge";
-
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const q = (url.searchParams.get("q") || "").trim();
-  const activeParam = url.searchParams.get("active"); // optional if you want to filter by t.is_active via view
-
-  const supa = supaAnon();
-
-  let query = supa
-    .from("ps_public_vehicle_types_v")
-    .select("*", { count: "exact" })
-    .order("sort_order", { ascending: true })
-    .order("name", { ascending: true });
-
-  if (activeParam !== null) query = query.eq("active", activeParam === "true");
-  if (q) {
-    const safe = q.replace(/[%_]/g, (s) => `\\${s}`);
-    query = query.or(`name.ilike.%${safe}%,description.ilike.%${safe}%`);
+/**
+ * Server-side Supabase client using the service role key.
+ * This route is only executed on the server, so the key is not exposed
+ * to the browser. Make sure SUPABASE_SERVICE_ROLE_KEY is set in Vercel.
+ */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      persistSession: false,
+    },
   }
+);
 
-  const { data, error, count } = await query;
-  if (error) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+export async function GET() {
+  try {
+    const { data, error } = await supabase
+      .from("transport_types")
+      .select("id, name, description")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
+
+    if (error) {
+      console.error("vehicle-types: Supabase error:", error);
+      return NextResponse.json(
+        { rows: [], error: "Failed to load vehicle types" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ rows: data ?? [] });
+  } catch (err) {
+    console.error("vehicle-types: unexpected error:", err);
+    return NextResponse.json(
+      { rows: [], error: "Unexpected error loading vehicle types" },
+      { status: 500 }
+    );
   }
-
-  // Hide internal IDs
-  const rows = (data ?? []).map(({ id, ...rest }) => rest);
-
-  return NextResponse.json(
-    { ok: true, rows, count: count ?? 0 },
-    { headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=86400" } }
-  );
 }
