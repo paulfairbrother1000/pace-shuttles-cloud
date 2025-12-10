@@ -18,6 +18,15 @@ function sb(): SupabaseClient {
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase();
 
+/** Normalise country names so "&" vs "and", spacing, case etc don't break matching */
+function normCountryName(s?: string | null) {
+  return (s ?? "")
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Try to read a field from multiple possible names */
 function pick<T extends Record<string, any>>(row: T, ...keys: string[]) {
   for (const k of keys) if (row[k] != null) return row[k];
@@ -69,33 +78,116 @@ async function loadVisibleCatalog() {
   const routes = (rawRoutes ?? []).map(normalizeRoute).filter(r => r.route_name);
 
   if (!routes.length) {
-    return { ok: true, fallback: false, routes: [], countries: [], destinations: [], pickups: [], vehicle_types: [] };
+    return {
+      ok: true,
+      fallback: false,
+      routes: [],
+      countries: [],
+      destinations: [],
+      pickups: [],
+      vehicle_types: [],
+    };
   }
 
   // Derive visibility strictly from routes
-  const visibleCountryNames = Array.from(new Set(routes.map(r => r.country_name).filter(Boolean) as string[]));
-  const visibleDestLC = new Set(routes.map(r => lc(r.destination_name)).filter(Boolean));
-  const visiblePickupLC = new Set(routes.map(r => lc(r.pickup_name)).filter(Boolean));
+  const visibleCountryNames = Array.from(
+    new Set(routes.map(r => r.country_name).filter(Boolean) as string[])
+  );
+  const visibleCountryNamesNorm = new Set(visibleCountryNames.map(normCountryName));
+
+  const visibleDestNames = Array.from(
+    new Set(routes.map(r => r.destination_name).filter(Boolean) as string[])
+  );
+  const visibleDestLC = new Set(visibleDestNames.map(lc));
+
+  const visiblePickupNames = Array.from(
+    new Set(routes.map(r => r.pickup_name).filter(Boolean) as string[])
+  );
+  const visiblePickupLC = new Set(visiblePickupNames.map(lc));
 
   // If ids are missing in the view, we fall back to vehicle type *names*
-  const visibleTypeNamesLC = new Set(routes.map(r => lc(r.vehicle_type_name)).filter(Boolean));
+  const visibleTypeNamesLC = new Set(
+    routes.map(r => lc(r.vehicle_type_name)).filter(Boolean)
+  );
 
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] = await Promise.all([
     supabase.from("countries").select("id,name,description,hero_image_url"),
-    supabase.from("destinations").select("name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"),
-    supabase.from("pickup_points").select("name,country_name,directions_url"),
+    supabase
+      .from("destinations")
+      .select(
+        "id,name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
+      ),
+    supabase
+      .from("pickup_points")
+      .select("id,name,country_name,directions_url"),
   ]);
 
-  // Filter to visible-only
-  const countries = (countriesAll ?? []).filter(c => visibleCountryNames.includes(c.name));
-  const destinations = (destAll ?? []).filter(d => visibleDestLC.has(lc(d.name)));
-  const pickups = (pickupsAll ?? []).filter(p => visiblePickupLC.has(lc(p.name)));
+  // ---------- Countries ----------
+  let countries =
+    (countriesAll ?? []).filter(c =>
+      visibleCountryNamesNorm.has(normCountryName(c.name))
+    );
+
+  // If nothing matched (e.g. "&" vs "and"), synthesize lightweight country records
+  if (!countries.length && visibleCountryNames.length) {
+    countries = visibleCountryNames.map(name => ({
+      id: null,
+      name,
+      description: null,
+      hero_image_url: null,
+    }));
+  }
+
+  // ---------- Destinations ----------
+  let destinations =
+    (destAll ?? []).filter(d => visibleDestLC.has(lc(d.name)));
+
+  // If base table is empty or names don't match, synthesize from routes
+  if (!destinations.length && visibleDestNames.length) {
+    destinations = visibleDestNames.map(name => ({
+      id: null,
+      name,
+      country_name: null,
+      description: null,
+      address1: null,
+      address2: null,
+      town: null,
+      region: null,
+      postal_code: null,
+      phone: null,
+      website_url: null,
+      image_url: null,
+      directions_url: null,
+      type: null,
+      tags: null,
+    }));
+  }
+
+  // ---------- Pickups ----------
+  let pickups =
+    (pickupsAll ?? []).filter(p => visiblePickupLC.has(lc(p.name)));
+
+  if (!pickups.length && visiblePickupNames.length) {
+    pickups = visiblePickupNames.map(name => ({
+      id: null,
+      name,
+      country_name: null,
+      directions_url: null,
+    }));
+  }
 
   // Transport/vehicle types:
   // 1) Try transport_types; 2) fallback to vehicle_types; 3) if neither matches by name, return empty (non-fatal).
   let vehicle_types:
-    | Array<{ id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null }>
+    | Array<{
+        id: string | null;
+        name: string;
+        description?: string | null;
+        icon_url?: string | null;
+        capacity?: number | null;
+        features?: string[] | null;
+      }>
     = [];
 
   // Load all types (small table), then filter client-side by name if IDs are absent.
@@ -105,14 +197,22 @@ async function loadVisibleCatalog() {
   ]);
 
   const allTypes = [...(ttypesAll ?? []), ...(vtypesAll ?? [])];
+
   if (visibleTypeNamesLC.size && allTypes.length) {
     vehicle_types = allTypes.filter(t => visibleTypeNamesLC.has(lc(t.name)));
   } else if (allTypes.length) {
-    // If the view had explicit IDs in the future, you could filter by IDs here.
     vehicle_types = allTypes;
   }
 
-  return { ok: true, fallback: false, routes, countries, destinations, pickups, vehicle_types };
+  return {
+    ok: true,
+    fallback: false,
+    routes,
+    countries,
+    destinations,
+    pickups,
+    vehicle_types,
+  };
 }
 
 /* ---------- Fallback (public endpoints only) ---------- */
@@ -125,17 +225,49 @@ async function safeJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 async function getRows<T>(url: string): Promise<T[]> {
-  const data = await safeJson<Rowed<T>>(await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } }));
+  const data = await safeJson<Rowed<T>>(
+    await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } })
+  );
   if (Array.isArray(data)) return data;
-  if (data && "rows" in data && Array.isArray((data as any).rows)) return (data as any).rows as T[];
+  if (data && "rows" in data && Array.isArray((data as any).rows)) {
+    return (data as any).rows as T[];
+  }
   return [];
 }
 
 async function fallbackPublicCatalog(reason?: string) {
-  type Country = { id?: string | null; name: string; description?: string | null; hero_image_url?: string | null };
-  type Destination = { name: string; country_name?: string | null; description?: string | null; address1?: string | null; address2?: string | null; town?: string | null; region?: string | null; postal_code?: string | null; phone?: string | null; website_url?: string | null; image_url?: string | null; directions_url?: string | null; type?: string | null; tags?: string[] | null; active?: boolean | null };
+  type Country = {
+    id?: string | null;
+    name: string;
+    description?: string | null;
+    hero_image_url?: string | null;
+  };
+  type Destination = {
+    name: string;
+    country_name?: string | null;
+    description?: string | null;
+    address1?: string | null;
+    address2?: string | null;
+    town?: string | null;
+    region?: string | null;
+    postal_code?: string | null;
+    phone?: string | null;
+    website_url?: string | null;
+    image_url?: string | null;
+    directions_url?: string | null;
+    type?: string | null;
+    tags?: string[] | null;
+    active?: boolean | null;
+  };
   type Pickup = { name: string; country_name?: string | null; directions_url?: string | null };
-  type VehicleType = { id: string; name: string; description?: string | null; icon_url?: string | null; capacity?: number | null; features?: string[] | null };
+  type VehicleType = {
+    id: string;
+    name: string;
+    description?: string | null;
+    icon_url?: string | null;
+    capacity?: number | null;
+    features?: string[] | null;
+  };
 
   const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] = await Promise.all([
     getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
@@ -145,7 +277,9 @@ async function fallbackPublicCatalog(reason?: string) {
   ]);
 
   const activeDestinations = destinationsRaw.filter(d => d.active !== false);
-  const visibleCountryNames = Array.from(new Set(activeDestinations.map(d => (d.country_name || "").trim()).filter(Boolean)));
+  const visibleCountryNames = Array.from(
+    new Set(activeDestinations.map(d => (d.country_name || "").trim()).filter(Boolean))
+  );
   const countries = countriesRaw.filter(c => visibleCountryNames.includes(c.name));
 
   return {
@@ -166,16 +300,22 @@ export async function GET() {
     try {
       const cat = await loadVisibleCatalog();
       if (cat.routes.length > 0) {
-        return NextResponse.json(cat, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
+        return NextResponse.json(cat, {
+          headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+        });
       }
     } catch (e: any) {
       console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
-      return NextResponse.json(fb, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
+      return NextResponse.json(fb, {
+        headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+      });
     }
 
     const fb = await fallbackPublicCatalog("no_routes");
-    return NextResponse.json(fb, { headers: { "Cache-Control": "public, max-age=60, s-maxage=60" } });
+    return NextResponse.json(fb, {
+      headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+    });
   } catch (err: any) {
     console.error("[visible-catalog] fatal:", err?.message || err);
     return NextResponse.json({ ok: false, error: "visible_catalog_failed" }, { status: 500 });
