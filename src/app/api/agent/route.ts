@@ -86,11 +86,17 @@ export async function POST(req: Request) {
 
     const tools = buildTools({ baseUrl, supabase });
 
+    // IMPORTANT: never forward tool messages back to OpenAI –
+    // we handle tool results ourselves.
+    const messagesForModel: AgentMessage[] = body.messages.filter(
+      (m) => m.role === "user" || m.role === "assistant"
+    );
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...body.messages,
+        ...messagesForModel,
       ],
       tools: tools.map((t) => t.spec),
       tool_choice: "auto",
@@ -123,16 +129,14 @@ export async function POST(req: Request) {
         ? JSON.parse(call.function.arguments)
         : {};
 
+      // Tool returns ready-to-display assistant messages
       const result = await impl.run(args);
 
-      const toolMessage: AgentMessage = {
-        role: "tool",
-        name: call.function.name,
-        content: JSON.stringify(result),
-      };
+      const newMessages = result.messages ?? [];
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage],
+        // We keep the original history plus the assistant messages the tool produced.
+        messages: [...body.messages, ...newMessages],
         choices: result.choices ?? [],
       });
     }
