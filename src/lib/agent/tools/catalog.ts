@@ -32,6 +32,14 @@ type VisibleCatalog = {
   vehicle_types: any[];
 };
 
+/* Vehicle types from /api/public/vehicle-types ----------------------------- */
+
+type VehicleType = {
+  id: string;
+  name: string;
+  description?: string | null;
+};
+
 /* -------------------------------------------------------------------------- */
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
@@ -67,8 +75,18 @@ async function fetchJSON<T>(url: string): Promise<T | null> {
   }
 }
 
-async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | null> {
+async function loadVisibleCatalog(
+  baseUrl: string
+): Promise<VisibleCatalog | null> {
   return fetchJSON<VisibleCatalog>(`${baseUrl}/api/public/visible-catalog`);
+}
+
+async function loadVehicleTypes(baseUrl: string): Promise<VehicleType[]> {
+  const data = await fetchJSON<{ rows: VehicleType[] }>(
+    `${baseUrl}/api/public/vehicle-types`
+  );
+  if (!data?.rows) return [];
+  return data.rows;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -338,7 +356,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) High-level transport categories – GENERIC, no vessel names */
+  /* 5) High-level transport categories – DB-driven, no vessel names */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
@@ -354,10 +372,35 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      // IMPORTANT: we deliberately do NOT read vessel names from the DB here
-      // to avoid leaking operator/vessel identities before bookings.
+      const types = await loadVehicleTypes(baseUrl);
+
+      // Map raw DB names → guest-facing labels so we never sound like a city bus
+      const labelMap: Record<string, string> = {
+        helicopter: "Helicopter",
+        bus: "Private coach / mini-bus",
+        limo: "Chauffeur-driven car",
+        "speed boat": "Luxury speed boat",
+      };
+
+      const labels = unique(
+        types.map((t) => {
+          const key = (t.name ?? "").toLowerCase().trim();
+          return labelMap[key] ?? t.name ?? "";
+        })
+      );
+
+      if (!labels.length) {
+        // Fallback if the API returns nothing for some reason
+        const fallback =
+          "We use premium categories of transport tailored to each route, such as luxury boats today, with scope for helicopters and other high-end vehicles in future territories. Specific vessel or operator names are not disclosed in advance of a booking.";
+        return { messages: [{ role: "assistant", content: fallback }] };
+      }
+
       const content =
-        "We use premium categories of transport tailored to each route, such as luxury boats today, with scope for helicopters and other high-end vehicles in future territories. Specific vessel or operator names are not disclosed in advance of a booking.";
+        "We currently use the following categories of transport:\n• " +
+        labels.join(" • ") +
+        "\n\nSpecific vessel or operator names are not disclosed in advance of a booking.";
+
       return { messages: [{ role: "assistant", content }] };
     },
   };
