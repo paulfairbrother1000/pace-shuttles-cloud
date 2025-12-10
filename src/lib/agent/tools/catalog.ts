@@ -1,50 +1,32 @@
 // src/lib/agent/tools/catalog.ts
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ToolContext, ToolDefinition, ToolExecutionResult } from "./index";
 
-/** Shape of the public visible catalog endpoint */
+type VisibleRoute = {
+  route_id: string;
+  route_name: string;
+  country_name: string | null;
+  destination_name: string | null;
+  pickup_name: string | null;
+  vehicle_type_name: string | null;
+};
+
 type VisibleCatalog = {
-  routes: {
-    route_id?: string;
-    route_name?: string;
-    country_id?: string | null;
-    country_name?: string | null;
-    destination_id?: string | null;
-    destination_name?: string | null;
-    pickup_id?: string | null;
-    pickup_name?: string | null;
-    vehicle_type_id?: string | null;
-    vehicle_type_name?: string | null;
-  }[];
-  countries: { id?: string; name: string }[];
+  ok: boolean;
+  fallback?: boolean;
+  routes: VisibleRoute[];
+  countries: { name: string }[];
   destinations: { name: string; country_name?: string | null }[];
   pickups: { name: string; country_name?: string | null }[];
-  vehicle_types: { id: string; name: string }[];
+  vehicle_types: { name: string }[];
 };
 
-export type ToolExecutionResult = {
-  messages?: { role: "assistant"; content: string }[];
-  choices?: any[];
-};
+const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
 
-export type ToolContext = {
-  baseUrl: string;
-  supabase: SupabaseClient;
-};
-
-export type ToolDefinition = {
-  spec: {
-    type: "function";
-    function: {
-      name: string;
-      description: string;
-      parameters: Record<string, any>;
-    };
-  };
-  run: (args: any, ctx: ToolContext) => Promise<ToolExecutionResult>;
-};
-
-async function fetchVisibleCatalog(ctx: ToolContext): Promise<VisibleCatalog> {
-  const res = await fetch(`${ctx.baseUrl}/api/public/visible-catalog`, {
+/**
+ * Fetch the public visible catalog (SSOT for what we show on the homepage).
+ */
+async function fetchCatalog(baseUrl: string): Promise<VisibleCatalog> {
+  const res = await fetch(`${baseUrl}/api/public/visible-catalog`, {
     cache: "no-store",
     headers: { Accept: "application/json" }
   });
@@ -52,19 +34,73 @@ async function fetchVisibleCatalog(ctx: ToolContext): Promise<VisibleCatalog> {
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(
-      `visible-catalog failed: ${res.status} ${txt.slice(0, 200)}`
+      `visible-catalog failed: HTTP ${res.status} ${txt.slice(0, 200)}`
     );
   }
 
-  return (await res.json()) as VisibleCatalog;
+  const json = (await res.json()) as VisibleCatalog;
+  if (!json.ok) {
+    throw new Error("visible-catalog responded with ok=false");
+  }
+  return json;
 }
 
 /**
- * Catalog-related tools:
- * - list_operating_countries
- * - list_destinations_in_country
+ * Build an ordered, unique list of operating countries from the routes.
  */
-export function catalogTools(_ctx: ToolContext): ToolDefinition[] {
+function getOperatingCountries(cat: VisibleCatalog): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const r of cat.routes || []) {
+    const name = (r.country_name || "").trim();
+    if (!name) continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+
+  // If for some reason routes are empty, fall back to countries array.
+  if (!out.length && cat.countries?.length) {
+    for (const c of cat.countries) {
+      const name = (c.name || "").trim();
+      if (!name) continue;
+      if (!seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Destinations we actually operate in, per country, derived from routes.
+ */
+function getDestinationsByCountry(cat: VisibleCatalog, countryName: string) {
+  const target = lc(countryName);
+  if (!target) return [];
+
+  const destNames = new Set<string>();
+
+  for (const r of cat.routes || []) {
+    if (!lc(r.country_name) || lc(r.country_name) !== target) continue;
+    const dn = (r.destination_name || "").trim();
+    if (!dn) continue;
+    destNames.add(dn);
+  }
+
+  return Array.from(destNames.values()).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Tools for catalog / where-we-operate questions.
+ */
+export function catalogTools(ctx: ToolContext): ToolDefinition[] {
+  const { baseUrl } = ctx;
+
   return [
     {
       spec: {
@@ -72,7 +108,7 @@ export function catalogTools(_ctx: ToolContext): ToolDefinition[] {
         function: {
           name: "list_operating_countries",
           description:
-            "List the countries where Pace Shuttles currently has visible, bookable routes (operating countries).",
+            "List the countries where Pace Shuttles currently has visible, bookable routes.",
           parameters: {
             type: "object",
             properties: {},
@@ -80,19 +116,11 @@ export function catalogTools(_ctx: ToolContext): ToolDefinition[] {
           }
         }
       },
-      async run(_args, ctx): Promise<ToolExecutionResult> {
-        const cat = await fetchVisibleCatalog(ctx);
+      async run(): Promise<ToolExecutionResult> {
+        const cat = await fetchCatalog(baseUrl);
+        const countries = getOperatingCountries(cat);
 
-        // Use the countries array from the catalog (already filtered to visible ones)
-        const names = Array.from(
-          new Set(
-            (cat.countries || [])
-              .map(c => (c?.name || "").trim())
-              .filter(Boolean)
-          )
-        );
-
-        if (!names.length) {
+        if (!countries.length) {
           return {
             messages: [
               {
@@ -104,13 +132,12 @@ export function catalogTools(_ctx: ToolContext): ToolDefinition[] {
           };
         }
 
-        const list = names.map(n => `• ${n}`).join("\n");
-
+        const bullets = countries.map(c => `• ${c}`).join(" ");
         return {
           messages: [
             {
               role: "assistant",
-              content: `We currently operate in:\n\n${list}`
+              content: `We currently operate in: ${bullets}`
             }
           ]
         };
@@ -122,80 +149,69 @@ export function catalogTools(_ctx: ToolContext): ToolDefinition[] {
         function: {
           name: "list_destinations_in_country",
           description:
-            "Given a country name, list the visible destinations Pace Shuttles currently serves there (based on the public catalog).",
+            "Given a country name (e.g. 'Antigua and Barbuda'), list the destinations Pace Shuttles currently visits there, based on visible routes.",
           parameters: {
             type: "object",
             properties: {
-              country: {
+              country_name: {
                 type: "string",
-                description: "Name of the country, e.g. 'Antigua & Barbuda'."
+                description: "The country name, e.g. 'Antigua and Barbuda'."
               }
             },
-            required: ["country"],
+            required: ["country_name"],
             additionalProperties: false
           }
         }
       },
-      async run(args, ctx): Promise<ToolExecutionResult> {
-        const countryName = String(args.country || "").trim();
+      async run(args: { country_name: string }): Promise<ToolExecutionResult> {
+        const countryName = (args.country_name || "").trim();
         if (!countryName) {
           return {
             messages: [
               {
                 role: "assistant",
-                content: "Please tell me which country you’re interested in."
+                content:
+                  "I need the country name to list destinations, for example: “Antigua and Barbuda” or “Barbados”."
               }
             ]
           };
         }
 
-        const cat = await fetchVisibleCatalog(ctx);
-        const target = countryName.toLowerCase();
+        const cat = await fetchCatalog(baseUrl);
+        const countries = getOperatingCountries(cat);
+        const targetLC = lc(countryName);
 
-        // Prefer destinations that actually appear on visible routes
-        const routeDestNames = (cat.routes || [])
-          .filter(
-            r => (r.country_name || "").toLowerCase() === target
-          )
-          .map(r => (r.destination_name || "").trim())
-          .filter(Boolean);
-
-        let destNames: string[];
-
-        if (routeDestNames.length) {
-          destNames = Array.from(new Set(routeDestNames));
-        } else {
-          // Fallback: all destinations tagged with that country
-          destNames = Array.from(
-            new Set(
-              (cat.destinations || [])
-                .filter(
-                  d => (d.country_name || "").toLowerCase() === target
-                )
-                .map(d => (d.name || "").trim())
-                .filter(Boolean)
-            )
-          );
-        }
-
-        if (!destNames.length) {
+        const matched = countries.find(c => lc(c) === targetLC);
+        if (!matched) {
           return {
             messages: [
               {
                 role: "assistant",
-                content: `We don’t currently have any bookable destinations listed in ${countryName}.`
+                content: `I don’t currently have any bookable routes listed in ${countryName}.`
               }
             ]
           };
         }
 
-        const list = destNames.map(n => `• ${n}`).join("\n");
+        const dests = getDestinationsByCountry(cat, matched);
 
+        if (!dests.length) {
+          return {
+            messages: [
+              {
+                role: "assistant",
+                content: `We don’t currently have any bookable destinations listed in ${matched}.`
+              }
+            ]
+          };
+        }
+
+        const bullets = dests.map(d => `• ${d}`).join(" ");
         return {
           messages: [
             {
               role: "assistant",
-              content: `In ${countryName}, we currently visit:\n\n${list}`
+              content: `In ${matched}, we currently visit: ${bullets}`
             }
           ]
         };

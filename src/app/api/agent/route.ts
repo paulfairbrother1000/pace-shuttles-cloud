@@ -10,7 +10,8 @@ import {
 import {
   AgentRequest,
   AgentResponse,
-  AgentMessage
+  AgentMessage,
+  AGENT_SYSTEM_PROMPT
 } from "@/lib/agent/agent-schema";
 
 // ─────────────────────────────────────────────
@@ -18,25 +19,19 @@ import {
 // ─────────────────────────────────────────────
 function getSupabaseClient() {
   const cookieStore = cookies();
-
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        // New @supabase/ssr API: must provide getAll + setAll
-        getAll() {
-          return cookieStore.getAll();
+        get(name: string) {
+          return cookieStore.get(name)?.value;
         },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            try {
-              cookieStore.set(name, value, options);
-            } catch {
-              // In some edge cases headers may already be committed.
-              // We swallow the error instead of crashing the agent.
-            }
-          });
+        set(name: string, value: string, options?: any) {
+          cookieStore.set({ name, value, ...options });
+        },
+        remove(name: string, options?: any) {
+          cookieStore.set({ name, value: "", ...options, maxAge: 0 });
         }
       }
     }
@@ -65,13 +60,11 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    const {
-      data: { user }
-    } = await supabase.auth.getUser();
-    // `user` is available for tools that need it
+    // We don’t need the user object yet, but this ensures auth context is valid.
+    await supabase.auth.getUser();
 
     const baseUrl = getBaseUrl();
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
     const tools = buildTools({ baseUrl, supabase });
 
@@ -81,12 +74,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No user message" }, { status: 400 });
     }
 
-    // Run the agent
+    // Prepend our brand / behaviour system prompt
+    const modelMessages: AgentMessage[] = [
+      { role: "system", content: AGENT_SYSTEM_PROMPT },
+      ...body.messages
+    ];
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
-      messages: body.messages.map(m => ({
+      messages: modelMessages.map(m => ({
         role: m.role,
-        content: m.content
+        content: m.content,
+        name: m.name
       })),
       tools: tools.map(t => t.spec),
       tool_choice: "auto"
@@ -94,7 +93,10 @@ export async function POST(req: Request) {
 
     const msg = completion.choices[0]?.message;
     if (!msg) {
-      return NextResponse.json({ error: "No message returned" }, { status: 500 });
+      return NextResponse.json(
+        { error: "No message returned" },
+        { status: 500 }
+      );
     }
 
     // ─────────────────────────────────────────────
@@ -103,50 +105,38 @@ export async function POST(req: Request) {
     if (msg.tool_calls?.length) {
       const toolCall = msg.tool_calls[0]; // first tool call only for now
       const impl = tools.find(
-        t => t.spec.function?.name === toolCall.function.name
+        t => t.spec.function.name === toolCall.function.name
       );
 
       if (!impl) {
-        const fallbackMessage: AgentMessage = {
-          role: "assistant",
-          content: `Sorry, I tried to use a tool called "${toolCall.function.name}" but it isn't available.`
-        };
-
         return NextResponse.json<AgentResponse>({
-          messages: [...body.messages, fallbackMessage],
+          messages: [
+            ...body.messages,
+            { role: "assistant", content: `I tried to use a tool called "${toolCall.function.name}", but it isn’t available.` }
+          ],
           choices: []
         });
       }
 
       const args = JSON.parse(toolCall.function.arguments || "{}");
-      const result: ToolExecutionResult = await impl.run(args, {
-        baseUrl,
-        supabase
-      });
+      const result: ToolExecutionResult = await impl.run(args);
 
-      // If the tool returned assistant-ready messages, send them straight back.
-      if (result.messages && result.messages.length > 0) {
-        return NextResponse.json<AgentResponse>({
-          messages: [...body.messages, ...result.messages],
-          choices: result.choices ?? []
-        });
-      }
-
-      // Safety net: tool ran but didn’t return any messages
-      const fallbackMessage: AgentMessage = {
-        role: "assistant",
-        content:
-          "I ran an internal tool to answer your question, but it didn't return any readable reply. Please try asking again in a slightly different way."
-      };
+      // Tools return ready-to-display assistant messages.
+      const toolMessages = result.messages ?? [
+        {
+          role: "assistant" as const,
+          content: "I ran a tool but it didn’t return any messages."
+        }
+      ];
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, fallbackMessage],
-        choices: []
+        messages: [...body.messages, ...toolMessages],
+        choices: result.choices ?? []
       });
     }
 
     // ─────────────────────────────────────────────
-    // Plain LLM message (no tool calls)
+    // Plain LLM message
     // ─────────────────────────────────────────────
     const finalMessage: AgentMessage = {
       role: "assistant",
