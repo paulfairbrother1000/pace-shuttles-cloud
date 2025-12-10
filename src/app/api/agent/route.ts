@@ -33,7 +33,8 @@ function getSupabaseClient() {
             try {
               cookieStore.set(name, value, options);
             } catch {
-              // If headers are already committed in some edge cases, ignore rather than crash
+              // In some edge cases headers may already be committed.
+              // We swallow the error instead of crashing the agent.
             }
           });
         }
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
     const {
       data: { user }
     } = await supabase.auth.getUser();
-    // `user` is available for tools that care about auth-linked data
+    // `user` is available for tools that need it
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -106,8 +107,14 @@ export async function POST(req: Request) {
       );
 
       if (!impl) {
-        return NextResponse.json({
-          content: `Unknown tool: ${toolCall.function.name}`
+        const fallbackMessage: AgentMessage = {
+          role: "assistant",
+          content: `Sorry, I tried to use a tool called "${toolCall.function.name}" but it isn't available.`
+        };
+
+        return NextResponse.json<AgentResponse>({
+          messages: [...body.messages, fallbackMessage],
+          choices: []
         });
       }
 
@@ -117,20 +124,29 @@ export async function POST(req: Request) {
         supabase
       });
 
-      const toolMessage: AgentMessage = {
-        role: "tool",
-        name: toolCall.function.name,
-        content: JSON.stringify(result)
+      // If the tool returned assistant-ready messages, send them straight back.
+      if (result.messages && result.messages.length > 0) {
+        return NextResponse.json<AgentResponse>({
+          messages: [...body.messages, ...result.messages],
+          choices: result.choices ?? []
+        });
+      }
+
+      // Safety net: tool ran but didn’t return any messages
+      const fallbackMessage: AgentMessage = {
+        role: "assistant",
+        content:
+          "I ran an internal tool to answer your question, but it didn't return any readable reply. Please try asking again in a slightly different way."
       };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage],
-        choices: result.choices || []
+        messages: [...body.messages, fallbackMessage],
+        choices: []
       });
     }
 
     // ─────────────────────────────────────────────
-    // Plain LLM message
+    // Plain LLM message (no tool calls)
     // ─────────────────────────────────────────────
     const finalMessage: AgentMessage = {
       role: "assistant",
