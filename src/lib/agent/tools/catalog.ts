@@ -22,9 +22,9 @@ type VisibleCatalog = {
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
 
-/**
- * Fetch the public visible catalog (SSOT for what we show on the homepage).
- */
+/* ─────────────────────────────────────────────
+   Fetch the public visible catalog (SSOT)
+   ───────────────────────────────────────────── */
 async function fetchCatalog(baseUrl: string): Promise<VisibleCatalog> {
   const res = await fetch(`${baseUrl}/api/public/visible-catalog`, {
     cache: "no-store",
@@ -45,9 +45,9 @@ async function fetchCatalog(baseUrl: string): Promise<VisibleCatalog> {
   return json;
 }
 
-/**
- * Build an ordered, unique list of operating countries from the routes.
- */
+/* ─────────────────────────────────────────────
+   Operating countries (from routes)
+   ───────────────────────────────────────────── */
 function getOperatingCountries(cat: VisibleCatalog): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -61,7 +61,7 @@ function getOperatingCountries(cat: VisibleCatalog): string[] {
     }
   }
 
-  // If for some reason routes are empty, fall back to countries array.
+  // Fallback to explicit countries if routes were somehow empty
   if (!out.length && cat.countries?.length) {
     for (const c of cat.countries) {
       const name = (c.name || "").trim();
@@ -76,9 +76,9 @@ function getOperatingCountries(cat: VisibleCatalog): string[] {
   return out;
 }
 
-/**
- * Destinations we actually operate in, per country, derived from routes.
- */
+/* ─────────────────────────────────────────────
+   Destinations per country (from routes)
+   ───────────────────────────────────────────── */
 function getDestinationsByCountry(cat: VisibleCatalog, countryName: string) {
   const target = lc(countryName);
   if (!target) return [];
@@ -95,20 +95,34 @@ function getDestinationsByCountry(cat: VisibleCatalog, countryName: string) {
   return Array.from(destNames.values()).sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Tools for catalog / where-we-operate questions.
- */
+function getAllDestinationsGrouped(cat: VisibleCatalog): { country: string; destinations: string[] }[] {
+  const countries = getOperatingCountries(cat);
+  const out: { country: string; destinations: string[] }[] = [];
+
+  for (const c of countries) {
+    const dests = getDestinationsByCountry(cat, c);
+    if (dests.length) {
+      out.push({ country: c, destinations: dests });
+    }
+  }
+  return out;
+}
+
+/* ─────────────────────────────────────────────
+   Tools for catalog / where-we-operate questions
+   ───────────────────────────────────────────── */
 export function catalogTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
   return [
+    // 1) Countries we operate in
     {
       spec: {
         type: "function",
         function: {
           name: "list_operating_countries",
           description:
-            "List the countries where Pace Shuttles currently has visible, bookable routes.",
+            "List the countries where Pace Shuttles currently has visible, bookable routes. Use this when the user asks things like “what countries do you operate in?”",
           parameters: {
             type: "object",
             properties: {},
@@ -143,13 +157,15 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
     },
+
+    // 2) Destinations in a specific country
     {
       spec: {
         type: "function",
         function: {
           name: "list_destinations_in_country",
           description:
-            "Given a country name (e.g. 'Antigua and Barbuda'), list the destinations Pace Shuttles currently visits there, based on visible routes.",
+            "Given a specific country name (e.g. 'Antigua and Barbuda'), list the destinations Pace Shuttles currently visits there, based on visible routes. ONLY use this when the user explicitly names a country (e.g. “in Antigua”, “in Barbados”). Do NOT use it when the user asks generally about destinations without naming a country.",
           parameters: {
             type: "object",
             properties: {
@@ -212,6 +228,55 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
             {
               role: "assistant",
               content: `In ${matched}, we currently visit: ${bullets}`
+            }
+          ]
+        };
+      }
+    },
+
+    // 3) Global destinations across all operating countries
+    {
+      spec: {
+        type: "function",
+        function: {
+          name: "list_destinations_global",
+          description:
+            "List all destinations Pace Shuttles currently visits, grouped by country, based on visible routes. Use this when the user asks questions like “what destinations do you visit?”, “where do you go?”, or “and globally?” without specifying a single country.",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false
+          }
+        }
+      },
+      async run(): Promise<ToolExecutionResult> {
+        const cat = await fetchCatalog(baseUrl);
+        const grouped = getAllDestinationsGrouped(cat);
+
+        if (!grouped.length) {
+          return {
+            messages: [
+              {
+                role: "assistant",
+                content:
+                  "We don’t currently have any bookable destinations listed. Please check back soon as we roll out our first routes."
+              }
+            ]
+          };
+        }
+
+        const lines = grouped.map(g => {
+          const dests = g.destinations.map(d => `• ${d}`).join(" ");
+          return `${g.country}: ${dests}`;
+        });
+
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "Here are the destinations we currently visit:\n\n" +
+                lines.join("\n")
             }
           ]
         };
