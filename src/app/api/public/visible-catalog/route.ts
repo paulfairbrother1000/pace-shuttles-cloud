@@ -5,7 +5,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const API_BASE = process.env.NEXT_PUBLIC_SITE_ORIGIN || "https://www.paceshuttles.com";
+const API_BASE =
+  process.env.NEXT_PUBLIC_SITE_ORIGIN || "https://www.paceshuttles.com";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -13,19 +14,12 @@ const SERVICE_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 function sb(): SupabaseClient {
-  return createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+  return createClient(SUPABASE_URL, SERVICE_KEY, {
+    auth: { persistSession: false },
+  });
 }
 
 const lc = (s?: string | null) => (s ?? "").toLowerCase();
-
-/** Normalise country names so "&" vs "and", spacing, case etc don't break matching */
-function normCountryName(s?: string | null) {
-  return (s ?? "")
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 /** Try to read a field from multiple possible names */
 function pick<T extends Record<string, any>>(row: T, ...keys: string[]) {
@@ -75,12 +69,14 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  const routes = (rawRoutes ?? []).map(normalizeRoute).filter(r => r.route_name);
+  const routes = (rawRoutes ?? [])
+    .map(normalizeRoute)
+    .filter((r) => r.route_name);
 
   if (!routes.length) {
     return {
       ok: true,
-      fallback: false,
+      fallback: false as const,
       routes: [],
       countries: [],
       destinations: [],
@@ -91,97 +87,50 @@ async function loadVisibleCatalog() {
 
   // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(
-    new Set(routes.map(r => r.country_name).filter(Boolean) as string[])
+    new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
   );
-  const visibleCountryNamesNorm = new Set(visibleCountryNames.map(normCountryName));
-
-  const visibleDestNames = Array.from(
-    new Set(routes.map(r => r.destination_name).filter(Boolean) as string[])
+  const visibleDestLC = new Set(
+    routes.map((r) => lc(r.destination_name)).filter(Boolean)
   );
-  const visibleDestLC = new Set(visibleDestNames.map(lc));
-
-  const visiblePickupNames = Array.from(
-    new Set(routes.map(r => r.pickup_name).filter(Boolean) as string[])
+  const visiblePickupLC = new Set(
+    routes.map((r) => lc(r.pickup_name)).filter(Boolean)
   );
-  const visiblePickupLC = new Set(visiblePickupNames.map(lc));
 
-  // If ids are missing in the view, we fall back to vehicle type *names*
+  // NOTE: we *do* read vehicle_type_name from routes just to know which
+  // generic types are actively used – but we will *never* expose vessel names
+  // directly to the public. The agent layer is forced to show only generic types.
   const visibleTypeNamesLC = new Set(
-    routes.map(r => lc(r.vehicle_type_name)).filter(Boolean)
+    routes.map((r) => lc(r.vehicle_type_name)).filter(Boolean)
   );
 
   // Base tables
-  const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] = await Promise.all([
-    supabase.from("countries").select("id,name,description,hero_image_url"),
-    supabase
-      .from("destinations")
-      .select(
-        "id,name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
+  const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
+    await Promise.all([
+      supabase.from("countries").select(
+        "id,name,description,hero_image_url"
       ),
-    supabase
-      .from("pickup_points")
-      .select("id,name,country_name,directions_url"),
-  ]);
+      supabase
+        .from("destinations")
+        .select(
+          "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
+        ),
+      supabase
+        .from("pickup_points")
+        .select("name,country_name,directions_url"),
+    ]);
 
-  // ---------- Countries ----------
-  let countries =
-    (countriesAll ?? []).filter(c =>
-      visibleCountryNamesNorm.has(normCountryName(c.name))
-    );
+  // Filter to visible-only
+  const countries = (countriesAll ?? []).filter((c) =>
+    visibleCountryNames.includes(c.name)
+  );
+  const destinations = (destAll ?? []).filter((d) =>
+    visibleDestLC.has(lc(d.name))
+  );
+  const pickups = (pickupsAll ?? []).filter((p) =>
+    visiblePickupLC.has(lc(p.name))
+  );
 
-  // If nothing matched (e.g. "&" vs "and"), synthesize lightweight country records
-  if (!countries.length && visibleCountryNames.length) {
-    countries = visibleCountryNames.map(name => ({
-      id: null,
-      name,
-      description: null,
-      hero_image_url: null,
-    }));
-  }
-
-  // ---------- Destinations ----------
-  let destinations =
-    (destAll ?? []).filter(d => visibleDestLC.has(lc(d.name)));
-
-  // If base table is empty or names don't match, synthesize from routes
-  if (!destinations.length && visibleDestNames.length) {
-    destinations = visibleDestNames.map(name => ({
-      id: null,
-      name,
-      country_name: null,
-      description: null,
-      address1: null,
-      address2: null,
-      town: null,
-      region: null,
-      postal_code: null,
-      phone: null,
-      website_url: null,
-      image_url: null,
-      directions_url: null,
-      type: null,
-      tags: null,
-    }));
-  }
-
-  // ---------- Pickups ----------
-  let pickups =
-    (pickupsAll ?? []).filter(p => visiblePickupLC.has(lc(p.name)));
-
-  if (!pickups.length && visiblePickupNames.length) {
-    pickups = visiblePickupNames.map(name => ({
-      id: null,
-      name,
-      country_name: null,
-      directions_url: null,
-    }));
-  }
-
-  // Transport/vehicle types:
-  // 1) Try transport_types; 2) fallback to vehicle_types.
-  // IMPORTANT: We only ever expose generic *type* labels here (speedboat, helicopter, bus),
-  // NOT specific vessel names. If the name-based filter yields nothing, we fall back
-  // to all available types instead of leaking per-boat labels.
+  // Transport / vehicle types (generic only)
   let vehicle_types:
     | Array<{
         id: string;
@@ -190,17 +139,16 @@ async function loadVisibleCatalog() {
         icon_url?: string | null;
         capacity?: number | null;
         features?: string[] | null;
-      }>
-    = [];
+      }> = [];
 
   // Load all types (small table), then (optionally) filter client-side by name.
   const [{ data: ttypesAll }, { data: vtypesAll }] = await Promise.all([
-    supabase.from("transport_types").select(
-      "id,name,description,icon_url,capacity,features"
-    ),
-    supabase.from("vehicle_types").select(
-      "id,name,description,icon_url,capacity,features"
-    ),
+    supabase
+      .from("transport_types")
+      .select("id,name,description,icon_url,capacity,features"),
+    supabase
+      .from("vehicle_types")
+      .select("id,name,description,icon_url,capacity,features"),
   ]);
 
   const allTypes = [...(ttypesAll ?? []), ...(vtypesAll ?? [])];
@@ -209,7 +157,9 @@ async function loadVisibleCatalog() {
     vehicle_types = [];
   } else if (visibleTypeNamesLC.size) {
     // Try to filter by names referenced on routes…
-    const filtered = allTypes.filter(t => visibleTypeNamesLC.has(lc(t.name)));
+    const filtered = allTypes.filter((t) =>
+      visibleTypeNamesLC.has(lc(t.name))
+    );
     // …but if that yields nothing (e.g. route names are vessel nicknames),
     // fall back to the full generic list instead.
     vehicle_types = filtered.length ? filtered : allTypes;
@@ -217,9 +167,20 @@ async function loadVisibleCatalog() {
     vehicle_types = allTypes;
   }
 
+  return {
+    ok: true,
+    fallback: false as const,
+    routes,
+    countries,
+    destinations,
+    pickups,
+    vehicle_types,
+  };
+}
 
 /* ---------- Fallback (public endpoints only) ---------- */
 type Rowed<T> = { ok?: boolean; rows?: T[] } | T[];
+
 async function safeJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -227,9 +188,13 @@ async function safeJson<T>(res: Response): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
 async function getRows<T>(url: string): Promise<T[]> {
   const data = await safeJson<Rowed<T>>(
-    await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } })
+    await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    })
   );
   if (Array.isArray(data)) return data;
   if (data && "rows" in data && Array.isArray((data as any).rows)) {
@@ -262,7 +227,11 @@ async function fallbackPublicCatalog(reason?: string) {
     tags?: string[] | null;
     active?: boolean | null;
   };
-  type Pickup = { name: string; country_name?: string | null; directions_url?: string | null };
+  type Pickup = {
+    name: string;
+    country_name?: string | null;
+    directions_url?: string | null;
+  };
   type VehicleType = {
     id: string;
     name: string;
@@ -272,18 +241,31 @@ async function fallbackPublicCatalog(reason?: string) {
     features?: string[] | null;
   };
 
-  const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] = await Promise.all([
-    getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
-    getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(() => []),
-    getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
-    getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(() => []),
-  ]);
+  const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] =
+    await Promise.all([
+      getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
+      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(
+        () => []
+      ),
+      getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
+      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(
+        () => []
+      ),
+    ]);
 
-  const activeDestinations = destinationsRaw.filter(d => d.active !== false);
-  const visibleCountryNames = Array.from(
-    new Set(activeDestinations.map(d => (d.country_name || "").trim()).filter(Boolean))
+  const activeDestinations = destinationsRaw.filter(
+    (d) => d.active !== false
   );
-  const countries = countriesRaw.filter(c => visibleCountryNames.includes(c.name));
+  const visibleCountryNames = Array.from(
+    new Set(
+      activeDestinations
+        .map((d) => (d.country_name || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const countries = countriesRaw.filter((c) =>
+    visibleCountryNames.includes(c.name)
+  );
 
   return {
     ok: true,
@@ -304,23 +286,32 @@ export async function GET() {
       const cat = await loadVisibleCatalog();
       if (cat.routes.length > 0) {
         return NextResponse.json(cat, {
-          headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+          headers: {
+            "Cache-Control": "public, max-age=60, s-maxage=60",
+          },
         });
       }
     } catch (e: any) {
       console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
-        headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+        headers: {
+          "Cache-Control": "public, max-age=60, s-maxage=60",
+        },
       });
     }
 
     const fb = await fallbackPublicCatalog("no_routes");
     return NextResponse.json(fb, {
-      headers: { "Cache-Control": "public, max-age=60, s-maxage=60" },
+      headers: {
+        "Cache-Control": "public, max-age=60, s-maxage=60",
+      },
     });
   } catch (err: any) {
     console.error("[visible-catalog] fatal:", err?.message || err);
-    return NextResponse.json({ ok: false, error: "visible_catalog_failed" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "visible_catalog_failed" },
+      { status: 500 }
+    );
   }
 }
