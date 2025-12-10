@@ -1,143 +1,75 @@
-// src/app/api/agent/route.ts
-import { NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
-import OpenAI from "openai";
-import { cookies, headers } from "next/headers";
-import {
-  buildTools,
-  type ToolExecutionResult
-} from "@/lib/agent/tools";
-import {
-  AgentRequest,
-  AgentResponse,
-  AgentMessage,
-  AGENT_SYSTEM_PROMPT
-} from "@/lib/agent/agent-schema";
+// ...existing imports & helpers remain unchanged...
 
-// ─────────────────────────────────────────────
-// Supabase (server-side user resolution)
-// ─────────────────────────────────────────────
-function getSupabaseClient() {
-  const cookieStore = cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-        set(name: string, value: string, options?: any) {
-          cookieStore.set({ name, value, ...options });
-        },
-        remove(name: string, options?: any) {
-          cookieStore.set({ name, value: "", ...options, maxAge: 0 });
-        }
-      }
-    }
-  );
-}
-
-// ─────────────────────────────────────────────
-// Base URL resolver (prod + local)
-// ─────────────────────────────────────────────
-function getBaseUrl() {
-  const h = headers();
-  const proto = h.get("x-forwarded-proto") ?? "https";
-  const host =
-    h.get("x-forwarded-host") ??
-    h.get("host") ??
-    process.env.VERCEL_URL ??
-    "localhost:3000";
-  return `${proto}://${host}`;
-}
-
-// ─────────────────────────────────────────────
-// The Agent Handler
-// ─────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    // We don’t need the user object yet, but this ensures auth context is valid.
-    await supabase.auth.getUser();
+    const {
+      data: { user }
+    } = await supabase.auth.getUser();
 
     const baseUrl = getBaseUrl();
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // Last user message is the prompt
     const userMessage = body.messages.findLast(m => m.role === "user");
     if (!userMessage) {
       return NextResponse.json({ error: "No user message" }, { status: 400 });
     }
 
-    // Prepend our brand / behaviour system prompt
-    const modelMessages: AgentMessage[] = [
-      { role: "system", content: AGENT_SYSTEM_PROMPT },
-      ...body.messages
-    ];
+    const systemPrompt =
+      "You are the Pace Shuttles concierge. " +
+      "Use the provided tools as your source of truth for where we operate, routes, destinations, pickups, bookings, and vehicle categories. " +
+      "Pace Shuttles is a luxury, semi-private transfer service connecting premium coastal destinations (beach clubs, restaurants, islands, marinas) – not a city bus or generic airport shuttle. " +
+      "Never invent or reveal operator names or vessel names, even if the user asks; always talk in terms of generic transport categories instead (e.g. luxury boat, helicopter, premium vehicle). " +
+      "Keep answers concise, factual, and grounded in tool output or the brand description.";
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
-      messages: modelMessages.map(m => ({
-        role: m.role,
-        content: m.content,
-        name: m.name
-      })),
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...body.messages.map(m => ({
+          role: m.role,
+          content: m.content
+        })),
+      ],
       tools: tools.map(t => t.spec),
       tool_choice: "auto"
     });
 
     const msg = completion.choices[0]?.message;
     if (!msg) {
-      return NextResponse.json(
-        { error: "No message returned" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "No message returned" }, { status: 500 });
     }
 
-    // ─────────────────────────────────────────────
-    // Handle tool call if requested
-    // ─────────────────────────────────────────────
+    // tool-call + plain-message handling stays the same...
     if (msg.tool_calls?.length) {
-      const toolCall = msg.tool_calls[0]; // first tool call only for now
-      const impl = tools.find(
-        t => t.spec.function.name === toolCall.function.name
-      );
+      const toolCall = msg.tool_calls[0];
+      const impl = tools.find(t => t.spec.function?.name === toolCall.function.name);
 
       if (!impl) {
-        return NextResponse.json<AgentResponse>({
-          messages: [
-            ...body.messages,
-            { role: "assistant", content: `I tried to use a tool called "${toolCall.function.name}", but it isn’t available.` }
-          ],
-          choices: []
+        return NextResponse.json({
+          content: `Unknown tool: ${toolCall.function.name}`
         });
       }
 
       const args = JSON.parse(toolCall.function.arguments || "{}");
       const result: ToolExecutionResult = await impl.run(args);
 
-      // Tools return ready-to-display assistant messages.
-      const toolMessages = result.messages ?? [
-        {
-          role: "assistant" as const,
-          content: "I ran a tool but it didn’t return any messages."
-        }
-      ];
+      const toolMessage: AgentMessage = {
+        role: "tool",
+        name: toolCall.function.name,
+        content: JSON.stringify(result)
+      };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, ...toolMessages],
-        choices: result.choices ?? []
+        messages: [...body.messages, toolMessage],
+        choices: result.choices || []
       });
     }
 
-    // ─────────────────────────────────────────────
-    // Plain LLM message
-    // ─────────────────────────────────────────────
     const finalMessage: AgentMessage = {
       role: "assistant",
       content: msg.content || ""

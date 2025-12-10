@@ -1,6 +1,10 @@
 // src/lib/agent/tools/catalog.ts
-import type { ToolDefinition, ToolContext, ToolExecutionResult } from "./index";
-import type { AgentChoice } from "@/lib/agent/agent-schema";
+import type { ToolContext, ToolDefinition, ToolExecutionResult } from "./index";
+
+/* ─────────────────────────────────────────────
+   Types that mirror /api/public/visible-catalog
+   and /api/public/vehicle-types
+   ───────────────────────────────────────────── */
 
 type VisibleRoute = {
   route_id: string;
@@ -15,264 +19,395 @@ type VisibleRoute = {
   vehicle_type_name: string | null;
 };
 
-type VisibleCountry = {
-  id?: string | null;
-  name: string;
-  description?: string | null;
+type VisibleCatalog = {
+  ok: boolean;
+  fallback?: boolean;
+  routes: VisibleRoute[];
+  countries: any[];
+  destinations: any[];
+  pickups: any[];
+  vehicle_types: any[];
 };
 
-type VisibleDestination = {
-  name: string;
-  country_name?: string | null;
-};
+type Rowed<T> = T[] | { ok?: boolean; rows?: T[] };
 
-type VisibleVehicleType = {
+type VehicleType = {
   id: string;
   name: string;
   description?: string | null;
 };
 
-export type VisibleCatalog = {
-  ok: boolean;
-  fallback: boolean;
-  routes: VisibleRoute[];
-  countries: VisibleCountry[];
-  destinations: VisibleDestination[];
-  pickups: { name: string; country_name?: string | null }[];
-  vehicle_types: VisibleVehicleType[];
-};
-
-async function fetchCatalog(baseUrl: string): Promise<VisibleCatalog> {
-  const res = await fetch(`${baseUrl}/api/public/visible-catalog`, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`visible-catalog HTTP ${res.status}: ${txt.slice(0, 200)}`);
-  }
-  const json = (await res.json()) as VisibleCatalog;
-  return json;
-}
-
-function lc(s?: string | null) {
-  return (s ?? "").toLowerCase();
-}
-
 /* ─────────────────────────────────────────────
-   Helpers
+   Small helpers
    ───────────────────────────────────────────── */
 
-function getOperatingCountries(cat: VisibleCatalog): string[] {
-  // Any country that appears in visible routes
-  const names = new Set<string>();
-  for (const r of cat.routes ?? []) {
-    if (r.country_name) names.add(r.country_name);
-  }
-  // Fallback: also include countries table if no routes yet
-  if (!names.size && cat.countries?.length) {
-    for (const c of cat.countries) names.add(c.name);
-  }
-  return Array.from(names).sort((a, b) => a.localeCompare(b));
+const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
+
+function normaliseCountryName(name: string | null | undefined): string {
+  if (!name) return "";
+  // treat "&" and "and" the same, normalise whitespace
+  return lc(name).replace(/&/g, "and").replace(/\s+/g, " ");
 }
 
-function getDestinationsInCountry(cat: VisibleCatalog, countryName: string): string[] {
-  const wanted = lc(countryName);
-  const names = new Set<string>();
-
-  // From routes (strongest signal)
-  for (const r of cat.routes ?? []) {
-    if (lc(r.country_name) === wanted && r.destination_name) {
-      names.add(r.destination_name);
-    }
+function unique(values: (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    if (!v) continue;
+    const trimmed = v.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
   }
-
-  // Fallback: from destinations table
-  for (const d of cat.destinations ?? []) {
-    if (lc(d.country_name) === wanted && d.name) {
-      names.add(d.name);
-    }
-  }
-
-  return Array.from(names).sort((a, b) => a.localeCompare(b));
+  return out;
 }
 
-function getVisibleVehicleTypes(cat: VisibleCatalog): string[] {
-  // HARD GUARDRAIL:
-  // Only ever expose generic *type* labels that come from vehicle_types /
-  // transport_types. Never expose individual vessel names or operator names.
-  if (!cat.vehicle_types || !cat.vehicle_types.length) return [];
+async function fetchJSON<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
 
-  const names = Array.from(
-    new Set(
-      cat.vehicle_types
-        .map((v) => (v.name || "").trim())
-        .filter(Boolean)
-    )
+async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | null> {
+  return fetchJSON<VisibleCatalog>(`${baseUrl}/api/public/visible-catalog`);
+}
+
+async function loadVehicleTypes(baseUrl: string): Promise<VehicleType[]> {
+  const data = await fetchJSON<Rowed<VehicleType>>(
+    `${baseUrl}/api/public/vehicle-types`
   );
-
-  names.sort((a, b) => a.localeCompare(b));
-  return names;
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if ("rows" in data && Array.isArray(data.rows)) return data.rows;
+  return [];
 }
 
 /* ─────────────────────────────────────────────
-   Tools for catalog / where-we-operate questions
+   Tool builders
    ───────────────────────────────────────────── */
 
 export function catalogTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
-  const tools: ToolDefinition[] = [
-    // 1) Operating countries
-    {
-      spec: {
-        type: "function",
-        function: {
-          name: "list_operating_countries",
-          description:
-            "List the countries where Pace Shuttles currently has visible routes in the public catalog. Use this when the user asks which countries we operate in.",
-          parameters: {
-            type: "object",
-            properties: {},
-            additionalProperties: false,
-          },
+  /* 1) Countries where we operate today (live routes only) */
+  const listOperatingCountries: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "ps.listOperatingCountries",
+        description:
+          "List the countries where Pace Shuttles currently has live, bookable routes according to the public catalog. Use this whenever the user asks which countries Pace Shuttles operates in.",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
         },
       },
-      async run(): Promise<ToolExecutionResult> {
-        const cat = await fetchCatalog(baseUrl);
-        const countries = getOperatingCountries(cat);
-
-        if (!countries.length) {
-          return {
-            messages: [
-              {
-                role: "assistant",
-                content:
-                  "We don’t have any live, bookable journeys listed right now. Please check back soon as we roll out our first routes.",
-              },
-            ],
-          };
-        }
-
-        const bullets = countries.map((c) => `• ${c}`).join(" ");
+    },
+    run: async (): Promise<ToolExecutionResult> => {
+      const cat = await loadVisibleCatalog(baseUrl);
+      if (!cat || !cat.routes?.length) {
         return {
           messages: [
             {
               role: "assistant",
-              content: `We currently operate in: ${bullets}`,
+              content:
+                "We don’t currently have any live, bookable journeys listed right now. Please check back soon as we roll out our first routes.",
             },
           ],
         };
-      },
-    },
+      }
 
-    // 2) Destinations in a given country
-    {
-      spec: {
-        type: "function",
-        function: {
-          name: "list_destinations_in_country",
-          description:
-            "List destinations we visit in a specific country, based on the public visible catalog. Use for questions like 'What destinations do you visit in Antigua?'",
-          parameters: {
-            type: "object",
-            properties: {
-              country: {
-                type: "string",
-                description: "Country name, e.g. 'Antigua and Barbuda'.",
-              },
+      const countries = unique(cat.routes.map(r => r.country_name));
+      const content =
+        countries.length > 0
+          ? `We currently operate in:\n• ${countries.join(" • ")}`
+          : "We don’t currently have any live, bookable journeys listed right now. Please check back soon.";
+
+      return {
+        messages: [{ role: "assistant", content }],
+      };
+    },
+  };
+
+  /* 2) Destinations we visit within a given country */
+  const listDestinationsInCountry: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "ps.listDestinationsInCountry",
+        description:
+          "Given a country name, list the destinations Pace Shuttles currently visits in that country (beach clubs, restaurants, islands, bays, etc.) based ONLY on the public catalog. Do NOT reveal operator names or vessel names.",
+        parameters: {
+          type: "object",
+          properties: {
+            country: {
+              type: "string",
+              description:
+                "Country name from the user question, e.g. 'Antigua and Barbuda' or 'Barbados'.",
             },
-            required: ["country"],
-            additionalProperties: false,
           },
+          required: ["country"],
+          additionalProperties: false,
         },
       },
-      async run(args: { country: string }): Promise<ToolExecutionResult> {
-        const countryName = (args.country || "").trim();
-        if (!countryName) {
-          return {
-            messages: [
-              {
-                role: "assistant",
-                content:
-                  "Please tell me which country you’re interested in, for example: Antigua and Barbuda or Barbados.",
-              },
-            ],
-          };
-        }
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const countryRaw = String(args.country || "");
+      const normQuery = normaliseCountryName(countryRaw);
+      const cat = await loadVisibleCatalog(baseUrl);
 
-        const cat = await fetchCatalog(baseUrl);
-        const destinations = getDestinationsInCountry(cat, countryName);
-
-        if (!destinations.length) {
-          return {
-            messages: [
-              {
-                role: "assistant",
-                content: `We don’t currently have any bookable destinations listed in ${countryName}.`,
-              },
-            ],
-          };
-        }
-
-        const bullets = destinations.map((d) => `• ${d}`).join(" ");
+      if (!cat || !cat.routes?.length) {
         return {
           messages: [
             {
               role: "assistant",
-              content: `In ${countryName}, we currently visit: ${bullets}`,
+              content:
+                "I couldn’t find any live destinations right now. Please check back soon as routes go live.",
             },
           ],
         };
-      },
-    },
+      }
 
-    // 3) Global transport / vehicle types (operator-agnostic)
-    {
-      spec: {
-        type: "function",
-        function: {
-          name: "list_transport_types_global",
-          description:
-            "List the generic transport / vehicle TYPES that Pace Shuttles uses (e.g. speed boats, helicopters, shuttle buses). " +
-            "Never disclose operator names or individual vessel names. Use this when the user asks things like 'what types of vehicles do you have?'",
-          parameters: {
-            type: "object",
-            properties: {},
-            additionalProperties: false,
-          },
-        },
-      },
-      async run(): Promise<ToolExecutionResult> {
-        const cat = await fetchCatalog(baseUrl);
-        const types = getVisibleVehicleTypes(cat);
+      const inCountry = cat.routes.filter(
+        r => normaliseCountryName(r.country_name) === normQuery
+      );
 
-        if (!types.length) {
-          // Brand-safe fallback – still operator-agnostic
-          return {
-            messages: [
-              {
-                role: "assistant",
-                content:
-                  "We use a mix of premium transport types tailored to each route, such as modern boats and other high-end vehicles. " +
-                  "As we expand, you’ll see more detailed categories shown in the app.",
-              },
-            ],
-          };
-        }
-
-        const bullets = types.map((t) => `• ${t}`).join(" ");
+      if (!inCountry.length) {
         return {
           messages: [
             {
               role: "assistant",
-              content: `We currently operate with the following types of transport: ${bullets}`,
+              content: `I couldn’t find any live routes in ${countryRaw} yet.`,
             },
           ],
         };
+      }
+
+      const dests = unique(inCountry.map(r => r.destination_name));
+      const prettyCountry = inCountry[0].country_name || countryRaw;
+
+      if (!dests.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `We don’t currently have any bookable destinations listed in ${prettyCountry}.`,
+            },
+          ],
+        };
+      }
+
+      const content = `In ${prettyCountry}, we currently visit:\n• ${dests.join(
+        " • "
+      )}`;
+
+      return {
+        messages: [{ role: "assistant", content }],
+      };
+    },
+  };
+
+  /* 3) Pickup / boarding points in a given country */
+  const listPickupsInCountry: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "ps.listPickupsInCountry",
+        description:
+          "Given a country name, list the pickup / boarding locations for journeys in that country (e.g. marinas, harbours, heliports). Use this when the user asks where journeys begin or where they get on the transport.",
+        parameters: {
+          type: "object",
+          properties: {
+            country: {
+              type: "string",
+              description:
+                "Country name from the user question, e.g. 'Antigua and Barbuda' or 'Barbados'.",
+            },
+          },
+          required: ["country"],
+          additionalProperties: false,
+        },
       },
     },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const countryRaw = String(args.country || "");
+      const normQuery = normaliseCountryName(countryRaw);
+      const cat = await loadVisibleCatalog(baseUrl);
+
+      if (!cat || !cat.routes?.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t find any live pickup locations yet. Please check back soon as routes go live.",
+            },
+          ],
+        };
+      }
+
+      const inCountry = cat.routes.filter(
+        r => normaliseCountryName(r.country_name) === normQuery
+      );
+
+      if (!inCountry.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `I couldn’t find any live routes in ${countryRaw} yet.`,
+            },
+          ],
+        };
+      }
+
+      const pickups = unique(inCountry.map(r => r.pickup_name));
+      const prettyCountry = inCountry[0].country_name || countryRaw;
+
+      if (!pickups.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `We don’t currently have any pickup locations listed in ${prettyCountry}.`,
+            },
+          ],
+        };
+      }
+
+      const content = `In ${prettyCountry}, our current pickup / boarding points include:\n• ${pickups.join(
+        " • "
+      )}`;
+
+      return {
+        messages: [{ role: "assistant", content }],
+      };
+    },
+  };
+
+  /* 4) Routes (pickup → destination) in a given country */
+  const listRoutesInCountry: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "ps.listRoutesInCountry",
+        description:
+          "Given a country name, list the shuttle routes in that country as pickup → destination pairs based on the public catalog. Do NOT mention operator names or vessel names.",
+        parameters: {
+          type: "object",
+          properties: {
+            country: {
+              type: "string",
+              description:
+                "Country name from the user question, e.g. 'Antigua and Barbuda' or 'Barbados'.",
+            },
+          },
+          required: ["country"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const countryRaw = String(args.country || "");
+      const normQuery = normaliseCountryName(countryRaw);
+      const cat = await loadVisibleCatalog(baseUrl);
+
+      if (!cat || !cat.routes?.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t find any live routes right now. Please check back soon as services go live.",
+            },
+          ],
+        };
+      }
+
+      const inCountry = cat.routes.filter(
+        r => normaliseCountryName(r.country_name) === normQuery
+      );
+
+      if (!inCountry.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `I couldn’t find any live routes in ${countryRaw} yet.`,
+            },
+          ],
+        };
+      }
+
+      const routes = unique(
+        inCountry.map(r => r.route_name || `${r.pickup_name} → ${r.destination_name}`)
+      );
+      const prettyCountry = inCountry[0].country_name || countryRaw;
+
+      const content = `In ${prettyCountry}, our current routes include:\n• ${routes.join(
+        " • "
+      )}`;
+
+      return {
+        messages: [{ role: "assistant", content }],
+      };
+    },
+  };
+
+  /* 5) High-level transport categories (from transport_types / vehicle-types) */
+  const listTransportTypes: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "ps.listTransportTypes",
+        description:
+          "List the generic categories of transport used by Pace Shuttles (e.g. luxury boats, helicopters, premium vehicles). Never reveal specific operator names or vessel names. Use this when the user asks what types of vehicles are involved.",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (): Promise<ToolExecutionResult> => {
+      const types = await loadVehicleTypes(baseUrl);
+      const names = unique(types.map(t => t.name));
+
+      if (!names.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "We use a mix of premium transport types tailored to each route, such as modern boats and other high-end vehicles. As we expand, you’ll see more detailed categories shown in the app.",
+            },
+          ],
+        };
+      }
+
+      const content =
+        "We currently use the following categories of transport:\n• " +
+        names.join(" • ");
+
+      return {
+        messages: [{ role: "assistant", content }],
+      };
+    },
+  };
+
+  return [
+    listOperatingCountries,
+    listDestinationsInCountry,
+    listPickupsInCountry,
+    listRoutesInCountry,
+    listTransportTypes,
   ];
-
-  return tools;
 }

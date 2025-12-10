@@ -25,7 +25,8 @@ export type ToolDefinition = {
       parameters: Record<string, any>;
     };
   };
-  run: (args: any, ctx: ToolContext) => Promise<ToolExecutionResult>;
+  // NOTE: ctx is closed over when we build the tools – only args are passed at call time.
+  run: (args: any) => Promise<ToolExecutionResult>;
 };
 
 export function buildTools(ctx: ToolContext): ToolDefinition[] {
@@ -33,6 +34,6 @@ export function buildTools(ctx: ToolContext): ToolDefinition[] {
     ...catalogTools(ctx),
     ...bookingTools(ctx),
     ...quoteTools(ctx),
-    ...kbTools(ctx)
+    ...kbTools(ctx),
   ];
 }
