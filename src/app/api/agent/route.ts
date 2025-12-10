@@ -1,58 +1,40 @@
 // src/app/api/agent/route.ts
 import { NextResponse } from "next/server";
+import { cookies, headers } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import OpenAI from "openai";
-import { cookies, headers } from "next/headers";
-import {
-  buildTools,
-  type ToolExecutionResult,
-} from "@/lib/agent/tools";
+
+import { buildTools } from "@/lib/agent/tools";
 import {
   AgentRequest,
   AgentResponse,
-  AgentMessage,
+  AgentMessage
 } from "@/lib/agent/agent-schema";
 
-export const runtime = "nodejs";
-
-// ─────────────────────────────────────────────
-// Supabase (server-side user resolution)
-// Same idea as before, but using the new
-// getAll/setAll cookie interface so it doesn’t
-// explode in production.
-// ─────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Supabase (server-side client)
+// ---------------------------------------------------------------------------
 function getSupabaseClient() {
   const cookieStore = cookies();
-
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          // read all cookies from Next’s cookie store
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          // write back any cookie updates from Supabase
-          try {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
-            });
-          } catch {
-            // In some runtimes (or error cases) this can fail;
-            // swallow silently rather than crashing the agent.
-          }
+        getAll: () => cookieStore.getAll(),
+        setAll: (cookies) => {
+          cookies.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)
+          );
         },
       },
     }
   );
 }
 
-// ─────────────────────────────────────────────
-// Base URL resolver (prod + local)
-// (unchanged)
-// ─────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Base URL resolver
+// ---------------------------------------------------------------------------
 function getBaseUrl() {
   const h = headers();
   const proto = h.get("x-forwarded-proto") ?? "https";
@@ -61,118 +43,105 @@ function getBaseUrl() {
     h.get("host") ??
     process.env.VERCEL_URL ??
     "localhost:3000";
+
   return `${proto}://${host}`;
 }
 
-// ─────────────────────────────────────────────
-// The Agent Handler
-// (same flow as your working version)
-// ─────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// SYSTEM GUARDRAILS (no description, no narrative)
+// ---------------------------------------------------------------------------
+const SYSTEM_RULES = `
+You are the Pace Shuttles concierge AI.
+
+RULES:
+- ALWAYS use tools first when asked about: what Pace Shuttles is, how it works,
+  routes, destinations, pickups, vehicle categories, terms, policies.
+- NEVER invent information.
+- NEVER reveal operator names or vessel names.
+- NEVER discuss airports, airlines, taxis, buses, or unrelated transport.
+- If a tool returns no data, say so politely.
+- Keep responses concise and factual.
+- You are NOT allowed to guess; you must defer to tools.
+`;
+
+// ---------------------------------------------------------------------------
+// POST handler — FULL TOOL-FIRST PIPELINE
+// ---------------------------------------------------------------------------
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
+    await supabase.auth.getUser();
+
     const baseUrl = getBaseUrl();
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      console.error("[agent] Missing OPENAI_API_KEY");
-      return NextResponse.json(
-        { error: "Agent not available" },
-        { status: 500 }
-      );
-    }
-
-    const openai = new OpenAI({ apiKey });
     const tools = buildTools({ baseUrl, supabase });
 
-    // Last user message is the prompt
-    const userMessage = body.messages.findLast((m) => m.role === "user");
-    if (!userMessage) {
-      return NextResponse.json(
-        { error: "No user message" },
-        { status: 400 }
-      );
-    }
-
-    // Run the agent (unchanged)
+    // -----------------------------------------------------------------------
+    // ALWAYS enforce tool-first behaviour by placing system message first
+    // -----------------------------------------------------------------------
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
-      messages: body.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-      tools: tools.map((t) => t.spec),
-      tool_choice: "auto",
+      messages: [
+        { role: "system", content: SYSTEM_RULES },
+        ...body.messages
+      ],
+      tools: tools.map(t => t.spec),
+      tool_choice: "auto"
     });
 
     const msg = completion.choices[0]?.message;
+
     if (!msg) {
-      return NextResponse.json(
-        { error: "No message returned" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Agent produced no message" }, { status: 500 });
     }
 
-    // ─────────────────────────────────────────
-    // Handle tool call if requested
-    // (only change is we now pass { baseUrl, supabase })
-    // ─────────────────────────────────────────
+    // -----------------------------------------------------------------------
+    // TOOL CALL
+    // -----------------------------------------------------------------------
     if (msg.tool_calls?.length) {
-      const toolCall = msg.tool_calls[0]; // first tool call only for now
-      const impl = tools.find(
-        (t) => t.spec.function.name === toolCall.function.name
-      );
+      const call = msg.tool_calls[0];
+      const impl = tools.find(t => t.spec.function.name === call.function.name);
 
       if (!impl) {
         return NextResponse.json({
-          content: `Unknown tool: ${toolCall.function.name}`,
+          error: `Unknown tool: ${call.function.name}`
         });
       }
 
-      let args: any = {};
-      try {
-        args = toolCall.function.arguments
-          ? JSON.parse(toolCall.function.arguments)
-          : {};
-      } catch {
-        return NextResponse.json({
-          content:
-            "I had trouble understanding the request for live data. Please try again.",
-        });
-      }
+      const args = call.function.arguments
+        ? JSON.parse(call.function.arguments)
+        : {};
 
-      const result: ToolExecutionResult = await impl.run(args, {
-        baseUrl,
-        supabase,
-      });
+      const result = await impl.run(args);
 
-      const toolMessage: AgentMessage = {
+      const toolResponse: AgentMessage = {
         role: "tool",
-        name: toolCall.function.name,
-        content: JSON.stringify(result),
+        name: call.function.name,
+        content: JSON.stringify(result)
       };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage, ...(result.messages ?? [])],
-        choices: result.choices || [],
+        messages: [...body.messages, toolResponse],
+        choices: result.choices ?? []
       });
     }
 
-    // ─────────────────────────────────────────
-    // Plain LLM message
-    // (unchanged)
-    // ─────────────────────────────────────────
+    // -----------------------------------------------------------------------
+    // FINAL MESSAGE (after tool call or plain completion)
+    // -----------------------------------------------------------------------
     const finalMessage: AgentMessage = {
       role: "assistant",
-      content: msg.content || "",
+      content: msg.content ?? ""
     };
 
     return NextResponse.json<AgentResponse>({
       messages: [...body.messages, finalMessage],
-      choices: [],
+      choices: []
     });
+
   } catch (err: any) {
     console.error("Agent error:", err);
     return NextResponse.json(
