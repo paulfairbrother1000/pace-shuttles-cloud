@@ -18,10 +18,27 @@ import {
 // ─────────────────────────────────────────────
 function getSupabaseClient() {
   const cookieStore = cookies();
+
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: () => cookieStore }
+    {
+      cookies: {
+        // New @supabase/ssr API: must provide getAll + setAll
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            try {
+              cookieStore.set(name, value, options);
+            } catch {
+              // If headers are already committed in some edge cases, ignore rather than crash
+            }
+          });
+        }
+      }
+    }
   );
 }
 
@@ -50,6 +67,7 @@ export async function POST(req: Request) {
     const {
       data: { user }
     } = await supabase.auth.getUser();
+    // `user` is available for tools that care about auth-linked data
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -83,7 +101,9 @@ export async function POST(req: Request) {
     // ─────────────────────────────────────────────
     if (msg.tool_calls?.length) {
       const toolCall = msg.tool_calls[0]; // first tool call only for now
-      const impl = tools.find(t => t.spec.function?.name === toolCall.function.name);
+      const impl = tools.find(
+        t => t.spec.function?.name === toolCall.function.name
+      );
 
       if (!impl) {
         return NextResponse.json({
@@ -92,7 +112,10 @@ export async function POST(req: Request) {
       }
 
       const args = JSON.parse(toolCall.function.arguments || "{}");
-      const result: ToolExecutionResult = await impl.run(args);
+      const result: ToolExecutionResult = await impl.run(args, {
+        baseUrl,
+        supabase
+      });
 
       const toolMessage: AgentMessage = {
         role: "tool",
@@ -118,7 +141,6 @@ export async function POST(req: Request) {
       messages: [...body.messages, finalMessage],
       choices: []
     });
-
   } catch (err: any) {
     console.error("Agent error:", err);
     return NextResponse.json(
