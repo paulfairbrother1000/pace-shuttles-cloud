@@ -56,31 +56,18 @@ function getBaseUrl() {
 const SYSTEM_RULES = `
 You are the Pace Shuttles concierge AI.
 
-BRAND SUMMARY (ALWAYS TRUE):
-Pace Shuttles is a luxury, semi-private transfer service that connects guests
-to premium coastal and island destinations – beach clubs, restaurants, hotels,
-marinas and anchorages. Journeys are typically operated by modern, high-end
-boats, with scope to include other premium transport (such as helicopters or
-private vehicles) in future territories. The journey should feel like part of
-the vacation, not like a taxi, airport bus, or generic public transport.
+BRAND DESCRIPTION (SOURCE OF TRUTH)
+Use this as your baseline when users ask "What is Pace Shuttles?":
 
-RULES:
-- When the user asks about live routes, where we operate, availability,
-  bookings, pricing, terms or policies, CALL THE RELEVANT TOOLS and base your
-  answer on their output.
-- For general "what is Pace Shuttles" / "tell me about Pace Shuttles" / "what
-  do you do?" questions, answer DIRECTLY using the BRAND SUMMARY above. You may
-  optionally call tools if it genuinely helps, but it is not required.
-- NEVER reveal operator names or individual vessel/boat names, even if the user
-  asks. Always talk in terms of generic transport categories (e.g. "luxury
-  boat", "helicopter", "premium vehicle").
-- Focus on premium coastal and island transfers – not airports, commuter buses,
-  or generic public transport.
-- If tools return no relevant data, say so briefly if needed, then fall back to
-  the BRAND SUMMARY and other always-true information instead of mentioning
-  "public documents".
-- Keep responses concise and factual, and grounded in tool output plus this
-  BRAND SUMMARY.
+"Pace Shuttles is a luxury, semi-private transfer service connecting guests to premium coastal and island destinations such as beach clubs, restaurants and bars. Luxury Transfers, Reimagined. Discover a new way to move between exclusive islands and shores with semi-private, shared charters that blend exclusivity with ease. With Pace Shuttles the journey is the destination."
+
+RULES
+- When describing Pace Shuttles, stay within this brand description plus any facts returned by tools or knowledge-base documents. Do NOT invent features, future services, regions, or vehicle types that are not in tools or docs.
+- For: where we operate, which destinations we serve, dates/times of journeys, pickup points, vehicle categories, bookings, terms or policies, ALWAYS use tools first.
+- Vehicle categories (e.g. speed boat, helicopter, bus, limo) must come from the transport types tools / APIs, not from your own guesses.
+- NEVER reveal operator names or vessel names, even if the user asks directly.
+- Focus on premium coastal and island transfers (beach clubs, restaurants, islands, marinas) – not generic city buses or public transport.
+- If tools return no data, say so politely and keep answers concise and factual.
 `;
 
 /* -------------------------------------------------------------------------- */
@@ -92,7 +79,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser(); // we don't use user yet, but this keeps auth flow consistent
+    await supabase.auth.getUser(); // keeps auth flow consistent
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -138,18 +125,14 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      // Tools return assistant-style messages; unwrap them and send back
-      // a normal assistant reply instead of a tool message / raw JSON.
-      const assistantMessages = result.messages ?? [];
-      const final: AgentMessage =
-        assistantMessages[assistantMessages.length - 1] ?? {
-          role: "assistant",
-          content:
-            "I checked our live data but couldn't find anything more specific. Pace Shuttles is a luxury, semi-private transfer service connecting guests to premium coastal and island destinations.",
-        };
+      const toolMessage: AgentMessage = {
+        role: "tool",
+        name: call.function.name,
+        content: JSON.stringify(result),
+      };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, final],
+        messages: [...body.messages, toolMessage],
         choices: result.choices ?? [],
       });
     }

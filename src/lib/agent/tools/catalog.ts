@@ -32,12 +32,14 @@ type VisibleCatalog = {
   vehicle_types: any[];
 };
 
-/* Vehicle types from /api/public/vehicle-types ----------------------------- */
-
 type VehicleType = {
   id: string;
   name: string;
   description?: string | null;
+};
+
+type VehicleTypesResponse = {
+  rows?: VehicleType[];
 };
 
 /* -------------------------------------------------------------------------- */
@@ -82,10 +84,10 @@ async function loadVisibleCatalog(
 }
 
 async function loadVehicleTypes(baseUrl: string): Promise<VehicleType[]> {
-  const data = await fetchJSON<{ rows: VehicleType[] }>(
+  const data = await fetchJSON<VehicleTypesResponse>(
     `${baseUrl}/api/public/vehicle-types`
   );
-  if (!data?.rows) return [];
+  if (!data || !Array.isArray(data.rows)) return [];
   return data.rows;
 }
 
@@ -363,7 +365,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listTransportTypes",
         description:
-          "Describe the generic categories of transport used by Pace Shuttles (e.g. luxury boats, helicopters, premium vehicles). Never reveal specific operator or vessel names.",
+          "Describe the generic categories of transport used by Pace Shuttles (e.g. speed boat, helicopter, limo, bus) based on the public vehicle-types catalog. Never reveal specific operator or vessel names.",
         parameters: {
           type: "object",
           properties: {},
@@ -373,33 +375,18 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
     run: async (): Promise<ToolExecutionResult> => {
       const types = await loadVehicleTypes(baseUrl);
+      const names = unique(types.map((t) => t.name));
 
-      // Map raw DB names → guest-facing labels so we never sound like a city bus
-      const labelMap: Record<string, string> = {
-        helicopter: "Helicopter",
-        bus: "Private coach / mini-bus",
-        limo: "Chauffeur-driven car",
-        "speed boat": "Luxury speed boat",
-      };
-
-      const labels = unique(
-        types.map((t) => {
-          const key = (t.name ?? "").toLowerCase().trim();
-          return labelMap[key] ?? t.name ?? "";
-        })
-      );
-
-      if (!labels.length) {
-        // Fallback if the API returns nothing for some reason
+      if (!names.length) {
         const fallback =
-          "We use premium categories of transport tailored to each route, such as luxury boats today, with scope for helicopters and other high-end vehicles in future territories. Specific vessel or operator names are not disclosed in advance of a booking.";
+          "We use premium categories of transport tailored to each route, typically high-end boats and other private transfer options. Specific vessel or operator names are not disclosed in advance of a booking.";
         return { messages: [{ role: "assistant", content: fallback }] };
       }
 
       const content =
         "We currently use the following categories of transport:\n• " +
-        labels.join(" • ") +
-        "\n\nSpecific vessel or operator names are not disclosed in advance of a booking.";
+        names.join(" • ") +
+        "\n\nThe exact mix available depends on the territory and route, but specific vessel or operator names are not disclosed in advance of a booking.";
 
       return { messages: [{ role: "assistant", content }] };
     },

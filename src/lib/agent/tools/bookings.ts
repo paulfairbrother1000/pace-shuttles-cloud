@@ -32,7 +32,7 @@ async function fetchJourneys(
     if (params.q) {
       url.searchParams.set("q", params.q);
     }
-
+    // let the API default limit handle volume for now
     const res = await fetch(url.toString(), {
       cache: "no-store",
       headers: { Accept: "application/json" },
@@ -57,10 +57,8 @@ async function fetchJourneys(
   }
 }
 
-/* Format a date to YYYY-MM-DD for messages */
-function formatDateForText(dateStr: string): string {
-  if (!dateStr) return "";
-  // Assume already YYYY-MM-DD, but keep this in case we want nicer formatting later
+function formatIsoDate(dateStr: string): string {
+  // assume already YYYY-MM-DD, but keep for clarity/extensibility
   return dateStr;
 }
 
@@ -71,14 +69,14 @@ function formatDateForText(dateStr: string): string {
 export function bookingTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
-  /* 1) List journeys on a specific date */
+  /* 1) Journeys on a specific date */
   const listJourneysOnDate: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listJourneysOnDate",
         description:
-          "Given a specific calendar date, list the live Pace Shuttles journeys scheduled on that day, including departure times and pickup/destination names.",
+          "Given a specific calendar date, list the live Pace Shuttles journeys scheduled on that day, including departure times and pickup/destination names. Use this when the user asks about a single day, e.g. 'on 18th December' or 'on 2024-12-18'.",
         parameters: {
           type: "object",
           properties: {
@@ -125,7 +123,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
           messages: [
             {
               role: "assistant",
-              content: `I couldn’t find any live journeys scheduled on ${formatDateForText(
+              content: `I couldn’t find any live journeys scheduled on ${formatIsoDate(
                 rawDate
               )}. Please try another date or check back later as we add more departures.`,
             },
@@ -135,19 +133,17 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
 
       const lines = journeys.map((j) => {
         const d = new Date(j.starts_at);
-        // Use a neutral 24h time; the site can clarify exact local timezones elsewhere
         const time = d.toLocaleTimeString("en-GB", {
           hour: "2-digit",
           minute: "2-digit",
         });
-
         const pickup = j.pickup_name || "Pickup";
         const dest = j.destination_name || "Destination";
         return `• ${time} – ${pickup} → ${dest}`;
       });
 
       const content = [
-        `Here are the live journeys I can see on ${formatDateForText(rawDate)}:`,
+        `Here are the live journeys I can see on ${formatIsoDate(rawDate)}:`,
         "",
         ...lines,
       ].join("\n");
@@ -156,7 +152,126 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 2) Explain the booking flow (existing behaviour) */
+  /* 2) Journeys across a date range (e.g. whole of December, over Christmas) */
+  const listJourneysInPeriod: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "listJourneysInPeriod",
+        description:
+          "List all live journeys within a date range (from_date to to_date). Use this when the user asks about 'in December', 'over Christmas', 'between X and Y', or 'during this week/month'.",
+        parameters: {
+          type: "object",
+          properties: {
+            from_date: {
+              type: "string",
+              description:
+                "Start of the period in YYYY-MM-DD format (inclusive).",
+            },
+            to_date: {
+              type: "string",
+              description:
+                "End of the period in YYYY-MM-DD format (inclusive).",
+            },
+            query: {
+              type: "string",
+              description:
+                "Optional free-text filter to narrow results by pickup, destination, country or route name.",
+            },
+          },
+          required: ["from_date", "to_date"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const fromRaw = String(args.from_date || "").trim();
+      const toRaw = String(args.to_date || "").trim();
+      const q = args.query ? String(args.query).trim() : "";
+
+      if (!fromRaw || !toRaw) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "Please provide both a start and end date in the format YYYY-MM-DD so I can list journeys in that period.",
+            },
+          ],
+        };
+      }
+
+      const fromTs = new Date(`${fromRaw}T00:00:00Z`).getTime();
+      const toTs = new Date(`${toRaw}T23:59:59.999Z`).getTime();
+
+      const journeys = await fetchJourneys(baseUrl, {
+        activeOnly: true,
+        q: q || null,
+      });
+
+      if (!journeys || journeys.length === 0) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t find any live journeys in our public schedule yet. Please check back later as we add more departures.",
+            },
+          ],
+        };
+      }
+
+      const inRange = journeys.filter((j) => {
+        const t = new Date(j.starts_at).getTime();
+        return t >= fromTs && t <= toTs;
+      });
+
+      if (!inRange.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `I couldn’t find any live journeys scheduled between ${formatIsoDate(
+                fromRaw
+              )} and ${formatIsoDate(
+                toRaw
+              )}. Please try another period or check back later as we add more departures.`,
+            },
+          ],
+        };
+      }
+
+      // sort by start time
+      inRange.sort(
+        (a, b) =>
+          new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
+      );
+
+      const lines = inRange.map((j) => {
+        const d = new Date(j.starts_at);
+        const datePart = d.toISOString().slice(0, 10); // YYYY-MM-DD
+        const time = d.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const pickup = j.pickup_name || "Pickup";
+        const dest = j.destination_name || "Destination";
+        return `• ${datePart} ${time} – ${pickup} → ${dest}`;
+      });
+
+      const content = [
+        `Here are the live journeys I can see between ${formatIsoDate(
+          fromRaw
+        )} and ${formatIsoDate(toRaw)}:`,
+        "",
+        ...lines,
+      ].join("\n");
+
+      return { messages: [{ role: "assistant", content }] };
+    },
+  };
+
+  /* 3) Booking flow explanation (unchanged) */
   const explainBookingFlow: ToolDefinition = {
     spec: {
       type: "function",
@@ -178,5 +293,5 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  return [listJourneysOnDate, explainBookingFlow];
+  return [listJourneysOnDate, listJourneysInPeriod, explainBookingFlow];
 }
