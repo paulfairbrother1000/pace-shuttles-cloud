@@ -296,7 +296,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listJourneysBetweenDates",
         description:
-          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates: if the month is the current month, it will search from tomorrow to the end of that month; if it's earlier than the current month, it will assume next year.",
+          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates.",
         parameters: {
           type: "object",
           properties: {
@@ -378,8 +378,9 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       const lines: string[] = [];
       const choices: AgentChoice[] = [];
 
-      // You can change this base path later to whatever route you build
-      const JOURNEY_LINK_BASE = "/journeys";
+      // TEMP: point to the home page with filters encoded in the querystring.
+      // Later you can create a dedicated /journeys page and update this base.
+      const JOURNEY_LINK_BASE = "/";
 
       journeys.forEach((j) => {
         const { date, time } = formatDateTimeISO(j.starts_at);
@@ -421,6 +422,6 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       };
     },
   };
- 
+
   return [explainBookingFlow, listJourneysBetweenDates];
 }
