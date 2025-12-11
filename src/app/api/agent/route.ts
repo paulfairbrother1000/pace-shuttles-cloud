@@ -65,35 +65,19 @@ CORE BEHAVIOUR
   - terms, policies or conditions.
 - NEVER invent information that is not supported by tools or the provided documents.
 
-PACE SHUTTLES OVERVIEW (LOCKED-IN DESCRIPTION)
-- When the user asks things like:
-  - "tell me about Pace Shuttles"
-  - "what is Pace Shuttles?"
-  - "how does Pace Shuttles work?"
-  you MUST call the \`describePaceShuttlesBrand\` tool and use its output as the
-  primary description. Do not ignore this tool for these questions.
-- You MAY lightly rephrase or shorten the tool output, but the core wording and
-  positioning must stay the same.
+PACE SHUTTLES OVERVIEW (USE THIS EXACT WORDING)
+- Pace Shuttles is a per-seat, semi-private shuttle service linking marinas, hotels and beach clubs across premium coastal and island destinations.
+- Instead of chartering a whole boat or vehicle, guests simply book individual seats on scheduled departures — giving a private-charter feel at a shared price.
+- Routes, pricing and service quality are managed by Pace Shuttles, while trusted local operators run the journeys. This ensures a smooth, reliable, luxury transfer experience every time.
 
 TRANSPORT & OPERATORS
-- Pace Shuttles is an operator-agnostic platform. Guests book with Pace Shuttles,
-  not directly with individual operators or vessels.
+- Pace Shuttles is an operator-agnostic platform. Guests book with Pace Shuttles, not directly with individual operators or vessels.
 - NEVER reveal operator names or vessel names, even if the user asks.
-- When giving a high-level description of transport, use neutral phrases
-  (e.g. "premium transport", "luxury shuttles").
-- Only mention specific transport categories (e.g. Speed Boat, Helicopter, Bus)
-  when tool output provides them.
-
-KNOWLEDGE BASE USAGE
-- Use KB / search tools for detailed questions about policies, FAQs, terms,
-  edge cases, or operational details that are NOT covered by the brand
-  description or catalog tools.
-- Do NOT use KB tools to answer generic "what is Pace Shuttles" questions.
-  For those, always use \`describePaceShuttlesBrand\` instead.
+- When giving a high-level description of transport, use neutral phrases (e.g. "premium transport", "luxury shuttles").
+- Only mention specific transport categories (e.g. Speed Boat, Helicopter, Bus) when tool output provides them.
 
 SCOPE & TONE
-- Focus on premium, resort-style coastal and island transfers, not generic
-  public transport.
+- Focus on premium, resort-style coastal and island transfers, not generic public transport.
 - Keep responses concise, factual, brand-aligned, and grounded in tool output.
 - If tools return no data, say so politely and avoid guessing.
 `;
@@ -107,14 +91,15 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser(); // keeps auth flow consistent, even if unused
+    // Keep auth flow consistent (even if we don't use the user directly)
+    await supabase.auth.getUser();
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // ---- Strip out any tool messages before sending to OpenAI ------------
+    // Strip out any previous tool messages before sending to OpenAI
     const history = (body.messages || []) as AgentMessage[];
 
     const upstreamMessages = history.filter(
@@ -160,7 +145,7 @@ export async function POST(req: Request) {
 
       if (!impl) {
         return NextResponse.json(
-          { error: \`Unknown tool: \${call.function.name}\` },
+          { error: `Unknown tool: ${call.function.name}` },
           { status: 500 }
         );
       }
@@ -171,7 +156,7 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      // Tool result is the final user-visible answer.
+      // Tool result is treated as the final, user-visible answer.
       let newMessages: AgentMessage[] = [...history];
 
       if (result.messages && result.messages.length) {
