@@ -53,21 +53,36 @@ function getBaseUrl() {
 /*  System guardrails                                                         */
 /* -------------------------------------------------------------------------- */
 
+const TODAY = new Date().toISOString().slice(0, 10); // e.g. "2025-12-10"
+
 const SYSTEM_RULES = `
 You are the Pace Shuttles concierge AI.
 
-BRAND DESCRIPTION (SOURCE OF TRUTH)
-Use this as your baseline when users ask "What is Pace Shuttles?":
+TODAY:
+- Today's date is ${TODAY}.
+- When a user asks about a month without giving a year (e.g. "in December"),
+  assume they mean the **next occurrence of that month on or after today**.
+- Do not choose years in the past relative to today.
+- If you are unsure which year the user means, ask a brief clarifying question.
 
-"Pace Shuttles is a luxury, semi-private transfer service connecting guests to premium coastal and island destinations such as beach clubs, restaurants and bars. Luxury Transfers, Reimagined. Discover a new way to move between exclusive islands and shores with semi-private, shared charters that blend exclusivity with ease. With Pace Shuttles the journey is the destination."
+DATE ARGUMENTS FOR TOOLS:
+- When calling date- or journey-related tools, always use ISO dates in the form
+  YYYY-MM-DD.
+- Reject or correct obviously invalid years (for example more than 4 digits, or
+  outside a sensible range like 2024–2035) instead of passing them through.
+- If the user types a typo year like "20205", treat that as invalid and ask for
+  a correct year.
 
-RULES
-- When describing Pace Shuttles, stay within this brand description plus any facts returned by tools or knowledge-base documents. Do NOT invent features, future services, regions, or vehicle types that are not in tools or docs.
-- For: where we operate, which destinations we serve, dates/times of journeys, pickup points, vehicle categories, bookings, terms or policies, ALWAYS use tools first.
-- Vehicle categories (e.g. speed boat, helicopter, bus, limo) must come from the transport types tools / APIs, not from your own guesses.
-- NEVER reveal operator names or vessel names, even if the user asks directly.
-- Focus on premium coastal and island transfers (beach clubs, restaurants, islands, marinas) – not generic city buses or public transport.
-- If tools return no data, say so politely and keep answers concise and factual.
+GENERAL RULES:
+- ALWAYS use tools first when asked about what Pace Shuttles is, how it works,
+  where we operate, routes, destinations, pickups, vehicle categories, terms or
+  policies.
+- NEVER invent information when tools or documents do not support it.
+- NEVER reveal operator names or vessel names.
+- Focus on premium coastal and island transfers (beach clubs, restaurants,
+  islands, marinas) – not airports, city buses or generic public transport.
+- If tools return no data, say so politely.
+- Keep responses concise and factual.
 `;
 
 /* -------------------------------------------------------------------------- */
@@ -79,24 +94,18 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser(); // keeps auth flow consistent
+    await supabase.auth.getUser(); // we don't use user yet, but this keeps auth flow consistent
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // IMPORTANT: never forward tool messages back to OpenAI –
-    // we handle tool results ourselves.
-    const messagesForModel: AgentMessage[] = body.messages.filter(
-      (m) => m.role === "user" || m.role === "assistant"
-    );
-
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...messagesForModel,
+        ...body.messages,
       ],
       tools: tools.map((t) => t.spec),
       tool_choice: "auto",
@@ -129,14 +138,16 @@ export async function POST(req: Request) {
         ? JSON.parse(call.function.arguments)
         : {};
 
-      // Tool returns ready-to-display assistant messages
       const result = await impl.run(args);
 
-      const newMessages = result.messages ?? [];
+      const toolMessage: AgentMessage = {
+        role: "tool",
+        name: call.function.name,
+        content: JSON.stringify(result),
+      };
 
       return NextResponse.json<AgentResponse>({
-        // We keep the original history plus the assistant messages the tool produced.
-        messages: [...body.messages, ...newMessages],
+        messages: [...body.messages, toolMessage],
         choices: result.choices ?? [],
       });
     }
