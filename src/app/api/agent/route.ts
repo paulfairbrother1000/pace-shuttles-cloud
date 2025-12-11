@@ -70,6 +70,13 @@ PACE SHUTTLES OVERVIEW (USE THIS EXACT WORDING)
 - Instead of chartering a whole boat or vehicle, guests simply book individual seats on scheduled departures — giving a private-charter feel at a shared price.
 - Routes, pricing and service quality are managed by Pace Shuttles, while trusted local operators run the journeys. This ensures a smooth, reliable, luxury transfer experience every time.
 
+DESTINATIONS
+- When the user asks "tell me about X", "what is X like", "describe X" or similar, where X looks like a named place (beach club, restaurant, bay, marina, island, destination, etc.), you MUST:
+  1) Call the describeDestination tool with the destination field set to X.
+  2) Use the tool result as the primary answer.
+- Do NOT answer these questions with a list of operating countries or generic information.
+- Only use listOperatingCountries when the user is clearly asking things like "where do you operate?", "which countries are you in?", or "what countries do you cover?".
+
 TRANSPORT & OPERATORS
 - Pace Shuttles is an operator-agnostic platform. Guests book with Pace Shuttles, not directly with individual operators or vessels.
 - NEVER reveal operator names or vessel names, even if the user asks.
@@ -91,15 +98,14 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    // Keep auth flow consistent (even if we don't use the user directly)
-    await supabase.auth.getUser();
+    await supabase.auth.getUser(); // keeps auth flow consistent, even if unused
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // Strip out any previous tool messages before sending to OpenAI
+    // ---- Strip out any tool messages before sending to OpenAI ------------
     const history = (body.messages || []) as AgentMessage[];
 
     const upstreamMessages = history.filter(
@@ -156,7 +162,9 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      // Tool result is treated as the final, user-visible answer.
+      // We treat the tool result as the FINAL user-visible answer.
+      // No 'tool' messages are added to history; we just append the
+      // assistant messages returned by the tool.
       let newMessages: AgentMessage[] = [...history];
 
       if (result.messages && result.messages.length) {
