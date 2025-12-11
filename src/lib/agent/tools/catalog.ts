@@ -22,24 +22,30 @@ type VisibleRoute = {
   vehicle_type_name: string | null;
 };
 
+type VisibleDestination = {
+  id: string;
+  name: string;
+  description?: string | null;
+  address?: string | null;
+  country_name?: string | null; // may be present depending on API
+};
+
+type VisiblePickup = {
+  id: string;
+  name: string;
+  description?: string | null;
+  address?: string | null;
+  country_name?: string | null;
+};
+
 type VisibleCatalog = {
   ok: boolean;
   fallback?: boolean;
   routes: VisibleRoute[];
   countries: any[];
-  destinations: any[]; // we treat these as 'any' to stay schema-tolerant
-  pickups: any[];
+  destinations: VisibleDestination[];
+  pickups: VisiblePickup[];
   vehicle_types: any[];
-};
-
-/* Types for /api/public/vehicle-types ------------------------------------- */
-
-type VehicleTypesResponse = {
-  rows?: {
-    id: string;
-    name: string | null;
-    description?: string | null;
-  }[];
 };
 
 /* -------------------------------------------------------------------------- */
@@ -88,8 +94,7 @@ async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | nul
 export function catalogTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
-  /* 1) Countries where we operate ----------------------------------------- */
-
+  /* 1) Countries where we operate */
   const listOperatingCountries: ToolDefinition = {
     spec: {
       type: "function",
@@ -128,8 +133,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 2) Destinations we visit within a given country ----------------------- */
-
+  /* 2) Destinations we visit within a given country */
   const listDestinationsInCountry: ToolDefinition = {
     spec: {
       type: "function",
@@ -205,154 +209,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 3) Describe a specific destination by name ---------------------------- */
-
-  const describeDestinationByName: ToolDefinition = {
-    spec: {
-      type: "function",
-      function: {
-        name: "describeDestinationByName",
-        description:
-          "Given the name of a destination (e.g. 'Boom', 'Loose Canon', 'The Cliff'), look it up in the public catalog and describe what/where it is using any stored description, address and country. Use this whenever the user asks things like 'tell me about Boom', 'what is The Cliff?', or 'what is Loose Canon like?'.",
-        parameters: {
-          type: "object",
-          properties: {
-            name: {
-              type: "string",
-              description:
-                "The destination name as asked by the user, e.g. 'Boom', 'Loose Canon', 'The Cliff'.",
-            },
-          },
-          required: ["name"],
-          additionalProperties: false,
-        },
-      },
-    },
-    run: async (args: any): Promise<ToolExecutionResult> => {
-      const rawName = String(args.name || "").trim();
-      const query = lc(rawName);
-      if (!query) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                "Tell me the name of the destination you’re interested in, and I’ll describe it.",
-            },
-          ],
-        };
-      }
-
-      const cat = await loadVisibleCatalog(baseUrl);
-      if (!cat) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                "I couldn’t access the destination catalog just now. Please try again in a moment.",
-            },
-          ],
-        };
-      }
-
-      const dests = (cat.destinations ?? []) as any[];
-
-      // 1) Try exact name match
-      let dest =
-        dests.find((d) => lc(d.name) === query) ??
-        // 2) Fallback: case-insensitive 'contains' match
-        dests.find((d) => lc(d.name).includes(query));
-
-      // 3) As a final fallback, try to infer from routes
-      if (!dest && cat.routes?.length) {
-        const fromRoutes = cat.routes.find(
-          (r) =>
-            lc(r.destination_name) === query ||
-            lc(r.destination_name).includes(query)
-        );
-        if (fromRoutes) {
-          dest = {
-            name: fromRoutes.destination_name,
-            country_name: fromRoutes.country_name,
-          };
-        }
-      }
-
-      if (!dest) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content: `I couldn’t find a destination called “${rawName}” in the current catalog. It might not be live yet.`,
-            },
-          ],
-        };
-      }
-
-      const name: string = dest.name ?? rawName;
-      const country: string | undefined =
-        dest.country_name ?? dest.country ?? undefined;
-
-      const description: string | undefined =
-        dest.description_long ??
-        dest.description ??
-        dest.description_short ??
-        undefined;
-
-      const line1: string | undefined = dest.address_line1 ?? dest.address1;
-      const line2: string | undefined = dest.address_line2 ?? dest.address2;
-      const city: string | undefined = dest.city ?? undefined;
-      const website: string | undefined = dest.website_url ?? dest.website;
-
-      const parts: string[] = [];
-
-      // Main sentence
-      if (description) {
-        parts.push(description.trim());
-      } else {
-        const placeBits: string[] = [];
-        placeBits.push(name);
-        if (city) placeBits.push(city);
-        if (country) placeBits.push(country);
-        const label = placeBits.join(", ");
-
-        parts.push(
-          `${label} is one of the destinations served by Pace Shuttles. It’s available as a drop-off or pick-up point on selected shuttle routes.`
-        );
-      }
-
-      // Address
-      const addressBits: string[] = [];
-      if (line1) addressBits.push(line1);
-      if (line2) addressBits.push(line2);
-      if (city) addressBits.push(city);
-      if (country) addressBits.push(country);
-
-      if (addressBits.length) {
-        parts.push(`Address: ${addressBits.join(", ")}.`);
-      }
-
-      // Website
-      if (website) {
-        parts.push(
-          `If you’d like to explore the venue itself in more detail, you can also visit their website: ${website}.`
-        );
-      }
-
-      // Closing hint
-      parts.push(
-        "If you’d like, I can also show you current shuttle journeys serving this destination on specific dates."
-      );
-
-      const content = parts.join(" ");
-
-      return { messages: [{ role: "assistant", content }] };
-    },
-  };
-
-  /* 4) Pickup / boarding points in a given country ------------------------ */
-
+  /* 3) Pickup / boarding points in a given country */
   const listPickupsInCountry: ToolDefinition = {
     spec: {
       type: "function",
@@ -428,8 +285,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) Routes (pickup → destination) in a given country ------------------- */
-
+  /* 4) Routes (pickup → destination) in a given country */
   const listRoutesInCountry: ToolDefinition = {
     spec: {
       type: "function",
@@ -498,15 +354,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 6) High-level transport categories – from /api/public/vehicle-types ---- */
-
+  /* 5) High-level transport categories – GENERIC, no vessel names */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listTransportTypes",
         description:
-          "Describe the generic categories of transport used by Pace Shuttles (e.g. Speed Boat, Helicopter, Bus). Uses the public /api/public/vehicle-types endpoint and NEVER exposes individual vessel or operator names.",
+          "Describe the generic categories of transport used by Pace Shuttles (e.g. Speed Boat, Helicopter, Bus, Limo). NEVER reveal specific operator or vessel names.",
         parameters: {
           type: "object",
           properties: {},
@@ -515,35 +370,163 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      const data = await fetchJSON<VehicleTypesResponse>(
-        `${baseUrl}/api/public/vehicle-types`
-      );
+      // Hard-coded to avoid any chance of leaking vessel / operator names.
+      const content =
+        "We currently use premium transport categories such as Speed Boat, Helicopter, Bus and Limo. The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
+      return { messages: [{ role: "assistant", content }] };
+    },
+  };
 
-      const names = unique(
-        (data?.rows ?? []).map((v) => v.name ?? undefined)
-      );
-
-      if (!names.length) {
-        const content =
-          "We use premium categories of transport tailored to each route, such as speed boats and other high-end options. Specific vessel or operator names aren’t disclosed in advance of a booking.";
-        return { messages: [{ role: "assistant", content }] };
+  /* 6) Describe a specific pickup or destination in the network */
+  const describeNetworkLocation: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "describeNetworkLocation",
+        description:
+          "Given the name of a pickup or destination (e.g. 'Nobu', 'Boom', 'The Cliff', 'Loose Canon'), describe it as a place served by Pace Shuttles. Use any description/address stored in the catalog if available, and mention which country it is in and that it is used as a pickup/drop-off point on selected routes.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description:
+                "The place name the user mentioned, e.g. 'The Cliff', 'Boom', 'Loose Canon', 'Nobu'.",
+            },
+          },
+          required: ["name"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const rawName = String(args.name || "").trim();
+      if (!rawName) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "Which location would you like to know about? For example: Boom, Loose Canon, The Cliff, Nobu…",
+            },
+          ],
+        };
       }
 
-      const content =
-        `We currently use the following categories of transport:\n• ${names.join(
-          " • "
-        )}\nThe exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.`;
+      const nameLc = lc(rawName);
+      const cat = await loadVisibleCatalog(baseUrl);
 
-      return { messages: [{ role: "assistant", content }] };
+      if (!cat) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t load our destination catalog just now. Please try again in a moment.",
+            },
+          ],
+        };
+      }
+
+      // Find matching destination or pickup
+      const destMatch =
+        cat.destinations?.find((d) => lc(d.name) === nameLc) ??
+        cat.destinations?.find((d) => lc(d.name).includes(nameLc));
+
+      const pickupMatch =
+        cat.pickups?.find((p) => lc(p.name) === nameLc) ??
+        cat.pickups?.find((p) => lc(p.name).includes(nameLc));
+
+      const place = destMatch ?? pickupMatch;
+
+      if (!place) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `I couldn’t find a live pickup or destination called “${rawName}” in the current schedule. It might not be active yet, or it may be called something slightly different in our system.`,
+            },
+          ],
+        };
+      }
+
+      // Try to infer country + sample routes mentioning this place
+      let countryName: string | null = (place as any).country_name ?? null;
+
+      if (!countryName && cat.routes?.length) {
+        const routeHit = cat.routes.find(
+          (r) =>
+            lc(r.destination_name) === lc(place.name) ||
+            lc(r.pickup_name) === lc(place.name)
+        );
+        if (routeHit) countryName = routeHit.country_name ?? null;
+      }
+
+      const niceName = place.name;
+      const prettyCountry = countryName || "our network";
+
+      const description = (place.description || "").trim();
+      const address = (place.address || "").trim();
+
+      // Sample up to 3 routes that touch this place
+      const relatedRoutes =
+        cat.routes
+          ?.filter(
+            (r) =>
+              lc(r.destination_name) === lc(place.name) ||
+              lc(r.pickup_name) === lc(place.name)
+          )
+          .slice(0, 3) || [];
+
+      const routeSnippets = relatedRoutes.map((r) => {
+        const from = r.pickup_name || "Pickup";
+        const to = r.destination_name || "Destination";
+        return `${from} → ${to}`;
+      });
+
+      const bits: string[] = [];
+
+      bits.push(
+        `${niceName} is one of the destinations served by Pace Shuttles in ${prettyCountry}. It’s used as a pick-up and drop-off point on selected shuttle routes.`
+      );
+
+      if (description) {
+        bits.push(description);
+      }
+
+      if (address) {
+        bits.push(`Address: ${address}.`);
+      }
+
+      if (routeSnippets.length) {
+        bits.push(
+          `Example routes that include this location are: ${routeSnippets.join(
+            " • "
+          )}.`
+        );
+      }
+
+      bits.push(
+        "If you’d like, I can also show you upcoming shuttle journeys serving this location on specific dates."
+      );
+
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: bits.join(" "),
+          },
+        ],
+      };
     },
   };
 
   return [
     listOperatingCountries,
     listDestinationsInCountry,
-    describeDestinationByName,
     listPickupsInCountry,
     listRoutesInCountry,
     listTransportTypes,
+    describeNetworkLocation,
   ];
 }
