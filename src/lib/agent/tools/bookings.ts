@@ -421,6 +421,6 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       };
     },
   };
-
+ 
   return [explainBookingFlow, listJourneysBetweenDates];
 }
