@@ -99,11 +99,29 @@ export async function POST(req: Request) {
 
     const tools = buildTools({ baseUrl, supabase });
 
+    // ---- IMPORTANT: strip out tool messages before sending to OpenAI ----
+    const history = (body.messages || []) as AgentMessage[];
+
+    const upstreamMessages = history.filter(
+      (m) => m.role === "user" || m.role === "assistant"
+    );
+
+    const userMessage = upstreamMessages.findLast((m) => m.role === "user");
+    if (!userMessage) {
+      return NextResponse.json(
+        { error: "No user message" },
+        { status: 400 }
+      );
+    }
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...body.messages,
+        ...upstreamMessages.map((m) => ({
+          role: m.role,
+          content: m.content ?? "",
+        })),
       ],
       tools: tools.map((t) => t.spec),
       tool_choice: "auto",
@@ -145,7 +163,7 @@ export async function POST(req: Request) {
       };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage],
+        messages: [...history, toolMessage],
         choices: result.choices ?? [],
       });
     }
@@ -157,7 +175,7 @@ export async function POST(req: Request) {
     };
 
     return NextResponse.json<AgentResponse>({
-      messages: [...body.messages, finalMessage],
+      messages: [...history, finalMessage],
       choices: [],
     });
   } catch (err: any) {
