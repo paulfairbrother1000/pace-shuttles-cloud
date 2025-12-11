@@ -4,6 +4,7 @@ import type {
   ToolDefinition,
   ToolExecutionResult,
 } from "./index";
+import type { AgentChoice } from "@/lib/agent/agent-schema";
 
 /* -------------------------------------------------------------------------- */
 /*  Types for /api/public/journeys                                            */
@@ -14,7 +15,6 @@ type JourneyRow = {
   pickup_name: string | null;
   destination_name: string | null;
   country_name: string | null;
-  destination_name: string | null;
   route_name?: string | null;
 };
 
@@ -81,7 +81,7 @@ function formatDateTimeISO(s: string): { date: string; time: string } {
  *
  * For month-only values with no year:
  * - If month is after current month -> that month, current year (full month)
- * - If month is current month -> tomorrow to end of month
+ * - If month is the current month -> tomorrow to end of that month
  * - If month is before current month -> that month, next year (full month)
  */
 function inferDateRange(
@@ -110,7 +110,6 @@ function inferDateRange(
       return { error: "The end date must be on or after the start date." };
     }
 
-    // We don’t allow ranges that are entirely in the past
     const earliest = tomorrow;
     if (end < earliest) {
       return {
@@ -170,7 +169,6 @@ function inferDateRange(
 
     const earliest = tomorrow;
     if (end < earliest) {
-      // Entire month is in the past -> don’t show schedule
       return {
         error:
           "The public schedule view only shows upcoming journeys. For past trips you’ll be able to review your bookings when logged in. Please choose a date from today onwards.",
@@ -263,7 +261,10 @@ async function fetchJourneysForRange(
 export function bookingTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
 
-  /* 1) Explain booking flow (no DB access) */
+  /* ------------------------------------------------------------------------ */
+  /* 1) Explain booking flow (no DB access)                                   */
+  /* ------------------------------------------------------------------------ */
+
   const explainBookingFlow: ToolDefinition = {
     spec: {
       type: "function",
@@ -285,7 +286,10 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 2) List journeys between dates (or in a month) */
+  /* ------------------------------------------------------------------------ */
+  /* 2) List journeys between dates (or in a month)                           */
+  /* ------------------------------------------------------------------------ */
+
   const listJourneysBetweenDates: ToolDefinition = {
     spec: {
       type: "function",
@@ -309,7 +313,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
             q: {
               type: "string",
               description:
-                "Optional free-text filter for pickup, destination or route name (e.g. 'Boom', 'The Cliff').",
+                "Optional free-text filter for pickup, destination or route name (e.g. 'Boom', 'The Cliff', 'Barbados').",
             },
           },
           required: ["from"],
@@ -358,7 +362,8 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
           q && q.length
             ? `I couldn’t find any live journeys to or from places matching “${q}” between ${startStr} and ${endStr}.`
             : `I couldn’t find any live journeys scheduled between ${startStr} and ${endStr}.`;
-        const tail = " Please try another period or check back later as we add more departures.";
+        const tail =
+          " Please try another period or check back later as we add more departures.";
         return {
           messages: [
             {
@@ -369,11 +374,38 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const lines = journeys.map((j) => {
+      // Build human-readable lines + clickable choices
+      const lines: string[] = [];
+      const choices: AgentChoice[] = [];
+
+      // You can change this base path later to whatever route you build
+      const JOURNEY_LINK_BASE = "/journeys";
+
+      journeys.forEach((j) => {
         const { date, time } = formatDateTimeISO(j.starts_at);
         const pickup = j.pickup_name || "Pickup";
         const dest = j.destination_name || "Destination";
-        return `• ${date} ${time} — ${pickup} → ${dest}`;
+
+        const label = `${date} ${time} — ${pickup} → ${dest}`;
+        lines.push(`• ${label}`);
+
+        const url = `${JOURNEY_LINK_BASE}?date=${encodeURIComponent(
+          date
+        )}&pickup=${encodeURIComponent(
+          pickup
+        )}&destination=${encodeURIComponent(dest)}`;
+
+        choices.push({
+          label,
+          action: {
+            type: "openJourney",
+            date,
+            time,
+            pickup,
+            destination: dest,
+            url,
+          },
+        });
       });
 
       const heading =
@@ -385,6 +417,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
 
       return {
         messages: [{ role: "assistant", content }],
+        choices,
       };
     },
   };

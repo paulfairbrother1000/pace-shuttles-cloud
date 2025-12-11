@@ -56,28 +56,32 @@ function getBaseUrl() {
 const SYSTEM_RULES = `
 You are the Pace Shuttles concierge AI.
 
-RULES:
-- ALWAYS use tools first when asked about what Pace Shuttles is, how it works,
-  where we operate, routes, destinations, pickups, vehicle categories, terms or
-  policies.
-- NEVER invent information.
-- NEVER reveal operator names or vessel names.
-- Focus on premium coastal and island transfers (beach clubs, restaurants,
-  islands, marinas) – not airports, city buses or generic public transport.
-- If tools return no data, say so politely.
-- Keep responses concise and factual.
+CORE BEHAVIOUR
+- ALWAYS use tools first when asked about:
+  - what Pace Shuttles is or how it works
+  - where we operate (countries, destinations, routes, pickups)
+  - journey dates, availability, pricing or booking flows
+  - vehicle / transport categories
+  - terms, policies or conditions.
+- NEVER invent information that is not supported by tools or the provided documents.
+
+TRANSPORT & OPERATORS
+- Pace Shuttles is an operator-agnostic platform. Guests book with Pace Shuttles,
+  not directly with individual operators or vessels.
+- NEVER reveal operator names or vessel names, even if the user asks.
+- When giving a high-level description of the service, DO NOT list specific
+  vehicle categories (boats, helicopters, limos, etc). Use neutral phrases like
+  "premium transport", "luxury shuttles" or "semi-private transfers".
+- Only mention specific transport categories (e.g. Helicopter, Speed Boat, Bus, Limo)
+  when you have called the listTransportTypes tool and are reflecting its output.
+
+SCOPE & TONE
+- Focus on premium coastal and island transfers (beach clubs, restaurants, hotels,
+  marinas, anchorages) – not generic city buses or airport shuttles.
+- Keep responses concise, factual, and grounded in tool output or the brand
+  description.
+- If tools return no data or only partial data, say so politely and avoid guessing.
 `;
-
-/* -------------------------------------------------------------------------- */
-/*  Helper: sanitise conversation for OpenAI                                  */
-/* -------------------------------------------------------------------------- */
-
-function stripToolMessages(history: AgentMessage[]): AgentMessage[] {
-  // Only keep user/assistant messages when we send the context to OpenAI.
-  return history.filter(
-    (m) => m.role === "user" || m.role === "assistant"
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /*  POST handler – tool-first agent                                           */
@@ -88,28 +92,18 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser(); // keeps auth flow consistent even if unused for now
+    await supabase.auth.getUser(); // keeps auth flow consistent, even if unused
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // Strip out any tool messages from previous turns before calling OpenAI
-    const conversation = stripToolMessages(body.messages || []);
-
-    if (!conversation.length) {
-      return NextResponse.json(
-        { error: "No conversation history provided" },
-        { status: 400 }
-      );
-    }
-
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...conversation,
+        ...body.messages,
       ],
       tools: tools.map((t) => t.spec),
       tool_choice: "auto",
@@ -144,23 +138,14 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      // ToolExecutionResult.messages is already an array of assistant-style messages.
-      const toolMessages = result.messages ?? [];
-      const combinedContent = toolMessages
-        .map((m) => m.content)
-        .filter(Boolean)
-        .join("\n\n");
-
-      const assistantMessage: AgentMessage = {
-        role: "assistant",
-        content:
-          combinedContent ||
-          "I’ve checked our live data and updated the information above.",
+      const toolMessage: AgentMessage = {
+        role: "tool",
+        name: call.function.name,
+        content: JSON.stringify(result),
       };
 
       return NextResponse.json<AgentResponse>({
-        // NOTE: we append a normal assistant message, NOT a 'tool' message
-        messages: [...body.messages, assistantMessage],
+        messages: [...body.messages, toolMessage],
         choices: result.choices ?? [],
       });
     }
