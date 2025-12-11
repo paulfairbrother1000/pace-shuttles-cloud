@@ -22,6 +22,12 @@ type VisibleRoute = {
   vehicle_type_name: string | null;
 };
 
+type VehicleTypeRow = {
+  id: string;
+  name: string | null;
+  description: string | null;
+};
+
 type VisibleCatalog = {
   ok: boolean;
   fallback?: boolean;
@@ -29,7 +35,7 @@ type VisibleCatalog = {
   countries: any[];
   destinations: any[];
   pickups: any[];
-  vehicle_types: any[];
+  vehicle_types: VehicleTypeRow[];
 };
 
 /* -------------------------------------------------------------------------- */
@@ -77,28 +83,6 @@ async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | nul
 
 export function catalogTools(ctx: ToolContext): ToolDefinition[] {
   const { baseUrl } = ctx;
-
-  /* 0) High-level brand description (short, locked-in spiel) */
-  const describePaceShuttlesBrand: ToolDefinition = {
-    spec: {
-      type: "function",
-      function: {
-        name: "describePaceShuttlesBrand",
-        description:
-          "Use this when the user asks what Pace Shuttles is, what it does, or for a high-level explanation of the service.",
-        parameters: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
-      },
-    },
-    run: async (): Promise<ToolExecutionResult> => {
-      const content =
-        "Pace Shuttles is a per-seat, semi-private shuttle service linking marinas, hotels and beach clubs across premium coastal and island destinations. Instead of chartering a whole boat or vehicle, guests simply book individual seats on scheduled departures — giving a private-charter feel at a shared price. Routes, pricing and service quality are managed by Pace Shuttles, while trusted local operators run the journeys. This ensures a smooth, reliable, luxury transfer experience every time.";
-      return { messages: [{ role: "assistant", content }] };
-    },
-  };
 
   /* 1) Countries where we operate */
   const listOperatingCountries: ToolDefinition = {
@@ -360,14 +344,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) High-level transport categories – from catalog vehicle_types */
+  /* 5) High-level transport categories – from catalog (no vessel names)      */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listTransportTypes",
         description:
-          "Describe the generic categories of transport used by Pace Shuttles, based on the public catalog vehicle types. Never reveal specific operator or vessel names.",
+          "Describe the generic categories of transport used by Pace Shuttles based on the public catalog (e.g. Speed Boat, Helicopter, Bus, Limo). Never reveal specific operator or vessel names.",
         parameters: {
           type: "object",
           properties: {},
@@ -378,27 +362,49 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     run: async (): Promise<ToolExecutionResult> => {
       const cat = await loadVisibleCatalog(baseUrl);
 
-      const names = cat?.vehicle_types
-        ? unique(cat.vehicle_types.map((v: any) => v?.name as string | null))
-        : [];
+      if (!cat) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "I couldn’t read our live catalog just now, but in general we use premium categories of transport tailored to each route. Specific vessel or operator names are not disclosed in advance of a booking.",
+            },
+          ],
+        };
+      }
 
-      if (!names.length) {
-        const fallback =
-          "We use premium categories of transport tailored to each route. The exact mix available depends on the territory and route, but specific vessel or operator names are not disclosed in advance of a booking.";
-        return { messages: [{ role: "assistant", content: fallback }] };
+      // Prefer explicit vehicle_types list
+      let typeNames: string[] = [];
+      if (Array.isArray(cat.vehicle_types) && cat.vehicle_types.length) {
+        typeNames = unique(cat.vehicle_types.map((t) => t.name));
+      } else if (Array.isArray(cat.routes) && cat.routes.length) {
+        // Fallback: infer from routes
+        typeNames = unique(cat.routes.map((r) => r.vehicle_type_name));
+      }
+
+      if (!typeNames.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content:
+                "We use premium categories of transport tailored to each route, but I couldn’t retrieve the exact list of vehicle types right now.",
+            },
+          ],
+        };
       }
 
       const content =
-        "We currently use the following categories of transport:\n• " +
-        names.join(" • ") +
-        "\n\nThe exact mix available depends on the territory and route, but specific vessel or operator names are not disclosed in advance of a booking.";
+        "We currently use the following categories of transport:\n" +
+        `• ${typeNames.join(" • ")}\n\n` +
+        "The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
 
       return { messages: [{ role: "assistant", content }] };
     },
   };
 
   return [
-    describePaceShuttlesBrand,
     listOperatingCountries,
     listDestinationsInCountry,
     listPickupsInCountry,
