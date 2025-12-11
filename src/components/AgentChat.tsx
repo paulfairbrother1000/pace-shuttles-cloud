@@ -8,11 +8,17 @@ import type {
   AgentChoice,
 } from "@/lib/agent/agent-schema";
 
+function stripToolMessages(msgs: AgentMessage[]): AgentMessage[] {
+  // Only keep messages that are safe for the client to send / display
+  return msgs.filter((m) => m.role === "assistant" || m.role === "user");
+}
+
 export function AgentChat() {
   const [messages, setMessages] = useState<AgentMessage[]>([
     {
       role: "assistant",
-      content: "Hi! 👋 I can help you explore destinations, availability and your bookings. How can I help?",
+      content:
+        "Hi! 👋 I can help you explore destinations, availability and your bookings. How can I help?",
     },
   ]);
   const [pending, setPending] = useState(false);
@@ -40,23 +46,32 @@ export function AgentChat() {
     setPending(true);
     setPartialResponse("");
 
+    // ✅ Never send tool messages back to the server
+    const outbound = stripToolMessages(newMessages);
+
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages }),
+        body: JSON.stringify({ messages: outbound }),
       });
 
       const data = (await res.json()) as AgentResponse;
 
       if (data.messages) {
-        setMessages(data.messages);
+        // ✅ Also strip out any tool messages that might be returned
+        setMessages(stripToolMessages(data.messages));
       }
 
       if (data.choices) {
         setMessages((prev) => {
+          if (!prev.length) return prev;
           const updated = [...prev];
-          updated[updated.length - 1].choices = data.choices;
+          const lastIndex = updated.length - 1;
+          updated[lastIndex] = {
+            ...updated[lastIndex],
+            choices: data.choices,
+          };
           return updated;
         });
       }
@@ -171,3 +186,5 @@ export function AgentChat() {
     </div>
   );
 }
+
+::contentReference[oaicite:0]{index=0}
