@@ -106,8 +106,8 @@ export async function POST(req: Request) {
       (m) => m.role === "user" || m.role === "assistant"
     );
 
-    const userMessage = upstreamMessages.findLast((m) => m.role === "user");
-    if (!userMessage) {
+    const hasUserMessage = upstreamMessages.some((m) => m.role === "user");
+    if (!hasUserMessage) {
       return NextResponse.json(
         { error: "No user message" },
         { status: 400 }
