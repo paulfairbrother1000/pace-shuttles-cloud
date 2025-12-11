@@ -8,11 +8,6 @@ import type {
   AgentChoice,
 } from "@/lib/agent/agent-schema";
 
-function stripToolMessages(msgs: AgentMessage[]): AgentMessage[] {
-  // Only keep messages that are safe for the client to send / display
-  return msgs.filter((m) => m.role === "assistant" || m.role === "user");
-}
-
 export function AgentChat() {
   const [messages, setMessages] = useState<AgentMessage[]>([
     {
@@ -37,7 +32,8 @@ export function AgentChat() {
     setMessages([
       {
         role: "assistant",
-        content: "Restarted! How can I help with your Pace Shuttles adventure?",
+        content:
+          "Restarted! How can I help with your Pace Shuttles adventure?",
       },
     ]);
   }
@@ -46,32 +42,24 @@ export function AgentChat() {
     setPending(true);
     setPartialResponse("");
 
-    // ✅ Never send tool messages back to the server
-    const outbound = stripToolMessages(newMessages);
-
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: outbound }),
+        body: JSON.stringify({ messages: newMessages }),
       });
 
       const data = (await res.json()) as AgentResponse;
 
       if (data.messages) {
-        // ✅ Also strip out any tool messages that might be returned
-        setMessages(stripToolMessages(data.messages));
+        setMessages(data.messages);
       }
 
       if (data.choices) {
         setMessages((prev) => {
           if (!prev.length) return prev;
           const updated = [...prev];
-          const lastIndex = updated.length - 1;
-          updated[lastIndex] = {
-            ...updated[lastIndex],
-            choices: data.choices,
-          };
+          updated[updated.length - 1].choices = data.choices;
           return updated;
         });
       }
@@ -79,7 +67,10 @@ export function AgentChat() {
       console.error("Agent failed:", err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Oops — can you try again?" },
+        {
+          role: "assistant",
+          content: "Oops — something went wrong. Can you try again?",
+        },
       ]);
     } finally {
       setPending(false);
@@ -94,6 +85,35 @@ export function AgentChat() {
   }
 
   function handleChoice(choice: AgentChoice) {
+    // SPECIAL CASE: journey buttons with deep-link URLs
+    const action: any = (choice as any).action;
+    if (action && action.type === "openJourney" && action.url) {
+      const url: string = action.url;
+
+      // Optionally add a little context message in the chat
+      const newMessages: AgentMessage[] = [
+        ...messages,
+        {
+          role: "user",
+          content: choice.label,
+          payload: choice.action,
+        },
+        {
+          role: "assistant",
+          content: "Opening that journey in the schedule view for you…",
+        },
+      ];
+      setMessages(newMessages);
+
+      // Navigate to the filtered journey page
+      if (typeof window !== "undefined") {
+        window.location.href = url;
+      }
+
+      return;
+    }
+
+    // DEFAULT: send the button label back into the agent as a user message
     const newMessages = [
       ...messages,
       { role: "user", content: choice.label, payload: choice.action },
@@ -164,7 +184,9 @@ export function AgentChat() {
         className="mt-3 flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          const form = e.currentTarget;
+          const form = e.currentTarget as HTMLFormElement & {
+            message: { value: string };
+          };
           const val = form.message.value;
           form.reset();
           handleSend(val);
@@ -178,7 +200,7 @@ export function AgentChat() {
         <button
           type="submit"
           disabled={pending}
-          className="bg-blue-600 text-white px-4 rounded-md"
+          className="bg-blue-600 text-white px-4 rounded-md disabled:opacity-60"
         >
           Send
         </button>
@@ -186,4 +208,3 @@ export function AgentChat() {
     </div>
   );
 }
-
