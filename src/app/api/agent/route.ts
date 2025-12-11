@@ -77,7 +77,9 @@ TRANSPORT & OPERATORS
 - Only mention specific transport categories (e.g. Speed Boat, Helicopter, Bus) when tool output provides them.
 
 SCOPE & TONE
-- Focus on premium, resort-style coastal and island transfers, not generic public transport.
+- Focus on premium,  transformative coastal and inter-island shuttles to incredible destinations.
+Pace Shuttles connects travellers, operators,and destinations through one intelligent platform that handles booking, payments, scheduling, and
+customer care.
 - Keep responses concise, factual, brand-aligned, and grounded in tool output.
 - If tools return no data, say so politely and avoid guessing.
 `;
