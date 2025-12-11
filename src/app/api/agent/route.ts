@@ -99,7 +99,7 @@ export async function POST(req: Request) {
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // ---- Strip out any tool messages before sending to OpenAI -------------
+    // ---- Strip out any tool messages before sending to OpenAI ------------
     const history = (body.messages || []) as AgentMessage[];
 
     const upstreamMessages = history.filter(
@@ -156,17 +156,13 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      // NOTE: we no longer return a 'tool' message to the client.
-      // Instead we append the assistant messages produced by the tool
-      // directly onto the conversation history.
-      const newMessages: AgentMessage[] = [...history];
-      if (result.messages && result.messages.length > 0) {
-        for (const m of result.messages) {
-          newMessages.push({
-            role: "assistant",
-            content: m.content,
-          });
-        }
+      // We treat the tool result as the FINAL user-visible answer.
+      // No 'tool' messages are added to history; we just append the
+      // assistant messages returned by the tool.
+      let newMessages: AgentMessage[] = [...history];
+
+      if (result.messages && result.messages.length) {
+        newMessages = [...history, ...result.messages];
       }
 
       return NextResponse.json<AgentResponse>({

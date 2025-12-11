@@ -62,13 +62,30 @@ function formatDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-function formatDateTimeISO(s: string): { date: string; time: string } {
+/**
+ * Format date & time from the DB timestamp string *without* changing it
+ * via timezone math. This keeps times aligned with what the website shows.
+ *
+ * Expected shapes:
+ * - "2025-12-22T11:30:00" or "2025-12-22T11:30:00Z"
+ * - If parsing fails, we fall back to Date().
+ */
+function formatDateTimeLocal(s: string): { date: string; time: string } {
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (m) {
+    return { date: m[1], time: m[2] };
+  }
+
   const dt = new Date(s);
-  const iso = dt.toISOString();
-  return {
-    date: iso.slice(0, 10),
-    time: iso.slice(11, 16),
-  };
+  if (!isNaN(dt.getTime())) {
+    return {
+      date: dt.toISOString().slice(0, 10),
+      time: dt.toTimeString().slice(0, 5),
+    };
+  }
+
+  // Total fallback – shouldn't really happen
+  return { date: "", time: "" };
 }
 
 /**
@@ -296,7 +313,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listJourneysBetweenDates",
         description:
-          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates.",
+          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates: if the month is the current month, it will search from tomorrow to the end of that month; if it's earlier than the current month, it will assume next year.",
         parameters: {
           type: "object",
           properties: {
@@ -378,12 +395,11 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       const lines: string[] = [];
       const choices: AgentChoice[] = [];
 
-      // TEMP: point to the home page with filters encoded in the querystring.
-      // Later you can create a dedicated /journeys page and update this base.
+      // Use the homepage as the base so filters apply correctly
       const JOURNEY_LINK_BASE = "/";
 
       journeys.forEach((j) => {
-        const { date, time } = formatDateTimeISO(j.starts_at);
+        const { date, time } = formatDateTimeLocal(j.starts_at);
         const pickup = j.pickup_name || "Pickup";
         const dest = j.destination_name || "Destination";
 
