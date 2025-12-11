@@ -53,37 +53,31 @@ function getBaseUrl() {
 /*  System guardrails                                                         */
 /* -------------------------------------------------------------------------- */
 
-const TODAY = new Date().toISOString().slice(0, 10); // e.g. "2025-12-10"
-
 const SYSTEM_RULES = `
 You are the Pace Shuttles concierge AI.
 
-TODAY:
-- Today's date is ${TODAY}.
-- When a user asks about a month without giving a year (e.g. "in December"),
-  assume they mean the **next occurrence of that month on or after today**.
-- Do not choose years in the past relative to today.
-- If you are unsure which year the user means, ask a brief clarifying question.
-
-DATE ARGUMENTS FOR TOOLS:
-- When calling date- or journey-related tools, always use ISO dates in the form
-  YYYY-MM-DD.
-- Reject or correct obviously invalid years (for example more than 4 digits, or
-  outside a sensible range like 2024–2035) instead of passing them through.
-- If the user types a typo year like "20205", treat that as invalid and ask for
-  a correct year.
-
-GENERAL RULES:
+RULES:
 - ALWAYS use tools first when asked about what Pace Shuttles is, how it works,
   where we operate, routes, destinations, pickups, vehicle categories, terms or
   policies.
-- NEVER invent information when tools or documents do not support it.
+- NEVER invent information.
 - NEVER reveal operator names or vessel names.
 - Focus on premium coastal and island transfers (beach clubs, restaurants,
   islands, marinas) – not airports, city buses or generic public transport.
 - If tools return no data, say so politely.
 - Keep responses concise and factual.
 `;
+
+/* -------------------------------------------------------------------------- */
+/*  Helper: sanitise conversation for OpenAI                                  */
+/* -------------------------------------------------------------------------- */
+
+function stripToolMessages(history: AgentMessage[]): AgentMessage[] {
+  // Only keep user/assistant messages when we send the context to OpenAI.
+  return history.filter(
+    (m) => m.role === "user" || m.role === "assistant"
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /*  POST handler – tool-first agent                                           */
@@ -94,18 +88,28 @@ export async function POST(req: Request) {
     const body = (await req.json()) as AgentRequest;
 
     const supabase = getSupabaseClient();
-    await supabase.auth.getUser(); // we don't use user yet, but this keeps auth flow consistent
+    await supabase.auth.getUser(); // keeps auth flow consistent even if unused for now
 
     const baseUrl = getBaseUrl();
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const tools = buildTools({ baseUrl, supabase });
 
+    // Strip out any tool messages from previous turns before calling OpenAI
+    const conversation = stripToolMessages(body.messages || []);
+
+    if (!conversation.length) {
+      return NextResponse.json(
+        { error: "No conversation history provided" },
+        { status: 400 }
+      );
+    }
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: [
         { role: "system", content: SYSTEM_RULES },
-        ...body.messages,
+        ...conversation,
       ],
       tools: tools.map((t) => t.spec),
       tool_choice: "auto",
@@ -140,14 +144,23 @@ export async function POST(req: Request) {
 
       const result = await impl.run(args);
 
-      const toolMessage: AgentMessage = {
-        role: "tool",
-        name: call.function.name,
-        content: JSON.stringify(result),
+      // ToolExecutionResult.messages is already an array of assistant-style messages.
+      const toolMessages = result.messages ?? [];
+      const combinedContent = toolMessages
+        .map((m) => m.content)
+        .filter(Boolean)
+        .join("\n\n");
+
+      const assistantMessage: AgentMessage = {
+        role: "assistant",
+        content:
+          combinedContent ||
+          "I’ve checked our live data and updated the information above.",
       };
 
       return NextResponse.json<AgentResponse>({
-        messages: [...body.messages, toolMessage],
+        // NOTE: we append a normal assistant message, NOT a 'tool' message
+        messages: [...body.messages, assistantMessage],
         choices: result.choices ?? [],
       });
     }
