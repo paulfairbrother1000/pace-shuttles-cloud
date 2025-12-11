@@ -6,136 +6,194 @@ import type {
 } from "./index";
 
 /**
- * KB / “knowledge” tools.
+ * Simple knowledge tool for:
+ * - Pace Shuttles overview (static, brand copy)
+ * - Destination descriptions (dynamic, from DB)
  *
- * These do NOT hit the DB. They’re used for:
- *  - Brand / high-level “what is Pace Shuttles?” questions.
- *  - Very general policy / T&Cs style questions.
- *
- * All hard factual, data-driven answers (where we operate, routes, schedules,
- * prices, etc.) must still come from the catalog / journeys / quote tools.
+ * This should be used for conceptual “tell me about…” questions.
  */
 
-export function kbTools(_ctx: ToolContext): ToolDefinition[] {
-  /* ------------------------------------------------------------------------ */
-  /*  1) Brand overview – used for “what is Pace Shuttles?”                   */
-  /* ------------------------------------------------------------------------ */
+const PACE_SHUTTLES_OVERVIEW =
+  "Pace Shuttles is a per-seat, semi-private shuttle service linking marinas, hotels and beach clubs across premium coastal and island destinations. Instead of chartering a whole boat or vehicle, guests simply book individual seats on scheduled departures — giving a private-charter feel at a shared price. Routes, pricing and service quality are managed by Pace Shuttles, while trusted local operators run the journeys. This ensures a smooth, reliable, luxury transfer experience every time.";
 
-  const kbBrandOverview: ToolDefinition = {
+/**
+ * Try to build a human-readable description from a destination row.
+ * We deliberately keep this generic and only use data that actually exists
+ * on the row, so it will adapt as you enrich the table over time.
+ */
+function buildDestinationDescription(row: any): string {
+  const parts: string[] = [];
+
+  const name = row.name || row.display_name || "This destination";
+  parts.push(`${name} is one of the destinations served by Pace Shuttles.`);
+
+  const locBits: string[] = [];
+  if (row.town || row.city) locBits.push(row.town || row.city);
+  if (row.region || row.island) locBits.push(row.region || row.island);
+  if (row.country_name || row.country) {
+    locBits.push(row.country_name || row.country);
+  }
+  if (locBits.length) {
+    parts.push(`It is located in ${locBits.join(", ")}.`);
+  }
+
+  if (row.description || row.long_description || row.summary) {
+    parts.push(String(row.description || row.long_description || row.summary));
+  }
+
+  const website =
+    row.website || row.website_url || row.url || row.booking_url || null;
+  if (website) {
+    parts.push(
+      `For more details you can visit the destination’s own website: ${website}.`
+    );
+  }
+
+  parts.push(
+    "If you’d like, I can also show you current shuttle journeys serving this destination on specific dates."
+  );
+
+  return parts.join(" ");
+}
+
+export function kbTools(ctx: ToolContext): ToolDefinition[] {
+  const { supabase } = ctx;
+
+  const answerFromKB: ToolDefinition = {
     spec: {
       type: "function",
       function: {
-        name: "kb_brand_overview",
+        name: "answerFromKB",
         description:
-          "Give a high-level explanation of what Pace Shuttles is as a brand. " +
-          "Use this when the user asks things like 'what is Pace Shuttles', " +
-          "'tell me about Pace Shuttles', or 'how does Pace Shuttles work', " +
-          "and they are clearly not asking for specific routes, dates or prices.",
-        parameters: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
-      },
-    },
-    run: async (): Promise<ToolExecutionResult> => {
-      const content =
-        "Pace Shuttles is a luxury, semi-private transfer service that connects " +
-        "guests to premium coastal and island destinations – think beach clubs, " +
-        "restaurants, hotels, marinas and anchorages – rather than generic city " +
-        "buses or airport shuttles.\n\n" +
-        "Our tagline is “Luxury Transfers, Reimagined.” Journeys are typically " +
-        "operated as shared or private charters in premium categories of " +
-        "transport such as modern speed boats today, with scope for other " +
-        "high-end options like helicopters, limousines or premium road vehicles " +
-        "as new territories come online. The Pace Shuttles platform focuses on " +
-        "easy, per-seat booking, transparent pricing and operator-agnostic " +
-        "service – guests book with Pace Shuttles, not directly with individual " +
-        "boat or vehicle owners.\n\n" +
-        "If you’d like details about specific countries, destinations, routes or " +
-        "journey dates, ask me about those and I’ll use the live schedule and " +
-        "catalog tools to give an up-to-date answer.";
-
-      return {
-        messages: [{ role: "assistant", content }],
-      };
-    },
-  };
-
-  /* ------------------------------------------------------------------------ */
-  /*  2) Generic policy / T&Cs summary                                       */
-  /* ------------------------------------------------------------------------ */
-
-  const kbPolicySummary: ToolDefinition = {
-    spec: {
-      type: "function",
-      function: {
-        name: "kb_policy_summary",
-        description:
-          "Give a high-level, non-legal summary of policies (e.g. terms and " +
-          "conditions, cancellations, changes, safety, or luggage rules). " +
-          "Use this when the user asks about 'terms', 'T&Cs', 'cancellation " +
-          "policy', 'refunds' or similar. Always remind the user that the full " +
-          "legal Terms & Conditions are shown during the booking process.",
+          "Answer conceptual questions about Pace Shuttles (what it is, how it works, brand positioning) and destinations (e.g. The Cliff, Nobu, Boom, Loose Canon) using a curated overview plus live data from the destinations table. Use this instead of guessing whenever the user says things like 'tell me about Pace Shuttles' or 'what is The Cliff in Barbados like?'.",
         parameters: {
           type: "object",
           properties: {
-            query: {
+            topic: {
               type: "string",
               description:
-                "User’s policy-related question, e.g. 'what is your cancellation policy'.",
+                "Required. Short summary of what the user is asking, e.g. 'tell me about Pace Shuttles' or 'tell me about The Cliff in Barbados'.",
+            },
+            destinationName: {
+              type: "string",
+              description:
+                "If the user is asking about a specific destination or pickup/drop-off point, put the best-guess name here (e.g. 'The Cliff', 'Nobu Antigua', 'Boom').",
             },
           },
-          required: ["query"],
+          required: ["topic"],
           additionalProperties: false,
         },
       },
     },
     run: async (args: any): Promise<ToolExecutionResult> => {
-      const raw = String(args.query || "").toLowerCase();
+      const rawTopic = String(args.topic || "").trim();
+      const destNameRaw =
+        typeof args.destinationName === "string"
+          ? args.destinationName.trim()
+          : "";
 
-      // Very light-touch tailoring based on the question,
-      // but keep everything generic and legally non-binding.
-      let body =
-        "Pace Shuttles follows clear Terms & Conditions that are shown in full " +
-        "during the booking process. The summary below is for guidance only and " +
-        "does not replace the legal T&Cs you agree to when you book.\n\n";
+      const topicLower = rawTopic.toLowerCase();
+      const searchTerm =
+        destNameRaw || rawTopic || ""; // best-effort search string
 
-      if (raw.includes("cancel") || raw.includes("refund")) {
-        body +=
-          "• **Cancellations & changes:** Bookings can typically be changed or cancelled " +
-          "up to a defined cutoff before departure, after which fees or loss of fare may apply.\n" +
-          "• **No-shows & late arrivals:** If guests arrive late or do not show up, the fare " +
-          "is usually non-refundable because the seats have been reserved for that journey.\n";
-      } else if (raw.includes("safety")) {
-        body +=
-          "• **Safety:** Journeys are operated by professional, licensed operators who are " +
-          "responsible for the safe operation of their vessels or vehicles.\n" +
-          "• **Requirements on board:** Guests are expected to follow crew instructions, " +
-          "including the use of lifejackets or other safety equipment where required.\n";
-      } else if (raw.includes("luggage") || raw.includes("baggage")) {
-        body +=
-          "• **Luggage:** Space on board is limited. There are usually clear guidelines " +
-          "about how much luggage you can bring and what items are restricted.\n" +
-          "• **Damage / loss:** Operators are not typically responsible for normal wear, " +
-          "minor damage or loss to personal items unless required by local law.\n";
-      } else {
-        body +=
-          "Typical areas covered include how bookings are confirmed, what happens if a " +
-          "journey is changed or cancelled by the guest or by the operator, safety and " +
-          "conduct on board, and how complaints or issues are handled.\n";
+      // 1) Pace Shuttles overview – always use the short locked-in spiel.
+      if (topicLower.includes("pace shuttles")) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: PACE_SHUTTLES_OVERVIEW,
+            },
+          ],
+        };
       }
 
-      body +=
-        "\nFor anything binding or detailed, always refer to the full Pace Shuttles Terms " +
-        "and Conditions shown on the website at the time of booking – those are the " +
-        "authoritative version.";
+      // 2) Destination path – query the destinations table dynamically.
+      if (searchTerm) {
+        try {
+          // Adjust "destinations" and "name" if your schema uses different names.
+          const { data, error } = await supabase
+            .from("destinations")
+            .select("*")
+            .ilike("name", `%${searchTerm}%`)
+            .limit(5);
 
+          if (error) {
+            console.error("answerFromKB destinations error:", error);
+            return {
+              messages: [
+                {
+                  role: "assistant",
+                  content:
+                    "I tried to look that destination up in our catalog but ran into a system error. You can still ask me about routes or dates, or try again in a moment.",
+                },
+              ],
+            };
+          }
+
+          if (data && data.length === 1) {
+            const desc = buildDestinationDescription(data[0]);
+            return {
+              messages: [{ role: "assistant", content: desc }],
+            };
+          }
+
+          if (data && data.length > 1) {
+            // Multiple matches – list them and let the model / user disambiguate.
+            const names = data
+              .map((row: any) => row.name || row.display_name)
+              .filter(Boolean);
+            return {
+              messages: [
+                {
+                  role: "assistant",
+                  content:
+                    "I found several destinations that could match what you asked for: " +
+                    names.join(" • ") +
+                    ". Please tell me which one you mean, and I’ll describe it in more detail.",
+                },
+              ],
+            };
+          }
+
+          // No matches in DB
+          if (destNameRaw) {
+            return {
+              messages: [
+                {
+                  role: "assistant",
+                  content:
+                    `${destNameRaw} doesn’t appear in our live destinations catalog yet, or it may be stored under a slightly different name. If you tell me the country or nearby area, I can try again or suggest similar stops we do serve.`,
+                },
+              ],
+            };
+          }
+        } catch (e) {
+          console.error("answerFromKB destinations exception:", e);
+          return {
+            messages: [
+              {
+                role: "assistant",
+                content:
+                  "Something went wrong while I was checking our destinations catalog. Please try again in a moment.",
+              },
+            ],
+          };
+        }
+      }
+
+      // 3) Generic fallback if it’s neither clearly Pace Shuttles nor a known destination.
       return {
-        messages: [{ role: "assistant", content: body }],
+        messages: [
+          {
+            role: "assistant",
+            content:
+              "I don’t have specific knowledge about that yet, but I can still help with routes, dates or availability if you tell me where and when you’d like to travel.",
+          },
+        ],
       };
     },
   };
 
-  return [kbBrandOverview, kbPolicySummary];
+  return [answerFromKB];
 }
