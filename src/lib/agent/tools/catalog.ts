@@ -11,7 +11,7 @@ import type {
 
 type VisibleRoute = {
   route_id: string;
-  route_name: string | null;
+  route_name: string;
   country_id: string | null;
   country_name: string | null;
   destination_id: string | null;
@@ -22,20 +22,21 @@ type VisibleRoute = {
   vehicle_type_name: string | null;
 };
 
-type VehicleTypeRow = {
-  id: string;
-  name: string | null;
-  description: string | null;
-};
-
 type VisibleCatalog = {
-  ok: boolean;
+  ok?: boolean;
   fallback?: boolean;
   routes: VisibleRoute[];
   countries: any[];
   destinations: any[];
   pickups: any[];
-  vehicle_types: VehicleTypeRow[];
+  vehicle_types: any[];
+};
+
+/* Vehicle type categories – from /api/public/vehicle-types (or similar) */
+type VehicleType = {
+  id: string;
+  name: string;
+  description: string | null;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -75,6 +76,32 @@ async function fetchJSON<T>(url: string): Promise<T | null> {
 
 async function loadVisibleCatalog(baseUrl: string): Promise<VisibleCatalog | null> {
   return fetchJSON<VisibleCatalog>(`${baseUrl}/api/public/visible-catalog`);
+}
+
+/**
+ * Load high-level vehicle *types* (e.g. "Speed Boat", "Helicopter", "Bus", "Limo")
+ * from a dedicated public endpoint. This MUST NOT expose individual vessel or
+ * operator names.
+ *
+ * Expected shapes:
+ * - { rows: VehicleType[] }
+ * - VehicleType[]
+ */
+async function loadVehicleTypes(baseUrl: string): Promise<VehicleType[]> {
+  const url = `${baseUrl}/api/public/vehicle-types`;
+
+  const raw = await fetchJSON<any>(url);
+  if (!raw) return [];
+
+  if (Array.isArray(raw)) {
+    return raw as VehicleType[];
+  }
+
+  if (Array.isArray(raw.rows)) {
+    return raw.rows as VehicleType[];
+  }
+
+  return [];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -344,14 +371,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) High-level transport categories – from catalog (no vessel names)      */
+  /* 5) High-level transport categories – from vehicle *types* endpoint only   */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listTransportTypes",
         description:
-          "Describe the generic categories of transport used by Pace Shuttles based on the public catalog (e.g. Speed Boat, Helicopter, Bus, Limo). Never reveal specific operator or vessel names.",
+          "Describe the generic categories of transport used by Pace Shuttles (e.g. Speed Boat, Helicopter, Bus, Limo). MUST NOT reveal specific vessel or operator names.",
         parameters: {
           type: "object",
           properties: {},
@@ -360,44 +387,22 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      const cat = await loadVisibleCatalog(baseUrl);
+      // Fetch high-level categories (not individual vessels)
+      const types = await loadVehicleTypes(baseUrl);
 
-      if (!cat) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                "I couldn’t read our live catalog just now, but in general we use premium categories of transport tailored to each route. Specific vessel or operator names are not disclosed in advance of a booking.",
-            },
-          ],
-        };
-      }
+      const names = unique(types.map((t) => t.name));
 
-      // Prefer explicit vehicle_types list
-      let typeNames: string[] = [];
-      if (Array.isArray(cat.vehicle_types) && cat.vehicle_types.length) {
-        typeNames = unique(cat.vehicle_types.map((t) => t.name));
-      } else if (Array.isArray(cat.routes) && cat.routes.length) {
-        // Fallback: infer from routes
-        typeNames = unique(cat.routes.map((r) => r.vehicle_type_name));
-      }
-
-      if (!typeNames.length) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                "We use premium categories of transport tailored to each route, but I couldn’t retrieve the exact list of vehicle types right now.",
-            },
-          ],
-        };
+      if (!names.length) {
+        // Fallback if the endpoint isn’t available
+        const fallback =
+          "We use premium categories of transport tailored to each route. The exact mix depends on the territory and journey, but specific vessel or operator names aren’t disclosed in advance of a booking.";
+        return { messages: [{ role: "assistant", content: fallback }] };
       }
 
       const content =
-        "We currently use the following categories of transport:\n" +
-        `• ${typeNames.join(" • ")}\n\n` +
+        `We currently use the following categories of transport:\n• ${names.join(
+          " • "
+        )}\n` +
         "The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
 
       return { messages: [{ role: "assistant", content }] };
