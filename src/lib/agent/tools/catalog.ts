@@ -63,6 +63,34 @@ function normaliseCountryName(name: string | null | undefined): string {
   return lc(name).replace(/&/g, "and").replace(/\s+/g, " ");
 }
 
+function normaliseVehicleTypeName(name: string | null | undefined): string {
+  const s = lc(name).replace(/\s+/g, " ");
+  if (!s) return "";
+
+  // Common synonyms / variations
+  if (s === "speedboat") return "speed boat";
+  if (s === "rib") return "speed boat";
+  if (s === "heli") return "helicopter";
+  if (s === "chopper") return "helicopter";
+
+  return s;
+}
+
+function titleCaseVehicleType(norm: string): string {
+  const s = normaliseVehicleTypeName(norm);
+  if (!s) return "";
+  if (s === "speed boat") return "Speed Boat";
+  if (s === "helicopter") return "Helicopter";
+  if (s === "bus") return "Bus";
+  if (s === "limo") return "Limo";
+  // Fallback: Title Case each word
+  return s
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 function unique(values: (string | null | undefined)[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -74,6 +102,35 @@ function unique(values: (string | null | undefined)[]): string[] {
     out.push(trimmed);
   }
   return out;
+}
+
+function uniqueByKey<T>(items: T[], keyFn: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const it of items) {
+    const k = keyFn(it);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(it);
+  }
+  return out;
+}
+
+function normaliseDestinationQuery(q: string): string {
+  return lc(q)
+    .replace(/[’']/g, "'")
+    .replace(/[^\w\s'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function destMatches(routeDestName: string | null | undefined, q: string): boolean {
+  const dn = normaliseDestinationQuery(routeDestName ?? "");
+  const qq = normaliseDestinationQuery(q);
+  if (!dn || !qq) return false;
+
+  // Exact or substring match (handles "Nobu", "Nobu Barbuda", etc.)
+  return dn === qq || dn.includes(qq) || qq.includes(dn);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -235,8 +292,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
           messages: [
             {
               role: "assistant",
-              content:
-                "I couldn’t find any live pickup locations yet. Please check back soon as routes go live.",
+              content: "I couldn’t find any live pickup locations yet. Please check back soon as routes go live.",
             },
           ],
         };
@@ -300,8 +356,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
           messages: [
             {
               role: "assistant",
-              content:
-                "I couldn’t find any live routes right now. Please check back soon as services go live.",
+              content: "I couldn’t find any live routes right now. Please check back soon as services go live.",
             },
           ],
         };
@@ -323,21 +378,253 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) High-level transport categories – GENERIC, no vessel names */
+  /* 5) Transport categories (DATA-DRIVEN from live catalog) */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listTransportTypes",
         description:
-          "Describe the generic categories of transport used by Pace Shuttles (e.g. Speed Boat, Helicopter, Bus, Limo). NEVER reveal specific operator or vessel names.",
+          "List the generic categories of transport currently used by Pace Shuttles based on the live catalog (e.g. Speed Boat, Helicopter, Bus, Limo). NEVER reveal specific operator or vessel names.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      // Keep this safe + generic here. We’ll add DB-driven filtering tools separately.
+      const cat = await loadVisibleCatalog(baseUrl);
+
+      // If catalog unavailable, keep safe + generic
+      if (!cat || !cat.routes?.length) {
+        const content =
+          "We use premium transport categories such as Speed Boat, Helicopter, Bus and Limo. The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
+        return { messages: [{ role: "assistant", content }] };
+      }
+
+      const raw = unique(cat.routes.map((r) => r.vehicle_type_name));
+      const norm = unique(raw.map((t) => titleCaseVehicleType(t)));
+      const types = norm.filter(Boolean);
+
+      if (!types.length) {
+        const content =
+          "We use premium transport options depending on the territory and route. If you tell me the country or destination, I can show what’s currently available.";
+        return { messages: [{ role: "assistant", content }] };
+      }
+
       const content =
-        "We use premium transport categories such as Speed Boat, Helicopter, Bus and Limo. The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
+        `We use premium transport categories such as ${types.join(", ")}. ` +
+        "The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
+      return { messages: [{ role: "assistant", content }] };
+    },
+  };
+
+  /* 6) Routes by transport type (e.g. helicopter routes) */
+  const listRoutesByTransportType: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "listRoutesByTransportType",
+        description:
+          "List live routes filtered by transport category (e.g. Helicopter, Speed Boat). Optionally filter to a country. Returns pickup → destination route names only (no operators/vessels).",
+        parameters: {
+          type: "object",
+          properties: {
+            vehicle_type: {
+              type: "string",
+              description: "Transport category, e.g. 'Helicopter', 'Speed Boat', 'Bus', 'Limo'.",
+            },
+            country: {
+              type: "string",
+              description:
+                "Optional country name to limit results, e.g. 'Antigua and Barbuda'. If omitted, returns all matching routes across all countries.",
+            },
+          },
+          required: ["vehicle_type"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const vehicleRaw = String(args.vehicle_type || "").trim();
+      const vehicleNorm = normaliseVehicleTypeName(vehicleRaw);
+
+      const countryRaw = args.country ? String(args.country || "").trim() : "";
+      const countryNorm = countryRaw ? normaliseCountryName(countryRaw) : "";
+
+      const cat = await loadVisibleCatalog(baseUrl);
+      if (!cat || !cat.routes?.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: "I couldn’t reach the live routes catalogue just now, so I can’t list routes by transport type. Please try again in a moment.",
+            },
+          ],
+        };
+      }
+
+      const filtered = cat.routes.filter((r) => {
+        const vt = normaliseVehicleTypeName(r.vehicle_type_name);
+        if (!vt || vt !== vehicleNorm) return false;
+        if (!countryNorm) return true;
+        return normaliseCountryName(r.country_name) === countryNorm;
+      });
+
+      if (!filtered.length) {
+        const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
+        if (countryRaw) {
+          return {
+            messages: [{ role: "assistant", content: `I couldn’t find any live ${prettyVehicle} routes in ${countryRaw} yet.` }],
+          };
+        }
+        return {
+          messages: [{ role: "assistant", content: `I couldn’t find any live ${prettyVehicle} routes listed yet.` }],
+        };
+      }
+
+      // De-dup routes by pickup+destination+country+vehicle
+      const uniq = uniqueByKey(filtered, (r) => {
+        const c = normaliseCountryName(r.country_name);
+        const p = lc(r.pickup_name);
+        const d = lc(r.destination_name);
+        const v = normaliseVehicleTypeName(r.vehicle_type_name);
+        return `${c}|${p}|${d}|${v}`;
+      });
+
+      // Group by country for readability when country not provided
+      const byCountry = new Map<string, VisibleRoute[]>();
+      for (const r of uniq) {
+        const c = r.country_name || "Unknown country";
+        if (!byCountry.has(c)) byCountry.set(c, []);
+        byCountry.get(c)!.push(r);
+      }
+
+      const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
+
+      if (countryRaw) {
+        const prettyCountry = uniq[0]?.country_name || countryRaw;
+        const routes = unique(
+          uniq.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`)
+        );
+        const content = `In ${prettyCountry}, our current ${prettyVehicle} routes include:\n• ${routes.join(" • ")}`;
+        return { messages: [{ role: "assistant", content }] };
+      }
+
+      // Multi-country output
+      const blocks: string[] = [];
+      for (const [country, rows] of byCountry.entries()) {
+        const routes = unique(
+          rows.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`)
+        );
+        if (!routes.length) continue;
+        blocks.push(`${country}:\n• ${routes.join(" • ")}`);
+      }
+
+      const content =
+        blocks.length > 0
+          ? `Here are our current ${prettyVehicle} routes (live / bookable):\n\n${blocks.join("\n\n")}`
+          : `I couldn’t find any live ${prettyVehicle} routes listed yet.`;
+
+      return { messages: [{ role: "assistant", content }] };
+    },
+  };
+
+  /* 7) “How do I get to X?” — routes to a destination, grouped by transport type */
+  const getRoutesToDestination: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "getRoutesToDestination",
+        description:
+          "Given a destination name (e.g. 'Nobu'), list live routes that arrive there, grouped by transport category. Optionally filter to a country. No operators/vessels.",
+        parameters: {
+          type: "object",
+          properties: {
+            destination: {
+              type: "string",
+              description: "Destination name the user asked about, e.g. 'Nobu' or 'Nobu Barbuda'.",
+            },
+            country: {
+              type: "string",
+              description:
+                "Optional country name to limit results, e.g. 'Antigua and Barbuda'. If omitted, returns all matching routes across all countries.",
+            },
+          },
+          required: ["destination"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const destRaw = String(args.destination || "").trim();
+      const countryRaw = args.country ? String(args.country || "").trim() : "";
+      const countryNorm = countryRaw ? normaliseCountryName(countryRaw) : "";
+
+      const cat = await loadVisibleCatalog(baseUrl);
+      if (!cat || !cat.routes?.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: "I couldn’t reach the live routes catalogue just now, so I can’t look up routes to that destination. Please try again in a moment.",
+            },
+          ],
+        };
+      }
+
+      const arriving = cat.routes.filter((r) => {
+        if (!destMatches(r.destination_name, destRaw)) return false;
+        if (!countryNorm) return true;
+        return normaliseCountryName(r.country_name) === countryNorm;
+      });
+
+      if (!arriving.length) {
+        if (countryRaw) {
+          return {
+            messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} in ${countryRaw} yet.` }],
+          };
+        }
+        return {
+          messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} yet.` }],
+        };
+      }
+
+      const prettyDest = arriving[0]?.destination_name || destRaw;
+
+      // De-dup by pickup+destination+country+vehicle
+      const uniq = uniqueByKey(arriving, (r) => {
+        const c = normaliseCountryName(r.country_name);
+        const p = lc(r.pickup_name);
+        const d = lc(r.destination_name);
+        const v = normaliseVehicleTypeName(r.vehicle_type_name);
+        return `${c}|${p}|${d}|${v}`;
+      });
+
+      // Group by vehicle type
+      const byVehicle = new Map<string, VisibleRoute[]>();
+      for (const r of uniq) {
+        const vt = titleCaseVehicleType(r.vehicle_type_name);
+        const key = vt || "Transport";
+        if (!byVehicle.has(key)) byVehicle.set(key, []);
+        byVehicle.get(key)!.push(r);
+      }
+
+      const parts: string[] = [];
+      for (const [vt, rows] of byVehicle.entries()) {
+        const routes = unique(
+          rows.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`)
+        );
+        if (!routes.length) continue;
+        parts.push(`**${vt}**\n• ${routes.join(" • ")}`);
+      }
+
+      const prefix = countryRaw
+        ? `Here’s how to get to ${prettyDest} in ${countryRaw} (live / bookable routes):`
+        : `Here’s how to get to ${prettyDest} (live / bookable routes):`;
+
+      const content =
+        parts.length > 0
+          ? `${prefix}\n\n${parts.join("\n\n")}`
+          : `I found routes to ${prettyDest}, but couldn’t classify them by transport type yet.`;
+
       return { messages: [{ role: "assistant", content }] };
     },
   };
@@ -348,6 +635,10 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     listPickupsInCountry,
     listRoutesInCountry,
     listTransportTypes,
+    // ✅ NEW: vehicle-specific routes
+    listRoutesByTransportType,
+    // ✅ NEW: “how do I get to X?” destination routing
+    getRoutesToDestination,
     // ✅ NOTE: describeNetworkLocation intentionally removed.
     // Destination descriptions should be handled by describeDestination (DB-driven).
   ];
