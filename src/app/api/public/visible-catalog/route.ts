@@ -19,7 +19,7 @@ function sb(): SupabaseClient {
   });
 }
 
-const lc = (s?: string | null) => (s ?? "").toLowerCase();
+const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
 
 /** Try to read a field from multiple possible names */
 function pick<T extends Record<string, any>>(row: T, ...keys: string[]) {
@@ -69,11 +69,11 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  const routes = (rawRoutes ?? [])
+  const routesRaw = (rawRoutes ?? [])
     .map(normalizeRoute)
     .filter((r) => r.route_name);
 
-  if (!routes.length) {
+  if (!routesRaw.length) {
     return {
       ok: true,
       fallback: false as const,
@@ -87,28 +87,27 @@ async function loadVisibleCatalog() {
 
   // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(
-    new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
+    new Set(routesRaw.map((r) => r.country_name).filter(Boolean) as string[])
   );
   const visibleDestLC = new Set(
-    routes.map((r) => lc(r.destination_name)).filter(Boolean)
+    routesRaw.map((r) => lc(r.destination_name)).filter(Boolean)
   );
   const visiblePickupLC = new Set(
-    routes.map((r) => lc(r.pickup_name)).filter(Boolean)
+    routesRaw.map((r) => lc(r.pickup_name)).filter(Boolean)
   );
 
-  // NOTE: we *do* read vehicle_type_name from routes just to know which
-  // generic types are actively used – but we will *never* expose vessel names
-  // directly to the public. The agent layer is forced to show only generic types.
-  const visibleTypeNamesLC = new Set(
-    routes.map((r) => lc(r.vehicle_type_name)).filter(Boolean)
+  // ✅ CRITICAL FIX:
+  // Use type IDs from routes as the SSOT for "which transport types are in use".
+  const visibleTypeIds = new Set(
+    routesRaw
+      .map((r) => (r.vehicle_type_id ? String(r.vehicle_type_id) : ""))
+      .filter(Boolean)
   );
 
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
     await Promise.all([
-      supabase.from("countries").select(
-        "id,name,description,hero_image_url"
-      ),
+      supabase.from("countries").select("id,name,description,hero_image_url"),
       supabase
         .from("destinations")
         .select(
@@ -131,17 +130,15 @@ async function loadVisibleCatalog() {
   );
 
   // Transport / vehicle types (generic only)
-  let vehicle_types:
-    | Array<{
-        id: string;
-        name: string;
-        description?: string | null;
-        icon_url?: string | null;
-        capacity?: number | null;
-        features?: string[] | null;
-      }> = [];
+  type VehicleTypeRow = {
+    id: string;
+    name: string;
+    description?: string | null;
+    icon_url?: string | null;
+    capacity?: number | null;
+    features?: string[] | null;
+  };
 
-  // Load all types (small table), then (optionally) filter client-side by name.
   const [{ data: ttypesAll }, { data: vtypesAll }] = await Promise.all([
     supabase
       .from("transport_types")
@@ -151,21 +148,33 @@ async function loadVisibleCatalog() {
       .select("id,name,description,icon_url,capacity,features"),
   ]);
 
-  const allTypes = [...(ttypesAll ?? []), ...(vtypesAll ?? [])];
+  const allTypes: VehicleTypeRow[] = [
+    ...(ttypesAll ?? []),
+    ...(vtypesAll ?? []),
+  ];
 
-  if (!allTypes.length) {
-    vehicle_types = [];
-  } else if (visibleTypeNamesLC.size) {
-    // Try to filter by names referenced on routes…
-    const filtered = allTypes.filter((t) =>
-      visibleTypeNamesLC.has(lc(t.name))
-    );
-    // …but if that yields nothing (e.g. route names are vessel nicknames),
-    // fall back to the full generic list instead.
+  // ✅ Filter by ID (never by name) so vessel-name pollution cannot break matching.
+  let vehicle_types: VehicleTypeRow[] = [];
+  if (allTypes.length && visibleTypeIds.size) {
+    const filtered = allTypes.filter((t) => visibleTypeIds.has(String(t.id)));
     vehicle_types = filtered.length ? filtered : allTypes;
   } else {
     vehicle_types = allTypes;
   }
+
+  // ✅ Build a type map and overwrite routes[].vehicle_type_name from the type table.
+  // This prevents leaking vessel names via vehicle_type_name downstream.
+  const typeMap = new Map<string, string>();
+  for (const t of vehicle_types) typeMap.set(String(t.id), String(t.name));
+
+  const routes = routesRaw.map((r) => {
+    const id = r.vehicle_type_id ? String(r.vehicle_type_id) : "";
+    const safeName = id ? typeMap.get(id) : null;
+    return {
+      ...r,
+      vehicle_type_name: safeName ?? null, // overwrite with generic type label
+    };
+  });
 
   return {
     ok: true,
