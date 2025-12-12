@@ -19,7 +19,7 @@ function sb(): SupabaseClient {
   });
 }
 
-const lc = (s?: string | null) => (s ?? "").toLowerCase().trim();
+const lc = (s?: string | null) => (s ?? "").toLowerCase();
 
 /** Try to read a field from multiple possible names */
 function pick<T extends Record<string, any>>(row: T, ...keys: string[]) {
@@ -58,6 +58,36 @@ function normalizeRoute(row: Record<string, any>) {
   };
 }
 
+type GenericTypeRow = {
+  id: string;
+  name: string;
+  description?: string | null;
+  icon_url?: string | null;
+  capacity?: number | null;
+  features?: string[] | null;
+  is_active?: boolean | null;
+};
+
+async function selectFirstExistingTable<T extends Record<string, any>>(
+  supabase: SupabaseClient,
+  tableNames: string[],
+  selectClause: string
+): Promise<T[]> {
+  const errs: string[] = [];
+  for (const name of tableNames) {
+    const { data, error } = await supabase.from(name).select(selectClause);
+    if (error) {
+      errs.push(`${name}: ${error.message}`);
+      continue;
+    }
+    return (data ?? []) as T[];
+  }
+  if (errs.length) {
+    console.warn("[visible-catalog] type table load failed:", errs.join(" | "));
+  }
+  return [];
+}
+
 /* ---------- Primary (SSOT via view) ---------- */
 async function loadVisibleCatalog() {
   const supabase = sb();
@@ -69,42 +99,11 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  const routesRaw = (rawRoutes ?? [])
+  const routes = (rawRoutes ?? [])
     .map(normalizeRoute)
     .filter((r) => r.route_name);
 
-  if (!routesRaw.length) {
-    return {
-      ok: true,
-      fallback: false as const,
-      routes: [],
-      countries: [],
-      destinations: [],
-      pickups: [],
-      vehicle_types: [],
-    };
-  }
-
-  // Derive visibility strictly from routes
-  const visibleCountryNames = Array.from(
-    new Set(routesRaw.map((r) => r.country_name).filter(Boolean) as string[])
-  );
-  const visibleDestLC = new Set(
-    routesRaw.map((r) => lc(r.destination_name)).filter(Boolean)
-  );
-  const visiblePickupLC = new Set(
-    routesRaw.map((r) => lc(r.pickup_name)).filter(Boolean)
-  );
-
-  // ✅ CRITICAL FIX:
-  // Use type IDs from routes as the SSOT for "which transport types are in use".
-  const visibleTypeIds = new Set(
-    routesRaw
-      .map((r) => (r.vehicle_type_id ? String(r.vehicle_type_id) : ""))
-      .filter(Boolean)
-  );
-
-  // Base tables
+  // Base tables (these may be empty if you haven't populated them; that's fine)
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
     await Promise.all([
       supabase.from("countries").select("id,name,description,hero_image_url"),
@@ -113,12 +112,20 @@ async function loadVisibleCatalog() {
         .select(
           "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
         ),
-      supabase
-        .from("pickup_points")
-        .select("name,country_name,directions_url"),
+      supabase.from("pickup_points").select("name,country_name,directions_url"),
     ]);
 
-  // Filter to visible-only
+  // Derive visibility strictly from routes
+  const visibleCountryNames = Array.from(
+    new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
+  );
+  const visibleDestLC = new Set(
+    routes.map((r) => lc(r.destination_name)).filter(Boolean)
+  );
+  const visiblePickupLC = new Set(
+    routes.map((r) => lc(r.pickup_name)).filter(Boolean)
+  );
+
   const countries = (countriesAll ?? []).filter((c) =>
     visibleCountryNames.includes(c.name)
   );
@@ -130,51 +137,47 @@ async function loadVisibleCatalog() {
   );
 
   // Transport / vehicle types (generic only)
-  type VehicleTypeRow = {
-    id: string;
-    name: string;
-    description?: string | null;
-    icon_url?: string | null;
-    capacity?: number | null;
-    features?: string[] | null;
-  };
-
-  const [{ data: ttypesAll }, { data: vtypesAll }] = await Promise.all([
-    supabase
-      .from("transport_types")
-      .select("id,name,description,icon_url,capacity,features"),
-    supabase
-      .from("vehicle_types")
-      .select("id,name,description,icon_url,capacity,features"),
+  // IMPORTANT: your DB might use transport_type (singular) not transport_types.
+  const [ttypesRaw, vtypesRaw] = await Promise.all([
+    selectFirstExistingTable<GenericTypeRow>(
+      supabase,
+      ["transport_types", "transport_type"],
+      "id,name,description,icon_url,capacity,features,is_active"
+    ),
+    selectFirstExistingTable<GenericTypeRow>(
+      supabase,
+      ["vehicle_types", "vehicle_type"],
+      "id,name,description,icon_url,capacity,features,is_active"
+    ),
   ]);
 
-  const allTypes: VehicleTypeRow[] = [
-    ...(ttypesAll ?? []),
-    ...(vtypesAll ?? []),
-  ];
+  const allTypes = [...(ttypesRaw ?? []), ...(vtypesRaw ?? [])]
+    .filter((t) => {
+      // if is_active exists, enforce it; otherwise include
+      if ("is_active" in t && t.is_active != null) return t.is_active === true;
+      return true;
+    })
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description ?? null,
+      icon_url: t.icon_url ?? null,
+      capacity: t.capacity ?? null,
+      features: (t.features as any) ?? null,
+    }));
 
-  // ✅ Filter by ID (never by name) so vessel-name pollution cannot break matching.
-  let vehicle_types: VehicleTypeRow[] = [];
-  if (allTypes.length && visibleTypeIds.size) {
-    const filtered = allTypes.filter((t) => visibleTypeIds.has(String(t.id)));
-    vehicle_types = filtered.length ? filtered : allTypes;
-  } else {
-    vehicle_types = allTypes;
-  }
-
-  // ✅ Build a type map and overwrite routes[].vehicle_type_name from the type table.
-  // This prevents leaking vessel names via vehicle_type_name downstream.
-  const typeMap = new Map<string, string>();
-  for (const t of vehicle_types) typeMap.set(String(t.id), String(t.name));
-
-  const routes = routesRaw.map((r) => {
-    const id = r.vehicle_type_id ? String(r.vehicle_type_id) : "";
-    const safeName = id ? typeMap.get(id) : null;
+  // If no routes, still return types (so the agent can answer "what transport types do you have?")
+  if (!routes.length) {
     return {
-      ...r,
-      vehicle_type_name: safeName ?? null, // overwrite with generic type label
+      ok: true,
+      fallback: false as const,
+      routes: [],
+      countries,
+      destinations,
+      pickups,
+      vehicle_types: allTypes,
     };
-  });
+  }
 
   return {
     ok: true,
@@ -183,7 +186,7 @@ async function loadVisibleCatalog() {
     countries,
     destinations,
     pickups,
-    vehicle_types,
+    vehicle_types: allTypes,
   };
 }
 
@@ -293,15 +296,16 @@ export async function GET() {
   try {
     try {
       const cat = await loadVisibleCatalog();
-      if (cat.routes.length > 0) {
-        return NextResponse.json(cat, {
-          headers: {
-            "Cache-Control": "public, max-age=60, s-maxage=60",
-          },
-        });
-      }
+      return NextResponse.json(cat, {
+        headers: {
+          "Cache-Control": "public, max-age=60, s-maxage=60",
+        },
+      });
     } catch (e: any) {
-      console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
+      console.warn(
+        "[visible-catalog] primary failed; using fallback:",
+        e?.message || e
+      );
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
         headers: {
@@ -309,13 +313,6 @@ export async function GET() {
         },
       });
     }
-
-    const fb = await fallbackPublicCatalog("no_routes");
-    return NextResponse.json(fb, {
-      headers: {
-        "Cache-Control": "public, max-age=60, s-maxage=60",
-      },
-    });
   } catch (err: any) {
     console.error("[visible-catalog] fatal:", err?.message || err);
     return NextResponse.json(
