@@ -4,8 +4,6 @@ import { catalogTools } from "./catalog";
 import { kbTools } from "./searchKB";
 import { bookingTools } from "./bookings";
 import { quoteTools } from "./quote";
-import { destinationsTools } from "./destinations";
-import { transportCategoriesTools } from "./transportCategories";
 import type { AgentChoice } from "@/lib/agent/agent-schema";
 
 export type ToolExecutionResult = {
@@ -34,8 +32,6 @@ export type ToolDefinition = {
 export function buildTools(ctx: ToolContext): ToolDefinition[] {
   return [
     ...catalogTools(ctx),
-    ...destinationsTools(ctx),        // dynamic destination descriptions
-    ...transportCategoriesTools(ctx), // “which countries have helicopters?” etc.
     ...kbTools(ctx),
     ...bookingTools(ctx),
     ...quoteTools(ctx),
