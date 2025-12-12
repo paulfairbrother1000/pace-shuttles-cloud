@@ -65,7 +65,8 @@ CORE BEHAVIOUR
   - vehicle / transport categories
   - terms, policies or conditions.
 - NEVER invent information that is not supported by tools or the provided documents.
-- NEVER provide examples that look like operator names or vessel names. Do NOT invent route/operator examples.
+- NEVER provide examples that look like operator names or vessel names. Do NOT invent route/operator/vessel examples.
+- If asked about transport modes/types/options, DO NOT answer from memory — call tools and list vehicle TYPES (e.g. Helicopter, Speed Boat), not named vehicles.
 
 PACE SHUTTLES OVERVIEW (USE THIS EXACT WORDING)
 - Pace Shuttles is a per-seat, semi-private shuttle service linking marinas, hotels and beach clubs across premium coastal and island destinations.
@@ -97,9 +98,6 @@ function lastUserMessage(history: AgentMessage[]): string {
 }
 
 function extractDestinationFromHowToGetTo(text: string): string | null {
-  // Examples:
-  // "How do I get to Nobu?"
-  // "how do i get to Nobu Barbuda"
   const m = text.match(/how\s+do\s+i\s+get\s+to\s+(.+?)\??$/i);
   if (!m) return null;
   const dest = (m[1] ?? "").trim();
@@ -113,7 +111,8 @@ function mentionsHelicopterRoutes(text: string): boolean {
     t.includes("helicopter routes") ||
     t.includes("heli route") ||
     t.includes("heli routes") ||
-    (t.includes("helicopter") && t.includes("routes"))
+    (t.includes("helicopter") && t.includes("routes")) ||
+    (t.includes("heli") && t.includes("routes"))
   );
 }
 
@@ -129,17 +128,60 @@ function mentionsSpeedBoatRoutes(text: string): boolean {
   );
 }
 
+/**
+ * Broader trigger for transport-type questions so we ALWAYS route to listTransportTypes.
+ * This fixes regressions like: "what modes of transport do you have?"
+ */
 function asksTransportTypes(text: string): boolean {
   const t = lc(text);
-  return (
+
+  // Direct phrases
+  if (
     t.includes("transport types") ||
-    t.includes("what types") ||
-    t.includes("which types") ||
-    t.includes("what transport") ||
+    t.includes("types of transport") ||
+    t.includes("modes of transport") ||
+    t.includes("mode of transport") ||
+    t.includes("transport modes") ||
     t.includes("transport options") ||
-    t.includes("what options") ||
-    t.includes("available transport")
-  );
+    t.includes("available transport") ||
+    t.includes("what transport") ||
+    t.includes("which transport") ||
+    t.includes("how do you travel") ||
+    t.includes("how can i travel")
+  ) {
+    return true;
+  }
+
+  // Lightweight pattern match for variants
+  // e.g. "what modes do you have", "what options are available", etc.
+  const looksLikeQuestion =
+    t.includes("?") ||
+    t.startsWith("what ") ||
+    t.startsWith("which ") ||
+    t.startsWith("do you ") ||
+    t.startsWith("can i ");
+
+  const mentionsTransportConcept =
+    t.includes("transport") ||
+    t.includes("travel") ||
+    t.includes("transfer") ||
+    t.includes("get there") ||
+    t.includes("options") ||
+    t.includes("modes") ||
+    t.includes("mode");
+
+  const asksForTypes =
+    t.includes("type") ||
+    t.includes("types") ||
+    t.includes("mode") ||
+    t.includes("modes") ||
+    t.includes("option") ||
+    t.includes("options") ||
+    t.includes("available") ||
+    t.includes("offer") ||
+    t.includes("have");
+
+  return looksLikeQuestion && mentionsTransportConcept && asksForTypes;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -170,8 +212,8 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------------------
-    // Deterministic routing for the high-risk regression areas
-    // (prevents hallucinated transport types, and wrong "no helicopter routes")
+    // Deterministic routing for transport & routing questions
+    // (prevents hallucinated vehicle names and wrong claims like "no helicopters")
     // ---------------------------------------------------------------------
     const userText = lastUserMessage(upstreamMessages);
 
@@ -195,7 +237,7 @@ export async function POST(req: Request) {
       };
     };
 
-    // 1) "What transport types are available?" -> ALWAYS DB-driven listTransportTypes
+    // 1) Any “modes/types/options of transport” question -> ALWAYS listTransportTypes
     if (asksTransportTypes(userText)) {
       const r = await runTool("listTransportTypes", {});
       if (r) return NextResponse.json<AgentResponse>(r);
@@ -252,9 +294,7 @@ export async function POST(req: Request) {
 
     // ----------------------------- Tool call path ---------------------------
     if (msg.tool_calls?.length) {
-      // NOTE: existing behavior: execute first tool call only
-      // (kept as-is here to minimise changes; deterministic routing above
-      // covers the problematic intents)
+      // Execute first tool call only (kept minimal)
       const call = msg.tool_calls[0];
       const impl = tools.find(
         (t) => t.spec.function.name === call.function.name
