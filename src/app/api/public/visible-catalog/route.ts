@@ -41,6 +41,8 @@ function normalizeRoute(row: Record<string, any>) {
   const pickup_id = pick(row, "pickup_id", "pickup_uuid");
   const pickup_name = pick(row, "pickup_name", "pickup");
 
+  // NOTE:
+  // We will override these later with SAFE canonical transport_types values.
   const vehicle_type_id = pick(row, "vehicle_type_id", "transport_type_id", "vtype_id");
   const vehicle_type_name = pick(row, "vehicle_type_name", "transport_type_name", "vehicle_type");
 
@@ -58,41 +60,180 @@ function normalizeRoute(row: Record<string, any>) {
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Safe Supabase helpers (don’t silently swallow schema mismatches)          */
-/* -------------------------------------------------------------------------- */
+type VisibleRoute = ReturnType<typeof normalizeRoute>;
 
-async function trySelectTable<T>(
-  supabase: SupabaseClient,
-  table: string,
-  columns: string
-): Promise<{ data: T[]; ok: boolean }> {
-  const { data, error } = await supabase.from(table).select(columns);
-  if (error) {
-    console.warn(`[visible-catalog] select failed on ${table}:`, error.message);
-    return { data: [], ok: false };
-  }
-  return { data: (data as T[]) ?? [], ok: true };
+type TransportTypeRow = {
+  id: string;
+  name: string;
+  description?: string | null;
+  picture_url?: string | null;
+  capacity?: number | null;
+  features?: string[] | null;
+  is_active?: boolean | null;
+  slug?: string | null;
+};
+
+type RouteVehicleAssignmentRow = {
+  route_id: string;
+  vehicle_id: string;
+  is_active: boolean | null;
+  preferred: boolean | null;
+  created_at: string | null;
+};
+
+type VehicleRow = {
+  id: string;
+  // IMPORTANT: in your schema this is VARCHAR but contains UUIDs (transport_types.id)
+  type_id: string | null;
+  active: boolean | null;
+  preferred: boolean | null;
+};
+
+function chooseAssignment(rows: RouteVehicleAssignmentRow[]): RouteVehicleAssignmentRow | null {
+  if (!rows.length) return null;
+
+  // prefer active=true (or null treated as true), then preferred=true, then newest created_at
+  const sorted = [...rows].sort((a, b) => {
+    const aActive = a.is_active === false ? 0 : 1;
+    const bActive = b.is_active === false ? 0 : 1;
+    if (aActive !== bActive) return bActive - aActive;
+
+    const aPref = a.preferred ? 1 : 0;
+    const bPref = b.preferred ? 1 : 0;
+    if (aPref !== bPref) return bPref - aPref;
+
+    const aTs = a.created_at ? Date.parse(a.created_at) : 0;
+    const bTs = b.created_at ? Date.parse(b.created_at) : 0;
+    return bTs - aTs;
+  });
+
+  return sorted[0] ?? null;
 }
 
-async function selectFirstAvailableTable<T>(
+/**
+ * Build SAFE transport typing for routes using:
+ * route_vehicle_assignments -> vehicles.type_id -> transport_types
+ *
+ * This is the canonical mapping that prevents vessel-name leaks.
+ */
+async function enrichRoutesWithTransportTypes(
   supabase: SupabaseClient,
-  tableNames: string[],
-  columns: string
-): Promise<T[]> {
-  for (const t of tableNames) {
-    const r = await trySelectTable<T>(supabase, t, columns);
-    if (r.ok) return r.data;
-  }
-  return [];
-}
+  routes: VisibleRoute[]
+): Promise<{
+  routes: VisibleRoute[];
+  vehicle_types: TransportTypeRow[];
+}> {
+  const routeIds = routes
+    .map((r) => (r.route_id ?? "").toString())
+    .filter(Boolean);
 
-function isActiveRow(row: any): boolean {
-  // supports both is_active and active styles
-  if (typeof row?.is_active === "boolean") return row.is_active === true;
-  if (typeof row?.active === "boolean") return row.active === true;
-  // if no flag exists, treat as active
-  return true;
+  if (!routeIds.length) return { routes, vehicle_types: [] };
+
+  // 1) route_vehicle_assignments for these routes
+  const { data: rvaAll, error: rvaErr } = await supabase
+    .from("route_vehicle_assignments")
+    .select("route_id,vehicle_id,is_active,preferred,created_at")
+    .in("route_id", routeIds);
+
+  if (rvaErr) throw rvaErr;
+
+  const rvaByRoute = new Map<string, RouteVehicleAssignmentRow[]>();
+  for (const row of (rvaAll ?? []) as RouteVehicleAssignmentRow[]) {
+    const rid = row.route_id;
+    if (!rid) continue;
+    if (!rvaByRoute.has(rid)) rvaByRoute.set(rid, []);
+    rvaByRoute.get(rid)!.push(row);
+  }
+
+  // Choose one vehicle per route (preferred active, else newest)
+  const chosenByRoute = new Map<string, string>(); // route_id -> vehicle_id
+  const vehicleIds = new Set<string>();
+
+  for (const rid of routeIds) {
+    const chosen = chooseAssignment(rvaByRoute.get(rid) ?? []);
+    if (chosen?.vehicle_id) {
+      chosenByRoute.set(rid, chosen.vehicle_id);
+      vehicleIds.add(chosen.vehicle_id);
+    }
+  }
+
+  if (!vehicleIds.size) {
+    // No assignments => we cannot type routes
+    const cleared = routes.map((r) => ({
+      ...r,
+      vehicle_type_id: null,
+      vehicle_type_name: null,
+    }));
+    return { routes: cleared, vehicle_types: [] };
+  }
+
+  // 2) vehicles -> type_id (transport_types.id as string)
+  const { data: vehiclesAll, error: vErr } = await supabase
+    .from("vehicles")
+    .select("id,type_id,active,preferred")
+    .in("id", Array.from(vehicleIds));
+
+  if (vErr) throw vErr;
+
+  const vehicleTypeIdByVehicle = new Map<string, string>();
+  const typeIds = new Set<string>();
+
+  for (const v of (vehiclesAll ?? []) as VehicleRow[]) {
+    const vid = (v.id ?? "").toString();
+    const tid = (v.type_id ?? "").toString().trim();
+    if (!vid || !tid) continue;
+    vehicleTypeIdByVehicle.set(vid, tid);
+    typeIds.add(tid);
+  }
+
+  if (!typeIds.size) {
+    const cleared = routes.map((r) => ({
+      ...r,
+      vehicle_type_id: null,
+      vehicle_type_name: null,
+    }));
+    return { routes: cleared, vehicle_types: [] };
+  }
+
+  // 3) transport_types -> id/name (canonical safe names)
+  const { data: typesAll, error: tErr } = await supabase
+    .from("transport_types")
+    .select("id,name,description,picture_url,is_active,slug")
+    .in("id", Array.from(typeIds));
+
+  if (tErr) throw tErr;
+
+  const typeNameById = new Map<string, string>();
+  const usedTypes: TransportTypeRow[] = [];
+
+  for (const t of (typesAll ?? []) as TransportTypeRow[]) {
+    const id = (t.id ?? "").toString();
+    const name = (t.name ?? "").toString();
+    if (!id || !name) continue;
+    typeNameById.set(id, name);
+    usedTypes.push(t);
+  }
+
+  // 4) apply to routes (override any polluted fields from the view)
+  const enriched = routes.map((r) => {
+    const rid = (r.route_id ?? "").toString();
+    const chosenVehicleId = chosenByRoute.get(rid) ?? "";
+    const typeId = chosenVehicleId ? vehicleTypeIdByVehicle.get(chosenVehicleId) ?? "" : "";
+    const typeName = typeId ? typeNameById.get(typeId) ?? "" : "";
+
+    return {
+      ...r,
+      vehicle_type_id: typeId || null,
+      vehicle_type_name: typeName || null, // SAFE canonical name only
+    };
+  });
+
+  // return only the types we actually used on routes (and optionally only active)
+  const vehicle_types = usedTypes
+    .filter((t) => t && t.id && t.name)
+    .filter((t) => t.is_active !== false);
+
+  return { routes: enriched, vehicle_types };
 }
 
 /* ---------- Primary (SSOT via view) ---------- */
@@ -106,7 +247,7 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  const routes = (rawRoutes ?? [])
+  let routes = (rawRoutes ?? [])
     .map(normalizeRoute)
     .filter((r) => r.route_name);
 
@@ -122,6 +263,11 @@ async function loadVisibleCatalog() {
     };
   }
 
+  // ✅ CRITICAL FIX:
+  // Replace polluted / null vehicle typing from the view with canonical transport_types
+  const typed = await enrichRoutesWithTransportTypes(supabase, routes);
+  routes = typed.routes;
+
   // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(
     new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
@@ -133,112 +279,42 @@ async function loadVisibleCatalog() {
     routes.map((r) => lc(r.pickup_name)).filter(Boolean)
   );
 
-  // NOTE: route.vehicle_type_name may be polluted (vessel nicknames).
-  // We only use it here to *optionally* restrict types by referenced names,
-  // but if it's missing or unusable we fall back to active generic types.
-  const visibleTypeNamesLC = new Set(
-    routes.map((r) => lc(r.vehicle_type_name)).filter(Boolean)
-  );
-
   // Base tables
-  const [
-    countriesRes,
-    destRes,
-    pickupsRes,
-  ] = await Promise.all([
-    supabase.from("countries").select("id,name,description,hero_image_url"),
-    supabase
-      .from("destinations")
-      .select(
-        "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags,active"
+  const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
+    await Promise.all([
+      supabase.from("countries").select(
+        "id,name,description,hero_image_url"
       ),
-    supabase
-      .from("pickup_points")
-      .select("name,country_name,directions_url"),
-  ]);
-
-  if (countriesRes.error) {
-    console.warn("[visible-catalog] countries select failed:", countriesRes.error.message);
-  }
-  if (destRes.error) {
-    console.warn("[visible-catalog] destinations select failed:", destRes.error.message);
-  }
-  if (pickupsRes.error) {
-    console.warn("[visible-catalog] pickup_points select failed:", pickupsRes.error.message);
-  }
-
-  const countriesAll = countriesRes.data ?? [];
-  const destAll = destRes.data ?? [];
-  const pickupsAll = pickupsRes.data ?? [];
+      supabase
+        .from("destinations")
+        .select(
+          "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
+        ),
+      supabase
+        .from("pickup_points")
+        .select("name,country_name,directions_url"),
+    ]);
 
   // Filter to visible-only
   const countries = (countriesAll ?? []).filter((c) =>
-    visibleCountryNames.includes((c as any).name)
+    visibleCountryNames.includes(c.name)
   );
-  const destinations = (destAll ?? []).filter((d: any) =>
+  const destinations = (destAll ?? []).filter((d) =>
     visibleDestLC.has(lc(d.name))
   );
-  const pickups = (pickupsAll ?? []).filter((p: any) =>
+  const pickups = (pickupsAll ?? []).filter((p) =>
     visiblePickupLC.has(lc(p.name))
   );
 
-  // -----------------------------------------------------------------------
-  // Transport / vehicle types (generic SSOT)
-  //
-  // Your DB uses `transport_type` (singular) — older code queried
-  // `transport_types` (plural) and silently got empty data.
-  // We now try both.
-  // -----------------------------------------------------------------------
-  type GenericType = {
-    id: string;
-    name: string;
-    description?: string | null;
-    icon_url?: string | null;
-    capacity?: number | null;
-    features?: string[] | null;
-    is_active?: boolean | null;
-    active?: boolean | null;
-  };
-
-  const [transportTypesAll, vehicleTypesAll] = await Promise.all([
-    selectFirstAvailableTable<GenericType>(
-      supabase,
-      ["transport_types", "transport_type"],
-      "id,name,description,icon_url,capacity,features,is_active,active"
-    ),
-    selectFirstAvailableTable<GenericType>(
-      supabase,
-      ["vehicle_types", "vehicle_type"],
-      "id,name,description,icon_url,capacity,features,is_active,active"
-    ),
-  ]);
-
-  const allTypesRaw = [...(transportTypesAll ?? []), ...(vehicleTypesAll ?? [])];
-
-  // Keep only active ones (based on is_active/active when present)
-  const allTypesActive = allTypesRaw.filter(isActiveRow);
-
-  let vehicle_types: Array<{
-    id: string;
-    name: string;
-    description?: string | null;
-    icon_url?: string | null;
-    capacity?: number | null;
-    features?: string[] | null;
-  }> = [];
-
-  if (!allTypesActive.length) {
-    vehicle_types = [];
-  } else if (visibleTypeNamesLC.size) {
-    // If routes reference generic names, filter down; otherwise fall back
-    const filtered = allTypesActive.filter((t) =>
-      visibleTypeNamesLC.has(lc(t.name))
-    );
-    vehicle_types = filtered.length ? filtered : allTypesActive;
-  } else {
-    // Routes didn't include type names — still return active generic list
-    vehicle_types = allTypesActive;
-  }
+  // ✅ vehicle_types is now the SAFE canonical list actually used on routes
+  const vehicle_types = typed.vehicle_types.map((t) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description ?? null,
+    icon_url: t.picture_url ?? null,
+    capacity: t.capacity ?? null,
+    features: t.features ?? null,
+  }));
 
   return {
     ok: true,
@@ -365,10 +441,7 @@ export async function GET() {
         });
       }
     } catch (e: any) {
-      console.warn(
-        "[visible-catalog] primary failed; using fallback:",
-        e?.message || e
-      );
+      console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
         headers: {

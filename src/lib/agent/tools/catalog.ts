@@ -15,7 +15,7 @@ type VisibleRoute = {
   pickup_id: string | null;
   pickup_name: string | null;
   vehicle_type_id: string | null;
-  vehicle_type_name: string | null; // ⚠️ may be polluted (vessel names); do not trust as SSOT
+  vehicle_type_name: string | null; // MUST be canonical (Speed Boat, Helicopter...) from visible-catalog
 };
 
 type VisibleVehicleType = {
@@ -85,18 +85,6 @@ function normaliseVehicleTypeName(name: string | null | undefined): string {
   return s;
 }
 
-const ALLOWED_CANONICAL_TYPES = new Set([
-  "speed boat",
-  "helicopter",
-  "bus",
-  "limo",
-]);
-
-function isAllowedCanonicalTypeName(name: string | null | undefined): boolean {
-  const n = normaliseVehicleTypeName(name);
-  return !!n && ALLOWED_CANONICAL_TYPES.has(n);
-}
-
 function titleCaseVehicleType(norm: string): string {
   const s = normaliseVehicleTypeName(norm);
   if (!s) return "";
@@ -154,94 +142,6 @@ function destMatches(routeDestName: string | null | undefined, q: string): boole
   return dn === qq || dn.includes(qq) || qq.includes(dn);
 }
 
-/**
- * SSOT mapping:
- * - Type names come from cat.vehicle_types where possible
- * - Route filtering uses route.vehicle_type_id
- * - We NEVER trust route.vehicle_type_name except as a SAFE fallback ONLY if it
- *   normalises to an allowed canonical type (helicopter/speed boat/bus/limo).
- */
-function getVehicleTypeMap(cat: VisibleCatalog | null): Map<string, string> {
-  const m = new Map<string, string>();
-  const rows = (cat?.vehicle_types ?? []).filter(Boolean);
-  for (const t of rows) {
-    const id = (t.id ?? "").toString().trim();
-    const name = (t.name ?? "").toString().trim();
-    if (!id || !name) continue;
-    m.set(id, name);
-  }
-  return m;
-}
-
-/**
- * Match type IDs by requested vehicle type name (e.g. "helicopter").
- * We match flexibly against the generic types list (vehicle_types.name).
- */
-function getTypeIdsByName(cat: VisibleCatalog | null, vehicleNorm: string): string[] {
-  const want = normaliseVehicleTypeName(vehicleNorm);
-  if (!want) return [];
-
-  const ids: string[] = [];
-  for (const t of cat?.vehicle_types ?? []) {
-    const id = (t?.id ?? "").toString().trim();
-    const rawName = (t?.name ?? "").toString().trim();
-    if (!id || !rawName) continue;
-
-    const n = normaliseVehicleTypeName(rawName);
-
-    // exact OR contains (covers "Helicopter Transfer", etc.)
-    if (n === want || n.includes(want) || want.includes(n)) {
-      ids.push(id);
-    }
-  }
-  return ids;
-}
-
-/**
- * If types table doesn't match by name (or is incomplete), safely derive type IDs
- * from routes by looking at route.vehicle_type_name ONLY when it is a canonical type.
- *
- * This cannot leak vessel names: vessel names won't normalise to "helicopter", etc.
- */
-function deriveTypeIdsFromRoutesByCanonicalName(
-  routes: VisibleRoute[],
-  vehicleNorm: string
-): string[] {
-  const want = normaliseVehicleTypeName(vehicleNorm);
-  if (!want) return [];
-
-  const ids = new Set<string>();
-  for (const r of routes) {
-    const rid = (r.vehicle_type_id ?? "").toString().trim();
-    if (!rid) continue;
-    const rName = r.vehicle_type_name ?? "";
-    const rNorm = normaliseVehicleTypeName(rName);
-    if (rNorm === want && ALLOWED_CANONICAL_TYPES.has(rNorm)) {
-      ids.add(rid);
-    }
-  }
-  return Array.from(ids);
-}
-
-function prettyTypeNameFromId(
-  typeId: string | null | undefined,
-  typeMap: Map<string, string>,
-  // optional fallback: canonical from route if allowed
-  routeTypeName?: string | null
-): string {
-  if (!typeId) return "";
-
-  const n = (typeMap.get(typeId) ?? "").toString().trim();
-  if (n) return titleCaseVehicleType(n) || n;
-
-  // fallback only if it's a canonical type (prevents vessel leaks)
-  if (routeTypeName && isAllowedCanonicalTypeName(routeTypeName)) {
-    return titleCaseVehicleType(routeTypeName);
-  }
-
-  return "";
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Shared fetch helper                                                       */
 /* -------------------------------------------------------------------------- */
@@ -267,6 +167,44 @@ async function loadDestinations(baseUrl: string): Promise<DestinationRow[]> {
   const data = await fetchJSON<DestinationsResponse>(`${baseUrl}/api/public/destinations`);
   if (!data?.ok || !Array.isArray(data.rows)) return [];
   return data.rows.filter((d) => d.active);
+}
+
+function getVehicleTypeMap(cat: VisibleCatalog | null): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const t of cat?.vehicle_types ?? []) {
+    const id = (t?.id ?? "").toString().trim();
+    const name = (t?.name ?? "").toString().trim();
+    if (!id || !name) continue;
+    m.set(id, name);
+  }
+  return m;
+}
+
+function getTypeIdsByName(cat: VisibleCatalog | null, vehicleNorm: string): string[] {
+  const want = normaliseVehicleTypeName(vehicleNorm);
+  if (!want) return [];
+
+  const ids: string[] = [];
+  for (const t of cat?.vehicle_types ?? []) {
+    const id = (t?.id ?? "").toString().trim();
+    const rawName = (t?.name ?? "").toString().trim();
+    if (!id || !rawName) continue;
+
+    const n = normaliseVehicleTypeName(rawName);
+
+    // exact OR contains (covers "Speed Boat - Charter", etc.)
+    if (n === want || n.includes(want) || want.includes(n)) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function prettyTypeNameFromId(typeId: string | null | undefined, typeMap: Map<string, string>): string {
+  if (!typeId) return "";
+  const raw = (typeMap.get(typeId) ?? "").toString().trim();
+  if (!raw) return "";
+  return titleCaseVehicleType(raw) || raw;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -494,7 +432,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listTransportTypes",
         description:
-          "List the generic categories of transport currently used by Pace Shuttles based on the live catalog. Use the generic vehicle_types list and NEVER reveal specific operator or vessel names.",
+          "List the generic categories of transport currently used by Pace Shuttles based on the live catalog. Uses the vehicle_types list and NEVER reveals operator/vessel names.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
@@ -512,13 +450,13 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
 
       if (!pretty.length) {
         const content =
-          "We use premium transport options depending on the territory and route. If you tell me the country or destination, I can show what’s currently available.";
+          "I can’t see any transport categories published in the live catalogue right now. Please try again shortly.";
         return { messages: [{ role: "assistant", content }] };
       }
 
       const content =
-        `We use premium transport categories such as ${pretty.join(", ")}. ` +
-        "The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
+        `We currently use: ${pretty.join(", ")}. ` +
+        "The exact mix depends on the territory and route, and we don’t disclose operator or vessel names in advance of a booking.";
       return { messages: [{ role: "assistant", content }] };
     },
   };
@@ -530,7 +468,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listTransportTypesInCountry",
         description:
-          "Given a country name, list the generic transport categories available in that country based on live, bookable routes. NEVER reveal vessel/operator names.",
+          "Given a country name, list the generic transport categories available in that country based on live, bookable routes. NEVER reveals vessel/operator names.",
         parameters: {
           type: "object",
           properties: {
@@ -571,47 +509,36 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
 
       const typeMap = getVehicleTypeMap(cat);
 
-      // Collect type IDs used by routes in the country
       const typeIds = unique(inCountry.map((r) => (r.vehicle_type_id ?? "").toString().trim())).filter(Boolean);
-
-      // Map IDs -> generic names (safe), with strict fallback only for canonical types
-      const names: string[] = [];
-      for (const id of typeIds) {
-        // find one route with that type id for canonical fallback
-        const sampleRoute = inCountry.find((r) => (r.vehicle_type_id ?? "").toString().trim() === id);
-        const safeName = prettyTypeNameFromId(id, typeMap, sampleRoute?.vehicle_type_name ?? null);
-        if (safeName) names.push(safeName);
-      }
+      const names = unique(typeIds.map((id) => prettyTypeNameFromId(id, typeMap))).filter(Boolean);
 
       const prettyCountry = inCountry[0].country_name || countryRaw;
-      const uniqNames = unique(names);
 
-      if (!uniqNames.length) {
+      if (!names.length) {
         return {
           messages: [
             {
               role: "assistant",
               content:
-                `I can see live routes in ${prettyCountry}, but I can’t confidently map them to transport categories yet. Please try again shortly.`,
+                `I can see live routes in ${prettyCountry}, but they aren’t currently linked to transport categories in the catalogue. This usually means the route→vehicle mapping is incomplete.`,
             },
           ],
         };
       }
 
-      const content =
-        `In ${prettyCountry}, we currently offer:\n• ${uniqNames.join(" • ")}`;
+      const content = `In ${prettyCountry}, we currently offer:\n• ${names.join(" • ")}`;
       return { messages: [{ role: "assistant", content }] };
     },
   };
 
-  /* 6) Routes by transport type (SSOT: route.vehicle_type_id ↔ cat.vehicle_types) */
+  /* 6) Routes by transport type */
   const listRoutesByTransportType: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listRoutesByTransportType",
         description:
-          "List live routes filtered by transport category (e.g. Helicopter, Speed Boat). Optionally filter to a country. Uses generic type IDs to avoid leaking vessel names. Returns pickup → destination route names only (no operators/vessels).",
+          "List live routes filtered by transport category (e.g. Helicopter, Speed Boat). Optionally filter to a country. Uses vehicle_type_id to avoid leaking vessel names.",
         parameters: {
           type: "object",
           properties: {
@@ -650,18 +577,11 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      // Optional country filter first (reduces noise + helps derive IDs)
       const candidateRoutes = countryNorm
         ? cat.routes.filter((r) => normaliseCountryName(r.country_name) === countryNorm)
         : cat.routes;
 
-      // 1) Try matching via generic types table
-      let matchingTypeIds = getTypeIdsByName(cat, vehicleNorm);
-
-      // 2) If that fails, safely derive IDs from routes ONLY if route type-name is canonical
-      if (!matchingTypeIds.length) {
-        matchingTypeIds = deriveTypeIdsFromRoutesByCanonicalName(candidateRoutes, vehicleNorm);
-      }
+      const matchingTypeIds = getTypeIdsByName(cat, vehicleNorm);
 
       if (!matchingTypeIds.length) {
         const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
@@ -677,33 +597,22 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
 
       const filtered = candidateRoutes.filter((r) => {
         const id = (r.vehicle_type_id ?? "").toString().trim();
-        if (!id) return false;
-        return matchingTypeIds.includes(id);
+        return id && matchingTypeIds.includes(id);
       });
 
+      const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
+
       if (!filtered.length) {
-        const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
         if (countryRaw) {
           return {
-            messages: [
-              {
-                role: "assistant",
-                content: `I couldn’t find any live ${prettyVehicle} routes in ${countryRaw} yet.`,
-              },
-            ],
+            messages: [{ role: "assistant", content: `I couldn’t find any live ${prettyVehicle} routes in ${countryRaw} yet.` }],
           };
         }
         return {
-          messages: [
-            {
-              role: "assistant",
-              content: `I couldn’t find any live ${prettyVehicle} routes listed yet.`,
-            },
-          ],
+          messages: [{ role: "assistant", content: `I couldn’t find any live ${prettyVehicle} routes listed yet.` }],
         };
       }
 
-      // De-dup routes by pickup+destination+country+vehicle_type_id
       const uniq = uniqueByKey(filtered, (r) => {
         const c = normaliseCountryName(r.country_name);
         const p = lc(r.pickup_name);
@@ -712,8 +621,6 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         return `${c}|${p}|${d}|${v}`;
       });
 
-      const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
-
       if (countryRaw) {
         const prettyCountry = uniq[0]?.country_name || countryRaw;
         const routes = unique(uniq.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`));
@@ -721,7 +628,6 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         return { messages: [{ role: "assistant", content }] };
       }
 
-      // Multi-country output
       const byCountry = new Map<string, VisibleRoute[]>();
       for (const r of uniq) {
         const c = r.country_name || "Unknown country";
@@ -732,8 +638,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       const blocks: string[] = [];
       for (const [country, rows] of byCountry.entries()) {
         const routes = unique(rows.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`));
-        if (!routes.length) continue;
-        blocks.push(`${country}:\n• ${routes.join(" • ")}`);
+        if (routes.length) blocks.push(`${country}:\n• ${routes.join(" • ")}`);
       }
 
       const content =
@@ -745,14 +650,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 7) “How do I get to X?” — routes to a destination, grouped by transport type (SSOT: ids) */
+  /* 7) “How do I get to X?” — routes to a destination, grouped by transport type */
   const getRoutesToDestination: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "getRoutesToDestination",
         description:
-          "Given a destination name (e.g. 'Nobu'), list live routes that arrive there, grouped by transport category. Optionally filter to a country. Uses generic type IDs to avoid leaking vessel names. No operators/vessels.",
+          "Given a destination name (e.g. 'Nobu'), list live routes that arrive there, grouped by transport category. Optionally filter to a country. Uses vehicle_type_id (no vessels/operators).",
         parameters: {
           type: "object",
           properties: {
@@ -789,8 +694,6 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const typeMap = getVehicleTypeMap(cat);
-
       const arriving = cat.routes.filter((r) => {
         if (!destMatches(r.destination_name, destRaw)) return false;
         if (!countryNorm) return true;
@@ -799,18 +702,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
 
       if (!arriving.length) {
         if (countryRaw) {
-          return {
-            messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} in ${countryRaw} yet.` }],
-          };
+          return { messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} in ${countryRaw} yet.` }] };
         }
-        return {
-          messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} yet.` }],
-        };
+        return { messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} yet.` }] };
       }
 
+      const typeMap = getVehicleTypeMap(cat);
       const prettyDest = arriving[0]?.destination_name || destRaw;
 
-      // De-dup by pickup+destination+country+vehicle_type_id
       const uniq = uniqueByKey(arriving, (r) => {
         const c = normaliseCountryName(r.country_name);
         const p = lc(r.pickup_name);
@@ -819,10 +718,9 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         return `${c}|${p}|${d}|${v}`;
       });
 
-      // Group by vehicle type (from id map; strict canonical fallback only)
       const byVehicle = new Map<string, VisibleRoute[]>();
       for (const r of uniq) {
-        const vt = prettyTypeNameFromId(r.vehicle_type_id, typeMap, r.vehicle_type_name) || "Transport";
+        const vt = prettyTypeNameFromId(r.vehicle_type_id, typeMap) || "Transport";
         if (!byVehicle.has(vt)) byVehicle.set(vt, []);
         byVehicle.get(vt)!.push(r);
       }
@@ -830,19 +728,14 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       const parts: string[] = [];
       for (const [vt, rows] of byVehicle.entries()) {
         const routes = unique(rows.map((r) => r.route_name || `${r.pickup_name} → ${r.destination_name}`));
-        if (!routes.length) continue;
-        parts.push(`**${vt}**\n• ${routes.join(" • ")}`);
+        if (routes.length) parts.push(`**${vt}**\n• ${routes.join(" • ")}`);
       }
 
       const prefix = countryRaw
         ? `Here’s how to get to ${prettyDest} in ${countryRaw} (live / bookable routes):`
         : `Here’s how to get to ${prettyDest} (live / bookable routes):`;
 
-      const content =
-        parts.length > 0
-          ? `${prefix}\n\n${parts.join("\n\n")}`
-          : `I found routes to ${prettyDest}, but couldn’t classify them by transport type yet.`;
-
+      const content = parts.length ? `${prefix}\n\n${parts.join("\n\n")}` : `I found routes to ${prettyDest}, but couldn’t group them by transport type yet.`;
       return { messages: [{ role: "assistant", content }] };
     },
   };
@@ -853,7 +746,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     listPickupsInCountry,
     listRoutesInCountry,
     listTransportTypes,
-    listTransportTypesInCountry, // ✅ NEW + required
+    listTransportTypesInCountry,
     listRoutesByTransportType,
     getRoutesToDestination,
   ];

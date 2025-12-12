@@ -111,43 +111,31 @@ function extractDestinationFromHowToGetTo(text: string): string | null {
   return dest.length ? dest : null;
 }
 
-/** NEW: broader helicopter intent (routes / journeys / transfers) */
-function mentionsHelicopterRoutesOrJourneys(text: string): boolean {
+function mentionsHelicopterRoutes(text: string): boolean {
   const t = lc(text);
   return (
     t.includes("helicopter route") ||
     t.includes("helicopter routes") ||
     t.includes("heli route") ||
     t.includes("heli routes") ||
-    t.includes("helicopter journey") ||
-    t.includes("helicopter journeys") ||
-    t.includes("heli journey") ||
-    t.includes("heli journeys") ||
-    t.includes("helicopter transfer") ||
-    t.includes("helicopter transfers") ||
-    (t.includes("helicopter") && (t.includes("route") || t.includes("routes") || t.includes("journey") || t.includes("journeys") || t.includes("transfer") || t.includes("transfers"))) ||
-    (t.includes("heli") && (t.includes("route") || t.includes("routes") || t.includes("journey") || t.includes("journeys") || t.includes("transfer") || t.includes("transfers")))
+    (t.includes("helicopter") && t.includes("routes")) ||
+    (t.includes("heli") && t.includes("routes")) ||
+    // also catch "any helicopter journeys?"
+    (t.includes("helicopter") && (t.includes("journey") || t.includes("journeys")))
   );
 }
 
-/** NEW: broader speed boat intent (routes / journeys / transfers) */
-function mentionsSpeedBoatRoutesOrJourneys(text: string): boolean {
+function mentionsSpeedBoatRoutes(text: string): boolean {
   const t = lc(text);
   return (
     t.includes("speed boat route") ||
     t.includes("speed boat routes") ||
     t.includes("speedboat route") ||
     t.includes("speedboat routes") ||
-    t.includes("speed boat journey") ||
-    t.includes("speed boat journeys") ||
-    t.includes("speedboat journey") ||
-    t.includes("speedboat journeys") ||
-    t.includes("boat journey") ||
-    t.includes("boat journeys") ||
-    t.includes("boat route") ||
-    t.includes("boat routes") ||
-    (t.includes("speed boat") && (t.includes("route") || t.includes("routes") || t.includes("journey") || t.includes("journeys") || t.includes("transfer") || t.includes("transfers"))) ||
-    (t.includes("speedboat") && (t.includes("route") || t.includes("routes") || t.includes("journey") || t.includes("journeys") || t.includes("transfer") || t.includes("transfers")))
+    (t.includes("speed boat") && t.includes("routes")) ||
+    (t.includes("speedboat") && t.includes("routes")) ||
+    (t.includes("speed boat") && (t.includes("journey") || t.includes("journeys"))) ||
+    (t.includes("speedboat") && (t.includes("journey") || t.includes("journeys")))
   );
 }
 
@@ -197,7 +185,8 @@ function asksTransportTypes(text: string): boolean {
     t.includes("available") ||
     t.includes("offer") ||
     t.includes("have") ||
-    t.includes("use");
+    t.includes("use") ||
+    t.includes("operate");
 
   return looksLikeQuestion && mentionsConcept && asksForTypes;
 }
@@ -216,14 +205,6 @@ function isSingleWordLocationReply(text: string): boolean {
   // allow 1–3 words (e.g. "antigua", "antigua and barbuda")
   const words = t.split(/\s+/).filter(Boolean);
   return words.length >= 1 && words.length <= 3;
-}
-
-/** NEW: if user just says "antigua", map to canonical country name used in catalog */
-function normalizeCountryHint(country: string): string {
-  const t = lc(country);
-  if (t === "antigua") return "Antigua and Barbuda";
-  if (t === "barbados") return "Barbados";
-  return country.trim();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -283,7 +264,7 @@ export async function POST(req: Request) {
     if (asksTransportTypes(userText)) {
       const country = extractCountryAfterIn(userText);
       if (country) {
-        const r = await runTool("listTransportTypesInCountry", { country: normalizeCountryHint(country) });
+        const r = await runTool("listTransportTypesInCountry", { country });
         if (r) return NextResponse.json<AgentResponse>(r);
       }
 
@@ -295,31 +276,28 @@ export async function POST(req: Request) {
     // B) single word follow-up like "antigua" after the assistant asked for country/destination
     if (
       isSingleWordLocationReply(userText) &&
-      (lc(assistantText).includes("tell me the country or destination") ||
-        lc(assistantText).includes("tell me which country") ||
-        lc(assistantText).includes("which country") ||
-        lc(assistantText).includes("which destination"))
+      lc(assistantText).includes("tell me the country or destination")
     ) {
-      const r = await runTool("listTransportTypesInCountry", { country: normalizeCountryHint(userText) });
+      const r = await runTool("listTransportTypesInCountry", { country: userText.trim() });
       if (r) return NextResponse.json<AgentResponse>(r);
     }
 
-    // C) helicopter routes / journeys / transfers (optionally in country)
-    if (mentionsHelicopterRoutesOrJourneys(userText)) {
+    // C) helicopter routes (optionally in country)
+    if (mentionsHelicopterRoutes(userText)) {
       const country = extractCountryAfterIn(userText);
       const r = await runTool("listRoutesByTransportType", {
         vehicle_type: "Helicopter",
-        ...(country ? { country: normalizeCountryHint(country) } : {}),
+        ...(country ? { country } : {}),
       });
       if (r) return NextResponse.json<AgentResponse>(r);
     }
 
-    // D) speed boat routes / journeys / transfers (optionally in country)
-    if (mentionsSpeedBoatRoutesOrJourneys(userText)) {
+    // D) speed boat routes (optionally in country)
+    if (mentionsSpeedBoatRoutes(userText)) {
       const country = extractCountryAfterIn(userText);
       const r = await runTool("listRoutesByTransportType", {
         vehicle_type: "Speed Boat",
-        ...(country ? { country: normalizeCountryHint(country) } : {}),
+        ...(country ? { country } : {}),
       });
       if (r) return NextResponse.json<AgentResponse>(r);
     }
