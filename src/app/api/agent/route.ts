@@ -91,7 +91,7 @@ SCOPE & TONE
 `;
 
 /* -------------------------------------------------------------------------- */
-/*  POST handler – tool-first agent                                           */
+/*  POST handler – tool-first agent (with synthesis pass)                      */
 /* -------------------------------------------------------------------------- */
 
 export async function POST(req: Request) {
@@ -115,77 +115,100 @@ export async function POST(req: Request) {
 
     const hasUserMessage = upstreamMessages.some((m) => m.role === "user");
     if (!hasUserMessage) {
-      return NextResponse.json(
-        { error: "No user message" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No user message" }, { status: 400 });
     }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1",
-      messages: [
-        { role: "system", content: SYSTEM_RULES },
-        ...upstreamMessages.map((m) => ({
-          role: m.role,
-          content: m.content ?? "",
-        })),
-      ],
-      tools: tools.map((t) => t.spec),
-      tool_choice: "auto",
-    });
+    // Internal OpenAI message list (includes tool results; NOT returned to UI)
+    const oaMessages: any[] = [
+      { role: "system", content: SYSTEM_RULES },
+      ...upstreamMessages.map((m) => ({
+        role: m.role,
+        content: m.content ?? "",
+      })),
+    ];
 
-    const msg = completion.choices[0]?.message;
+    // Allow a few tool iterations (prevents loops)
+    const MAX_TOOL_ROUNDS = 3;
 
-    if (!msg) {
-      return NextResponse.json(
-        { error: "Agent produced no message" },
-        { status: 500 }
-      );
-    }
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4.1",
+        messages: oaMessages,
+        tools: tools.map((t) => t.spec),
+        tool_choice: "auto",
+      });
 
-    // ----------------------------- Tool call path ---------------------------
-    if (msg.tool_calls?.length) {
-      const call = msg.tool_calls[0];
-      const impl = tools.find(
-        (t) => t.spec.function.name === call.function.name
-      );
-
-      if (!impl) {
+      const msg = completion.choices[0]?.message;
+      if (!msg) {
         return NextResponse.json(
-          { error: `Unknown tool: ${call.function.name}` },
+          { error: "Agent produced no message" },
           { status: 500 }
         );
       }
 
-      const args = call.function.arguments
-        ? JSON.parse(call.function.arguments)
-        : {};
+      // If no tool calls, we have the final assistant answer
+      if (!msg.tool_calls?.length) {
+        const finalMessage: AgentMessage = {
+          role: "assistant",
+          content: msg.content ?? "",
+        };
 
-      const result = await impl.run(args);
-
-      // We treat the tool result as the FINAL user-visible answer.
-      // No 'tool' messages are added to history; we just append the
-      // assistant messages returned by the tool.
-      let newMessages: AgentMessage[] = [...history];
-
-      if (result.messages && result.messages.length) {
-        newMessages = [...history, ...result.messages];
+        return NextResponse.json<AgentResponse>({
+          messages: [...history, finalMessage],
+          choices: [],
+        });
       }
 
-      return NextResponse.json<AgentResponse>({
-        messages: newMessages,
-        choices: result.choices ?? [],
+      // Tool calls exist: execute ALL of them, then continue loop
+      oaMessages.push({
+        role: "assistant",
+        content: msg.content ?? "",
+        tool_calls: msg.tool_calls,
       });
+
+      for (const call of msg.tool_calls) {
+        const impl = tools.find(
+          (t) => t.spec.function.name === call.function.name
+        );
+
+        if (!impl) {
+          return NextResponse.json(
+            { error: `Unknown tool: ${call.function.name}` },
+            { status: 500 }
+          );
+        }
+
+        const args = call.function.arguments
+          ? JSON.parse(call.function.arguments)
+          : {};
+
+        const result = await impl.run(args);
+
+        // Feed tool result back to model (grounding)
+        // Prefer structured JSON so the model can reason on it
+        oaMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content:
+            typeof result === "string"
+              ? result
+              : JSON.stringify(result ?? {}, null, 2),
+        });
+
+        // NOTE: We do NOT directly return tool messages to the user here.
+        // The model will produce the final assistant answer on the next loop.
+      }
     }
 
-    // ----------------------------- Plain answer path ------------------------
-    const finalMessage: AgentMessage = {
+    // If we hit the tool-round cap, degrade gracefully
+    const graceful: AgentMessage = {
       role: "assistant",
-      content: msg.content ?? "",
+      content:
+        "Sorry — I couldn’t complete that lookup right now. Please try again, or tell me the country and the pickup/destination you’re interested in.",
     };
 
     return NextResponse.json<AgentResponse>({
-      messages: [...history, finalMessage],
+      messages: [...history, graceful],
       choices: [],
     });
   } catch (err: any) {
