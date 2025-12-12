@@ -655,8 +655,6 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         ? cat.routes.filter((r) => normaliseCountryName(r.country_name) === countryNorm)
         : cat.routes;
 
-      const typeMap = getVehicleTypeMap(cat);
-
       // 1) Try matching via generic types table
       let matchingTypeIds = getTypeIdsByName(cat, vehicleNorm);
 
