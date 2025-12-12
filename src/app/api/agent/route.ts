@@ -97,6 +97,13 @@ function lastUserMessage(history: AgentMessage[]): string {
   return "";
 }
 
+function lastAssistantMessage(history: AgentMessage[]): string {
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]?.role === "assistant") return String(history[i]?.content ?? "");
+  }
+  return "";
+}
+
 function extractDestinationFromHowToGetTo(text: string): string | null {
   const m = text.match(/how\s+do\s+i\s+get\s+to\s+(.+?)\??$/i);
   if (!m) return null;
@@ -128,49 +135,25 @@ function mentionsSpeedBoatRoutes(text: string): boolean {
   );
 }
 
-/**
- * Broad trigger for transport/vehicle-type questions so we ALWAYS route to listTransportTypes.
- * This fixes regressions like:
- * - "what modes of transport do you have?"
- * - "what types of vehicles are involved?"
- * - "what vehicles do you use?"
- */
 function asksTransportTypes(text: string): boolean {
   const t = lc(text);
 
-  // Direct phrases (transport)
+  // direct
   if (
-    t.includes("transport types") ||
-    t.includes("types of transport") ||
     t.includes("modes of transport") ||
     t.includes("mode of transport") ||
     t.includes("transport modes") ||
+    t.includes("transport types") ||
+    t.includes("types of transport") ||
     t.includes("transport options") ||
     t.includes("available transport") ||
-    t.includes("what transport") ||
-    t.includes("which transport") ||
-    t.includes("how do you travel") ||
-    t.includes("how can i travel")
-  ) {
-    return true;
-  }
-
-  // Direct phrases (vehicle)
-  if (
     t.includes("vehicle types") ||
     t.includes("types of vehicles") ||
     t.includes("what vehicles") ||
-    t.includes("which vehicles") ||
-    t.includes("what kind of vehicles") ||
-    t.includes("what type of vehicle") ||
-    t.includes("types of vehicle") ||
-    t.includes("vehicles involved") ||
-    t.includes("what do you use to") && (t.includes("travel") || t.includes("transport") || t.includes("transfer"))
-  ) {
-    return true;
-  }
+    t.includes("which vehicles")
+  ) return true;
 
-  // Lightweight pattern match for variants
+  // pattern-ish
   const looksLikeQuestion =
     t.includes("?") ||
     t.startsWith("what ") ||
@@ -182,7 +165,6 @@ function asksTransportTypes(text: string): boolean {
     t.includes("transport") ||
     t.includes("travel") ||
     t.includes("transfer") ||
-    t.includes("get there") ||
     t.includes("options") ||
     t.includes("modes") ||
     t.includes("mode") ||
@@ -199,10 +181,25 @@ function asksTransportTypes(text: string): boolean {
     t.includes("available") ||
     t.includes("offer") ||
     t.includes("have") ||
-    t.includes("involved") ||
     t.includes("use");
 
   return looksLikeQuestion && mentionsConcept && asksForTypes;
+}
+
+function extractCountryAfterIn(text: string): string | null {
+  // e.g. "modes of transport in antigua", "helicopter routes in antigua"
+  const m = text.match(/\bin\s+([a-zA-Z][a-zA-Z\s&'-]{1,60})\s*$/i);
+  if (!m) return null;
+  const v = (m[1] ?? "").trim();
+  return v.length ? v : null;
+}
+
+function isSingleWordLocationReply(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // allow 1–3 words (e.g. "antigua", "antigua and barbuda")
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length >= 1 && words.length <= 3;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -221,7 +218,6 @@ export async function POST(req: Request) {
 
     const tools = buildTools({ baseUrl, supabase });
 
-    // ---- Strip out any tool messages before sending to OpenAI ------------
     const history = (body.messages || []) as AgentMessage[];
     const upstreamMessages = history.filter(
       (m) => m.role === "user" || m.role === "assistant"
@@ -232,10 +228,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No user message" }, { status: 400 });
     }
 
-    // ---------------------------------------------------------------------
-    // Deterministic routing for transport & routing questions
-    // ---------------------------------------------------------------------
     const userText = lastUserMessage(upstreamMessages);
+    const assistantText = lastAssistantMessage(upstreamMessages);
 
     const runTool = async (
       toolName: string,
@@ -257,29 +251,53 @@ export async function POST(req: Request) {
       };
     };
 
-    // 1) Any “modes/types/options of transport” or “vehicle types” question -> ALWAYS listTransportTypes
+    // ---------------------------------------------------------------------
+    // Deterministic routing for transport + country scoped transport
+    // ---------------------------------------------------------------------
+
+    // A) “modes/types/vehicles of transport IN <country>”
     if (asksTransportTypes(userText)) {
+      const country = extractCountryAfterIn(userText);
+      if (country) {
+        const r = await runTool("listTransportTypesInCountry", { country });
+        if (r) return NextResponse.json<AgentResponse>(r);
+      }
+
+      // Global types (fallback)
       const r = await runTool("listTransportTypes", {});
       if (r) return NextResponse.json<AgentResponse>(r);
     }
 
-    // 2) "Helicopter routes" -> ALWAYS listRoutesByTransportType(Helicopter)
+    // B) single word follow-up like "antigua" after the assistant asked for country/destination
+    if (
+      isSingleWordLocationReply(userText) &&
+      lc(assistantText).includes("tell me the country or destination")
+    ) {
+      const r = await runTool("listTransportTypesInCountry", { country: userText.trim() });
+      if (r) return NextResponse.json<AgentResponse>(r);
+    }
+
+    // C) helicopter routes (optionally in country)
     if (mentionsHelicopterRoutes(userText)) {
+      const country = extractCountryAfterIn(userText);
       const r = await runTool("listRoutesByTransportType", {
         vehicle_type: "Helicopter",
+        ...(country ? { country } : {}),
       });
       if (r) return NextResponse.json<AgentResponse>(r);
     }
 
-    // 3) "Speed boat routes" -> ALWAYS listRoutesByTransportType(Speed Boat)
+    // D) speed boat routes (optionally in country)
     if (mentionsSpeedBoatRoutes(userText)) {
+      const country = extractCountryAfterIn(userText);
       const r = await runTool("listRoutesByTransportType", {
         vehicle_type: "Speed Boat",
+        ...(country ? { country } : {}),
       });
       if (r) return NextResponse.json<AgentResponse>(r);
     }
 
-    // 4) "How do I get to X?" -> ALWAYS getRoutesToDestination(destination=X)
+    // E) "How do I get to X?"
     const dest = extractDestinationFromHowToGetTo(userText);
     if (dest) {
       const r = await runTool("getRoutesToDestination", { destination: dest });
@@ -312,7 +330,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ----------------------------- Tool call path ---------------------------
     if (msg.tool_calls?.length) {
       const call = msg.tool_calls[0];
       const impl = tools.find(
@@ -344,7 +361,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // ----------------------------- Plain answer path ------------------------
     const finalMessage: AgentMessage = {
       role: "assistant",
       content: msg.content ?? "",
