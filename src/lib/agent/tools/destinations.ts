@@ -67,7 +67,6 @@ function findBestDestination(
   rows: DestinationRow[]
 ): DestinationRow | null {
   const qNorm = normalise(query);
-
   if (!qNorm) return null;
 
   // 1) exact name match (case-insensitive, ignoring punctuation)
@@ -75,34 +74,18 @@ function findBestDestination(
   if (exact) return exact;
 
   // 2) query contains the destination name
-  const nameInQuery = rows.find((r) =>
-    qNorm.includes(normalise(r.name))
-  );
+  const nameInQuery = rows.find((r) => qNorm.includes(normalise(r.name)));
   if (nameInQuery) return nameInQuery;
 
   // 3) destination name contains the query
-  const queryInName = rows.find((r) =>
-    normalise(r.name).includes(qNorm)
-  );
+  const queryInName = rows.find((r) => normalise(r.name).includes(qNorm));
   if (queryInName) return queryInName;
 
   return null;
 }
 
-function buildDestinationDescription(row: DestinationRow): string {
-  const parts: string[] = [];
-
-  const country = row.country_name || "one of our operating regions";
-
-  parts.push(
-    `${row.name} is one of the destinations served by Pace Shuttles in ${country}.`
-  );
-
-  if (row.description && row.description.trim().length > 0) {
-    parts.push(row.description.trim());
-  }
-
-  const addressBits = [
+function buildAddress(row: DestinationRow): string {
+  return [
     row.address1,
     row.address2,
     row.town,
@@ -111,28 +94,106 @@ function buildDestinationDescription(row: DestinationRow): string {
   ]
     .filter(Boolean)
     .join(", ");
+}
 
-  if (addressBits) {
-    parts.push(`It’s located at: ${addressBits}.`);
+function looksTooThin(desc: string | null): boolean {
+  const d = (desc ?? "").trim();
+  // "Nobu Barbuda offers..." etc can be short; treat under ~140 chars as "thin"
+  return d.length < 140;
+}
+
+/**
+ * Optional enrichment: fetch destination website and extract title + meta description.
+ * This is deliberately conservative: quick timeout, no heavy parsing, no guarantees.
+ */
+async function tryEnrichFromWebsite(
+  url: string
+): Promise<{ title?: string; summary?: string } | null> {
+  const clean = (url || "").trim();
+  if (!clean) return null;
+
+  // Avoid SSRF weirdness: only allow http(s)
+  if (!/^https?:\/\//i.test(clean)) return null;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+
+  try {
+    const res = await fetch(clean, {
+      cache: "no-store",
+      signal: ctrl.signal,
+      headers: { Accept: "text/html,*/*" },
+    });
+
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    if (!html || html.length < 200) return null;
+
+    const title =
+      html.match(/<title[^>]*>([^<]{1,200})<\/title>/i)?.[1]?.trim() ?? "";
+
+    // Prefer OG description, then meta description
+    const ogDesc =
+      html
+        .match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{1,400})["']/i)
+        ?. [1]?.trim() ?? "";
+
+    const metaDesc =
+      html
+        .match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']{1,400})["']/i)
+        ?. [1]?.trim() ?? "";
+
+    const summary = (ogDesc || metaDesc || "").replace(/\s+/g, " ").trim();
+
+    if (!title && !summary) return null;
+
+    return { title: title || undefined, summary: summary || undefined };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  if (row.website_url) {
-    parts.push(
-      `You can find out more or make direct reservations on their website: ${row.website_url}.`
+function buildDestinationDescription(
+  row: DestinationRow,
+  enriched?: { title?: string; summary?: string } | null
+): string {
+  const lines: string[] = [];
+
+  const country = row.country_name || "our operating regions";
+  lines.push(`**${row.name}** (${country})`);
+
+  // Prefer DB description. If it's thin and we have a good website summary, use that too.
+  const dbDesc = (row.description ?? "").trim();
+  const webSummary = (enriched?.summary ?? "").trim();
+
+  if (dbDesc) {
+    lines.push(dbDesc);
+    if (looksTooThin(dbDesc) && webSummary && webSummary !== dbDesc) {
+      lines.push(webSummary);
+    }
+  } else if (webSummary) {
+    lines.push(webSummary);
+  } else {
+    lines.push(
+      "We haven’t added a full description for this destination yet, but it’s available as a pickup and/or drop-off point on selected routes."
     );
   }
 
-  if (row.directions_url) {
-    parts.push(
-      `For directions, you can use this map link: ${row.directions_url}.`
-    );
-  }
+  const address = buildAddress(row);
+  if (address) lines.push(`Address: ${address}`);
+  if (row.phone) lines.push(`Phone: ${row.phone}`);
+  if (row.website_url) lines.push(`Website: ${row.website_url}`);
+  if (row.directions_url) lines.push(`Directions: ${row.directions_url}`);
 
-  parts.push(
-    `If you’d like, ask me about journeys to or from ${row.name} on specific dates and I’ll check the live shuttle schedule.`
+  // Keep the call-to-action short and on-topic
+  lines.push(
+    `If you want, say “show journeys to ${row.name}” and I’ll list upcoming departures.`
   );
 
-  return parts.join(" ");
+  return lines.join("\n");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -148,7 +209,7 @@ export function destinationsTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "describeDestination",
         description:
-          "Look up and describe a specific pickup or destination served by Pace Shuttles. Use this when the user asks things like 'tell me about Boom', 'what is Loose Canon?', 'where is Shirley Heights?', or 'tell me about The Cliff in Barbados'.",
+          "Look up and describe a specific pickup or destination served by Pace Shuttles using the destinations catalogue (DB-driven). Use this when the user asks things like 'tell me about Boom', 'what is Loose Canon?', 'where is Shirley Heights?', or 'tell me about The Cliff in Barbados'.",
         parameters: {
           type: "object",
           properties: {
@@ -199,17 +260,21 @@ export function destinationsTools(ctx: ToolContext): ToolDefinition[] {
           messages: [
             {
               role: "assistant",
-              content: `I couldn’t find a destination called “${raw}” in the current Pace Shuttles catalogue. It might not be active yet, or it may be listed under a slightly different name. Try asking with the exact name you see on the schedule, or ask “where do you go?” to see the full list.`,
+              content: `I couldn’t find “${raw}” in the current destinations catalogue. It might not be active yet, or it may be listed under a slightly different name. Try the exact name you see on the site, or ask “where do you go?” to see the full list.`,
             },
           ],
         };
       }
 
-      const content = buildDestinationDescription(match);
+      // Optional: enrich from the destination website if the DB description is thin
+      const enriched =
+        match.website_url && looksTooThin(match.description)
+          ? await tryEnrichFromWebsite(match.website_url)
+          : null;
 
-      return {
-        messages: [{ role: "assistant", content }],
-      };
+      const content = buildDestinationDescription(match, enriched);
+
+      return { messages: [{ role: "assistant", content }] };
     },
   };
 

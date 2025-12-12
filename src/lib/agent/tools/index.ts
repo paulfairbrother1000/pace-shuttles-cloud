@@ -1,10 +1,12 @@
 // src/lib/agent/tools/index.ts
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { AgentChoice } from "@/lib/agent/agent-schema";
+
 import { catalogTools } from "./catalog";
 import { kbTools } from "./searchKB";
 import { bookingTools } from "./bookings";
 import { quoteTools } from "./quote";
-import type { AgentChoice } from "@/lib/agent/agent-schema";
+import { destinationsTools } from "./destinations"; // ✅ ADD
 
 export type ToolExecutionResult = {
   messages?: { role: "assistant"; content: string }[];
@@ -25,7 +27,6 @@ export type ToolDefinition = {
       parameters: any;
     };
   };
-  // ctx is closed over when tools are constructed – only args are passed
   run: (args: any) => Promise<ToolExecutionResult>;
 };
 
@@ -33,6 +34,7 @@ export function buildTools(ctx: ToolContext): ToolDefinition[] {
   return [
     ...catalogTools(ctx),
     ...kbTools(ctx),
+    ...destinationsTools(ctx), // ✅ ADD (before booking tools is fine)
     ...bookingTools(ctx),
     ...quoteTools(ctx),
   ];

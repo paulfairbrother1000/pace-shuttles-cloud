@@ -54,21 +54,16 @@ function addDays(d: Date, days: number): Date {
 }
 
 function endOfMonth(year: number, monthIdx: number): Date {
-  // monthIdx is 0-based; day 0 of next month is the last day of this month
   return new Date(year, monthIdx + 1, 0);
 }
 
 function formatDate(d: Date): string {
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  return d.toISOString().slice(0, 10);
 }
 
 /**
  * Format date & time from the DB timestamp string *without* changing it
  * via timezone math. This keeps times aligned with what the website shows.
- *
- * Expected shapes:
- * - "2025-12-22T11:30:00" or "2025-12-22T11:30:00Z"
- * - If parsing fails, we fall back to Date().
  */
 function formatDateTimeLocal(s: string): { date: string; time: string } {
   const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
@@ -84,23 +79,9 @@ function formatDateTimeLocal(s: string): { date: string; time: string } {
     };
   }
 
-  // Total fallback – shouldn't really happen
   return { date: "", time: "" };
 }
 
-/**
- * Parse a "date-ish" string coming from the model.
- *
- * Supports:
- * - "2025-12-18" (ISO date)
- * - "December" / "december"
- * - "December 2025"
- *
- * For month-only values with no year:
- * - If month is after current month -> that month, current year (full month)
- * - If month is the current month -> tomorrow to end of that month
- * - If month is before current month -> that month, next year (full month)
- */
 function inferDateRange(
   fromRaw: string,
   toRaw?: string
@@ -114,7 +95,6 @@ function inferDateRange(
 
   const isoDateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
-  // Case 1: both explicit ISO dates
   if (isoDateRegex.test(from) && isoDateRegex.test(to)) {
     const start = startOfDay(new Date(from + "T00:00:00Z"));
     const end = startOfDay(new Date(to + "T00:00:00Z"));
@@ -139,10 +119,7 @@ function inferDateRange(
     return { start: adjustedStart, end };
   }
 
-  // Helper: parse "Month" or "Month YYYY"
-  const monthMatch = from.toLowerCase().match(
-    /^([a-z]+)(?:\s+(\d{4}))?$/
-  );
+  const monthMatch = from.toLowerCase().match(/^([a-z]+)(?:\s+(\d{4}))?$/);
 
   if (monthMatch) {
     const monthName = monthMatch[1];
@@ -160,26 +137,18 @@ function inferDateRange(
     if (yearStr) {
       year = parseInt(yearStr, 10);
     } else {
-      // No year: infer like a human would
-      if (monthIdx > thisMonth) {
-        year = thisYear; // later this year
-      } else if (monthIdx === thisMonth) {
-        year = thisYear; // this month
-      } else {
-        year = thisYear + 1; // next year
-      }
+      if (monthIdx > thisMonth) year = thisYear;
+      else if (monthIdx === thisMonth) year = thisYear;
+      else year = thisYear + 1;
     }
 
     let start: Date;
     let end: Date;
 
     if (!yearStr && monthIdx === thisMonth) {
-      // "December" when we're already in December:
-      // from tomorrow to end of December
       start = tomorrow;
       end = endOfMonth(year, monthIdx);
     } else {
-      // Whole month in the inferred year
       start = new Date(year, monthIdx, 1);
       end = endOfMonth(year, monthIdx);
     }
@@ -197,7 +166,6 @@ function inferDateRange(
     return { start, end };
   }
 
-  // Fallback: single explicit ISO date only
   if (isoDateRegex.test(from)) {
     const start = startOfDay(new Date(from + "T00:00:00Z"));
     const end = start;
@@ -257,12 +225,10 @@ async function fetchJourneysForRange(
 
       all.push(...data.rows);
     } catch {
-      // swallow per-day errors; we’ll just show what we have
       continue;
     }
   }
 
-  // Ensure chronological order just in case
   all.sort(
     (a, b) =>
       new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
@@ -276,10 +242,10 @@ async function fetchJourneysForRange(
 /* -------------------------------------------------------------------------- */
 
 export function bookingTools(ctx: ToolContext): ToolDefinition[] {
-  const { baseUrl } = ctx;
+  const { baseUrl, supabase } = ctx;
 
   /* ------------------------------------------------------------------------ */
-  /* 1) Explain booking flow (no DB access)                                   */
+  /* 1) Explain booking flow                                                  */
   /* ------------------------------------------------------------------------ */
 
   const explainBookingFlow: ToolDefinition = {
@@ -304,6 +270,32 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
   };
 
   /* ------------------------------------------------------------------------ */
+  /* Helper: prefer routes.pickup_time for display when route_name exists     */
+  /* ------------------------------------------------------------------------ */
+
+  const pickupTimeCache = new Map<string, string | null>();
+
+  async function getPickupTimeForRouteName(
+    routeName: string | null | undefined
+  ): Promise<string | null> {
+    const rn = String(routeName ?? "").trim();
+    if (!rn) return null;
+
+    if (pickupTimeCache.has(rn)) return pickupTimeCache.get(rn) ?? null;
+
+    const { data, error } = await supabase
+      .from("routes")
+      .select("pickup_time")
+      .eq("route_name", rn)
+      .limit(1)
+      .maybeSingle();
+
+    const val = !error && data?.pickup_time ? String(data.pickup_time).slice(0, 5) : null;
+    pickupTimeCache.set(rn, val);
+    return val;
+  }
+
+  /* ------------------------------------------------------------------------ */
   /* 2) List journeys between dates (or in a month)                           */
   /* ------------------------------------------------------------------------ */
 
@@ -313,7 +305,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       function: {
         name: "listJourneysBetweenDates",
         description:
-          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates: if the month is the current month, it will search from tomorrow to the end of that month; if it's earlier than the current month, it will assume next year.",
+          "Look up live, upcoming journeys in a given date range using the public schedule. Use this when the user asks things like 'what journeys do you have on 18th December?', 'in December?', 'over Christmas?', or 'in January next year?'. For month-only questions, set `from` to the month name (e.g. 'December' or 'January') and leave `to` empty; the backend will infer the exact dates.",
         parameters: {
           type: "object",
           properties: {
@@ -358,14 +350,7 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
       const range = inferDateRange(fromRaw, toRaw);
 
       if ("error" in range) {
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content: range.error,
-            },
-          ],
-        };
+        return { messages: [{ role: "assistant", content: range.error }] };
       }
 
       const { start, end } = range;
@@ -381,27 +366,22 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
             : `I couldn’t find any live journeys scheduled between ${startStr} and ${endStr}.`;
         const tail =
           " Please try another period or check back later as we add more departures.";
-        return {
-          messages: [
-            {
-              role: "assistant",
-              content: base + tail,
-            },
-          ],
-        };
+        return { messages: [{ role: "assistant", content: base + tail }] };
       }
 
-      // Build human-readable lines + clickable choices
       const lines: string[] = [];
       const choices: AgentChoice[] = [];
 
-      // Use the homepage as the base so filters apply correctly
       const JOURNEY_LINK_BASE = "/";
 
-      journeys.forEach((j) => {
-        const { date, time } = formatDateTimeLocal(j.starts_at);
+      for (const j of journeys) {
+        const { date, time: timeFromStartsAt } = formatDateTimeLocal(j.starts_at);
         const pickup = j.pickup_name || "Pickup";
         const dest = j.destination_name || "Destination";
+
+        // Prefer pickup_time from routes when we can (aligns with website list)
+        const preferredTime = await getPickupTimeForRouteName(j.route_name);
+        const time = preferredTime || timeFromStartsAt;
 
         const label = `${date} ${time} — ${pickup} → ${dest}`;
         lines.push(`• ${label}`);
@@ -423,21 +403,131 @@ export function bookingTools(ctx: ToolContext): ToolDefinition[] {
             url,
           },
         });
-      });
+      }
 
       const heading =
         `Here are the live journeys I can see between ${startStr} and ${endStr}` +
         (q ? ` matching “${q}”` : "") +
         ":\n";
 
-      const content = heading + lines.join("\n");
-
       return {
-        messages: [{ role: "assistant", content }],
+        messages: [{ role: "assistant", content: heading + lines.join("\n") }],
         choices,
       };
     },
   };
 
-  return [explainBookingFlow, listJourneysBetweenDates];
+  /* ------------------------------------------------------------------------ */
+  /* 3) List upcoming journeys for a destination (fixes “show me”)            */
+  /* ------------------------------------------------------------------------ */
+
+  const listJourneysForDestination: ToolDefinition = {
+    spec: {
+      type: "function",
+      function: {
+        name: "listJourneysForDestination",
+        description:
+          "List upcoming journeys to a given destination (and optional country). Use this when the user says 'show me' after discussing a destination, or asks 'what journeys go to X?'.",
+        parameters: {
+          type: "object",
+          properties: {
+            destination: {
+              type: "string",
+              description: "Destination name, e.g. 'Nobu', 'Shirley Heights', 'The Cliff'.",
+            },
+            country: {
+              type: "string",
+              description: "Optional country name to tighten matching, e.g. 'Barbados'.",
+            },
+            days: {
+              type: "number",
+              description: "How many days ahead to search (default 60, max 365).",
+            },
+          },
+          required: ["destination"],
+          additionalProperties: false,
+        },
+      },
+    },
+    run: async (args: any): Promise<ToolExecutionResult> => {
+      const destination = String(args.destination || "").trim();
+      const country = args.country ? String(args.country).trim() : "";
+      const daysRaw = Number(args.days);
+      const days =
+        Number.isFinite(daysRaw) ? Math.max(1, Math.min(365, daysRaw)) : 60;
+
+      if (!destination) {
+        return {
+          messages: [
+            { role: "assistant", content: "Which destination should I check journeys for?" },
+          ],
+        };
+      }
+
+      const today = startOfDay(new Date());
+      const start = addDays(today, 1);
+      const end = addDays(start, days);
+
+      const q = country ? `${country} ${destination}` : destination;
+
+      const journeys = await fetchJourneysForRange(baseUrl, start, end, q);
+
+      if (!journeys.length) {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: `I can’t see any upcoming journeys to ${destination}${country ? ` (${country})` : ""} in the next ${days} days.`,
+            },
+          ],
+        };
+      }
+
+      const lines: string[] = [];
+      const choices: AgentChoice[] = [];
+      const JOURNEY_LINK_BASE = "/";
+
+      for (const j of journeys) {
+        const { date, time: timeFromStartsAt } = formatDateTimeLocal(j.starts_at);
+        const pickup = j.pickup_name || "Pickup";
+        const dest = j.destination_name || "Destination";
+
+        const preferredTime = await getPickupTimeForRouteName(j.route_name);
+        const time = preferredTime || timeFromStartsAt;
+
+        const label = `${date} ${time} — ${pickup} → ${dest}`;
+        lines.push(`• ${label}`);
+
+        const url = `${JOURNEY_LINK_BASE}?date=${encodeURIComponent(
+          date
+        )}&pickup=${encodeURIComponent(
+          pickup
+        )}&destination=${encodeURIComponent(dest)}`;
+
+        choices.push({
+          label,
+          action: {
+            type: "openJourney",
+            date,
+            time,
+            pickup,
+            destination: dest,
+            url,
+          },
+        });
+      }
+
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: `Here are the upcoming journeys I can see to **${destination}**:\n${lines.join("\n")}`,
+          },
+        ],
+        choices,
+      };
+    },
+  };
+
+  return [explainBookingFlow, listJourneysBetweenDates, listJourneysForDestination];
 }
