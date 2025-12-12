@@ -76,6 +76,10 @@ function unique(values: (string | null | undefined)[]): string[] {
   return out;
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Shared fetch helper                                                       */
+/* -------------------------------------------------------------------------- */
+
 async function fetchJSON<T>(url: string): Promise<T | null> {
   try {
     const res = await fetch(url, {
@@ -179,9 +183,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const inCountry = destinations.filter(
-        (d) => normaliseCountryName(d.country_name) === normQuery
-      );
+      const inCountry = destinations.filter((d) => normaliseCountryName(d.country_name) === normQuery);
 
       if (!inCountry.length) {
         return {
@@ -240,15 +242,11 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const inCountry = cat.routes.filter(
-        (r) => normaliseCountryName(r.country_name) === normQuery
-      );
+      const inCountry = cat.routes.filter((r) => normaliseCountryName(r.country_name) === normQuery);
 
       if (!inCountry.length) {
         return {
-          messages: [
-            { role: "assistant", content: `I couldn’t find any live routes in ${countryRaw} yet.` },
-          ],
+          messages: [{ role: "assistant", content: `I couldn’t find any live routes in ${countryRaw} yet.` }],
         };
       }
 
@@ -258,7 +256,10 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
       if (!pickups.length) {
         return {
           messages: [
-            { role: "assistant", content: `We don’t currently have any pickup locations listed in ${prettyCountry}.` },
+            {
+              role: "assistant",
+              content: `We don’t currently have any pickup locations listed in ${prettyCountry}.`,
+            },
           ],
         };
       }
@@ -306,15 +307,11 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      const inCountry = cat.routes.filter(
-        (r) => normaliseCountryName(r.country_name) === normQuery
-      );
+      const inCountry = cat.routes.filter((r) => normaliseCountryName(r.country_name) === normQuery);
 
       if (!inCountry.length) {
         return {
-          messages: [
-            { role: "assistant", content: `I couldn’t find any live routes in ${countryRaw} yet.` },
-          ],
+          messages: [{ role: "assistant", content: `I couldn’t find any live routes in ${countryRaw} yet.` }],
         };
       }
 
