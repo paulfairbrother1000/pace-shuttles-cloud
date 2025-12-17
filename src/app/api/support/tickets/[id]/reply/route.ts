@@ -19,15 +19,19 @@ function zammadHeaders() {
 }
 
 /**
- * Map Zammad state → user-facing status (Zammad Cloud)
- * - pending close = Resolved
- * - closed = Closed
- * - new/open = Open
+ * Zammad Cloud: the reliable state signal is state_id (ticket.state is often blank).
+ *
+ * Default Zammad state IDs:
+ *  1 = new
+ *  2 = open
+ *  3 = pending reminder
+ *  4 = pending close   <-- treat as Resolved
+ *  5 = closed          <-- Closed (terminal)
  */
-function mapUserStatus(zammadState: string): "open" | "resolved" | "closed" {
-  if (zammadState === "pending close") return "resolved";
-  if (zammadState === "closed") return "closed";
-  return "open"; // new, open, etc.
+function mapUserStatusByStateId(stateId: number): "open" | "resolved" | "closed" {
+  if (stateId === 4) return "resolved"; // pending close
+  if (stateId === 5) return "closed";
+  return "open"; // new/open/etc.
 }
 
 /**
@@ -93,8 +97,8 @@ export async function POST(
     const ticket = await ticketRes.json();
     await assertTicketOwnedByUser(ticket, user.email);
 
-    const ticketStateBefore = String(ticket?.state ?? "");
-    const mappedStatusBefore = mapUserStatus(ticketStateBefore);
+    const ticketStateIdBefore = Number(ticket?.state_id);
+    const mappedStatusBefore = mapUserStatusByStateId(ticketStateIdBefore);
 
     /**
      * 2) Enforce terminal Closed state
@@ -106,7 +110,7 @@ export async function POST(
           error: "TICKET_CLOSED",
           message:
             "This ticket is closed. Please create a new ticket if you need further assistance.",
-          ticketStateBefore,
+          ticketStateIdBefore,
           mappedStatusBefore,
         },
         { status: 409 }
@@ -135,7 +139,7 @@ export async function POST(
         {
           ok: false,
           error: await articleRes.text(),
-          ticketStateBefore,
+          ticketStateIdBefore,
           mappedStatusBefore,
         },
         { status: 502 }
@@ -149,7 +153,7 @@ export async function POST(
       const reopenRes = await fetch(`${ZAMMAD_BASE}/tickets/${ticketId}`, {
         method: "PUT",
         headers: zammadHeaders(),
-        body: JSON.stringify({ state: "open" }),
+        body: JSON.stringify({ state_id: 2 }), // ✅ open
       });
 
       if (!reopenRes.ok) {
@@ -159,30 +163,31 @@ export async function POST(
           attemptedReopen: true,
           warning:
             "Reply added, but failed to reopen ticket. Agent intervention may be required.",
-          ticketStateBefore,
+          ticketStateIdBefore,
           mappedStatusBefore,
-          ticketStateAfter: ticketStateBefore,
+          ticketStateIdAfter: ticketStateIdBefore,
+          mappedStatusAfter: mappedStatusBefore,
         });
       }
 
-      // Verify final state
-      let ticketStateAfter = "open";
+      // Verify final state_id
+      let ticketStateIdAfter = 2;
       const verifyRes = await fetch(`${ZAMMAD_BASE}/tickets/${ticketId}`, {
         headers: zammadHeaders(),
       });
       if (verifyRes.ok) {
         const verified = await verifyRes.json();
-        ticketStateAfter = String(verified?.state ?? ticketStateAfter);
+        ticketStateIdAfter = Number(verified?.state_id ?? ticketStateIdAfter);
       }
 
       return NextResponse.json({
         ok: true,
         reopened: true,
         attemptedReopen: true,
-        ticketStateBefore,
+        ticketStateIdBefore,
         mappedStatusBefore,
-        ticketStateAfter,
-        mappedStatusAfter: mapUserStatus(ticketStateAfter),
+        ticketStateIdAfter,
+        mappedStatusAfter: mapUserStatusByStateId(ticketStateIdAfter),
       });
     }
 
@@ -193,7 +198,7 @@ export async function POST(
       ok: true,
       reopened: false,
       attemptedReopen: false,
-      ticketStateBefore,
+      ticketStateIdBefore,
       mappedStatusBefore,
     });
   } catch (err: any) {
