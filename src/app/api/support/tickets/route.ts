@@ -1,117 +1,113 @@
+// src/app/api/support/tickets/route.ts
+
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/requireUser";
+import {
+  ZAMMAD_BASE,
+  zammadHeaders,
+  mapUserStatusByStateId,
+  getTicketCustomerEmail,
+} from "@/lib/zammad";
 
-const ZAMMAD_BASE = "https://pace-shuttles-helpdesk.zammad.com/api/v1";
-const GROUP_ID = 1;
+type UserTicketStatus = "open" | "resolved" | "closed";
 
-function zammadAuthHeader() {
-  const token = process.env.ZAMMAD_API_TOKEN;
-  if (!token) throw new Error("Missing ZAMMAD_API_TOKEN env var");
-  return { Authorization: `Token token=${token}` };
+function parseStatusFilter(url: URL): UserTicketStatus | "all" {
+  const s = (url.searchParams.get("status") ?? "all").toLowerCase();
+  if (s === "open" || s === "resolved" || s === "closed") return s;
+  return "all";
 }
 
-export async function POST(req: Request) {
+function toISO(dt: any): string | null {
+  if (!dt) return null;
   try {
-    const {
-      subject,
-      publicDescription,
-      aiSummary,
-      escalationReason,
-      tone,
-      category,
-      transcript,
-      user, // { email, firstname, lastname }
-    } = await req.json();
+    return new Date(dt).toISOString();
+  } catch {
+    return null;
+  }
+}
 
-    if (!user?.email) {
-      return NextResponse.json({ ok: false, error: "Missing user.email" }, { status: 400 });
-    }
-    if (!subject || !publicDescription) {
-      return NextResponse.json({ ok: false, error: "Missing subject/publicDescription" }, { status: 400 });
-    }
+export async function GET(req: Request) {
+  try {
+    const user = await requireUser();
+    const url = new URL(req.url);
+    const statusFilter = parseStatusFilter(url);
 
-    // 1) Create ticket (with your custom fields)
-    const createRes = await fetch(`${ZAMMAD_BASE}/tickets`, {
-      method: "POST",
-      headers: {
-        ...zammadAuthHeader(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        title: subject,
-        group_id: GROUP_ID,
-        customer: user.email,
-        article: {
-          subject,
-          body: publicDescription,
-          type: "note",
-          internal: false,
-        },
+    // Optional paging
+    const perPage = Math.min(
+      Math.max(Number(url.searchParams.get("per_page") ?? 25), 1),
+      50
+    );
+    const page = Math.max(Number(url.searchParams.get("page") ?? 1), 1);
 
-        // Custom fields you created:
-        ai_tone: tone ?? "neutral",
-        ai_category: category ?? "Information",
-        ai_escalation_reason: escalationReason ?? "",
-      }),
-    });
+    /**
+     * Zammad search is the best way to list tickets.
+     * We filter server-side to ensure ownership.
+     */
+    const searchQuery = `customer.email:"${user.email}"`;
+    const searchUrl =
+      `${ZAMMAD_BASE}/tickets/search?query=${encodeURIComponent(searchQuery)}` +
+      `&page=${page}&per_page=${perPage}&sort_by=updated_at&order_by=desc`;
 
-    const createText = await createRes.text();
-    if (!createRes.ok) {
+    const res = await fetch(searchUrl, { headers: zammadHeaders() });
+    if (!res.ok) {
       return NextResponse.json(
-        { ok: false, error: "Zammad ticket create failed", details: createText },
+        { ok: false, error: await res.text() },
         { status: 502 }
       );
     }
 
-    const ticket = JSON.parse(createText) as { id: number; number: string };
+    const rawTickets = await res.json();
+    const ticketsArr: any[] = Array.isArray(rawTickets)
+      ? rawTickets
+      : rawTickets?.tickets ?? [];
 
-    // 2) Add internal note (agent-only)
-    const internalBody = [
-      "=== AI ESCALATION REASON ===",
-      escalationReason || "(not provided)",
-      "",
-      "=== AI SUMMARY (<=5 paragraphs) ===",
-      aiSummary || "(not provided)",
-      "",
-      "=== FULL AI TRANSCRIPT ===",
-      transcript || "(not provided)",
-    ].join("\n");
-
-    const noteRes = await fetch(`${ZAMMAD_BASE}/ticket_articles`, {
-      method: "POST",
-      headers: {
-        ...zammadAuthHeader(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ticket_id: ticket.id,
-        subject: "AI Escalation Context (Internal)",
-        body: internalBody,
-        type: "note",
-        internal: true,
-      }),
-    });
-
-    // If internal note fails, we still return the ticket id (but flag it)
-    if (!noteRes.ok) {
-      const noteErr = await noteRes.text();
-      return NextResponse.json({
-        ok: true,
-        ticketId: ticket.id,
-        ticketNumber: ticket.number,
-        internalNoteOk: false,
-        internalNoteError: noteErr,
-      });
+    // Ownership hard-check (belt & braces)
+    const owned: any[] = [];
+    for (const t of ticketsArr) {
+      const email = await getTicketCustomerEmail(t);
+      if (email && email === user.email.toLowerCase()) owned.push(t);
     }
+
+    const shaped = owned
+      .map((t) => {
+        const stateId = Number(t?.state_id);
+        const userStatus = mapUserStatusByStateId(stateId);
+
+        return {
+          id: Number(t?.id),
+          number: String(t?.number ?? ""),
+          title: String(t?.title ?? ""),
+          status: userStatus,
+          // Use created_at/updated_at for UI
+          createdAt: toISO(t?.created_at),
+          updatedAt: toISO(t?.updated_at),
+          // Optional: show a short preview
+          // Zammad includes "note" sometimes; if not, leave null
+          description: t?.note ? String(t.note) : null,
+        };
+      })
+      .filter((t) => {
+        if (statusFilter === "all") return true;
+        return t.status === statusFilter;
+      });
 
     return NextResponse.json({
       ok: true,
-      ticketId: ticket.id,
-      ticketNumber: ticket.number,
-      internalNoteOk: true,
+      statusFilter,
+      page,
+      perPage,
+      tickets: shaped,
     });
   } catch (err: any) {
+    if (err?.message === "AUTH_REQUIRED") {
+      return NextResponse.json(
+        { ok: false, error: "AUTH_REQUIRED" },
+        { status: 401 }
+      );
+    }
+
     return NextResponse.json(
-      { ok: false, error: err?.message ?? "Unknown error" },
+      { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
       { status: 500 }
     );
   }
