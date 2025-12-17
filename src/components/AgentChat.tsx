@@ -1,7 +1,7 @@
 // src/components/AgentChat.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AgentMessage,
   AgentResponse,
@@ -395,9 +395,7 @@ export function AgentChat() {
 
       {/* Layout: chat always; tickets appear only when logged in */}
       <div
-        className={`grid gap-4 ${
-          isAuthed ? "lg:grid-cols-5" : "grid-cols-1"
-        }`}
+        className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}
       >
         {/* Chat panel (always) */}
         <div className={isAuthed ? "lg:col-span-3" : ""}>
@@ -418,19 +416,12 @@ export function AgentChat() {
                 </div>
               </div>
 
-              {!isAuthed && auth.status !== "loading" && (
-                <div className="hidden sm:flex items-center gap-2">
-                  <div className="text-xs text-slate-500">
-                    Sign in to unlock ticket tracking & human support
-                  </div>
-                  <a
-                    href="/account"
-                    className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-                  >
-                    Sign in
-                  </a>
+              {/* No sign-in buttons here (header already has Login) */}
+              {!isAuthed && auth.status !== "loading" ? (
+                <div className="hidden sm:block text-xs text-slate-500">
+                  Sign in to unlock ticket tracking & human support.
                 </div>
-              )}
+              ) : null}
             </div>
 
             {/* Messages */}
@@ -509,25 +500,7 @@ export function AgentChat() {
             </form>
           </div>
 
-          {!isAuthed && auth.status !== "loading" && (
-            <div className="mt-3 rounded-2xl bg-slate-50 ring-1 ring-slate-200 p-4">
-              <div className="text-sm font-semibold text-slate-900">
-                Want a human to take over?
-              </div>
-              <div className="text-sm text-slate-600 mt-1">
-                Sign in and you’ll be able to raise a ticket, track updates, and
-                reply to support.
-              </div>
-              <div className="mt-3">
-                <a
-                  href="/account"
-                  className="inline-flex items-center justify-center rounded-xl bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700"
-                >
-                  Sign in to enable support
-                </a>
-              </div>
-            </div>
-          )}
+          {/* No “Sign in to enable support” panel — login already in global header */}
         </div>
 
         {/* Tickets panel (only when logged in) */}
