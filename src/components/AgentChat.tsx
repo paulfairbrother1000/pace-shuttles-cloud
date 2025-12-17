@@ -11,7 +11,6 @@ import { createBrowserClient } from "@supabase/ssr";
 
 /* -------------------------------------------------------------------------- */
 /*  Supabase auth (client-side) — MUST match the rest of the app              */
-/*  Your app uses @supabase/ssr createBrowserClient (cookie-based session).   */
 /* -------------------------------------------------------------------------- */
 
 const sb =
@@ -60,7 +59,7 @@ type TicketDetail = {
 };
 
 function fmtDateTime(iso: string | null) {
-  if (!iso) return "";
+  if (!iso) return "—";
   try {
     return new Date(iso).toLocaleString();
   } catch {
@@ -197,7 +196,6 @@ export function AgentChat() {
 
   useEffect(() => {
     if (!sb) {
-      // If env isn't available in this build, treat as anon (chat still works)
       setAuth({ status: "anon" });
       return;
     }
@@ -205,7 +203,6 @@ export function AgentChat() {
     let mounted = true;
 
     (async () => {
-      // MATCH your /account pattern: getSession() from createBrowserClient
       const { data } = await sb.auth.getSession();
       const email = data.session?.user?.email ?? null;
       if (!mounted) return;
@@ -228,14 +225,7 @@ export function AgentChat() {
 
   const isAuthed = auth.status === "authed";
 
-  /* ------------------------------ Support UI ------------------------------ */
-  const [mode, setMode] = useState<"chat" | "support">("chat");
-
-  // Only allow support mode if authed
-  useEffect(() => {
-    if (!isAuthed && mode === "support") setMode("chat");
-  }, [isAuthed, mode]);
-
+  /* ------------------------------ Tickets UI ------------------------------ */
   const [ticketStatusFilter, setTicketStatusFilter] =
     useState<TicketStatus>("open");
   const [tickets, setTickets] = useState<TicketRow[]>([]);
@@ -261,9 +251,18 @@ export function AgentChat() {
       const data = await res.json();
       if (!res.ok || !data?.ok)
         throw new Error(data?.error ?? "Failed to load tickets");
-      setTickets(data.tickets ?? []);
-      if ((data.tickets ?? []).length > 0 && !selectedTicketId) {
-        setSelectedTicketId(data.tickets[0].id);
+
+      const rows: TicketRow[] = data.tickets ?? [];
+      setTickets(rows);
+
+      // Default selection if none
+      if (rows.length > 0 && !selectedTicketId) {
+        setSelectedTicketId(rows[0].id);
+      }
+      // If current selection is not in filtered list, clear it
+      if (selectedTicketId && !rows.some((r) => r.id === selectedTicketId)) {
+        setSelectedTicketId(rows[0]?.id ?? null);
+        setTicketDetail(null);
       }
     } catch (e: any) {
       setTicketsError(e?.message ?? "Failed to load tickets");
@@ -291,20 +290,40 @@ export function AgentChat() {
     }
   }
 
+  // When user signs in/out, reset ticket UI
   useEffect(() => {
-    if (!isAuthed) return;
-    if (mode !== "support") return;
+    if (!isAuthed) {
+      setTickets([]);
+      setTicketsError(null);
+      setTicketsLoading(false);
+      setSelectedTicketId(null);
+      setTicketDetail(null);
+      setDetailError(null);
+      setReplyMsg("");
+      setReplyError(null);
+      setReplySending(false);
+      return;
+    }
+
+    // On sign-in, load tickets
     loadTickets(ticketStatusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed, mode, ticketStatusFilter]);
+  }, [isAuthed]);
 
+  // When filter changes, load tickets (only if authed)
   useEffect(() => {
     if (!isAuthed) return;
-    if (mode !== "support") return;
+    loadTickets(ticketStatusFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, ticketStatusFilter]);
+
+  // When a ticket is selected, load detail
+  useEffect(() => {
+    if (!isAuthed) return;
     if (!selectedTicketId) return;
     loadTicketDetail(selectedTicketId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed, mode, selectedTicketId]);
+  }, [isAuthed, selectedTicketId]);
 
   async function sendReply() {
     if (!selectedTicketId) return;
@@ -313,6 +332,7 @@ export function AgentChat() {
 
     setReplySending(true);
     setReplyError(null);
+
     try {
       const res = await fetch(`/api/support/tickets/${selectedTicketId}/reply`, {
         method: "POST",
@@ -321,6 +341,7 @@ export function AgentChat() {
         body: JSON.stringify({ message: msg }),
       });
       const data = await res.json();
+
       if (!res.ok || !data?.ok) {
         throw new Error(data?.message ?? data?.error ?? "Failed to send reply");
       }
@@ -335,25 +356,16 @@ export function AgentChat() {
     }
   }
 
-  const supportAvailable = useMemo(
-    () => auth.status !== "loading" && isAuthed,
-    [auth, isAuthed]
-  );
-
   /* --------------------------------- Render -------------------------------- */
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4">
-      {/* Top bar */}
+      {/* Page header */}
       <div className="mt-6 mb-4 flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">
-            {mode === "support" ? "Support" : "Chat"}
-          </h2>
+          <h2 className="text-xl font-semibold tracking-tight">Chat</h2>
           <p className="text-sm text-slate-600">
-            {mode === "support"
-              ? "View your tickets and message a support agent."
-              : "Instant help from the Pace Shuttles assistant."}
+            Instant help from the Pace Shuttles assistant.
           </p>
         </div>
 
@@ -381,55 +393,14 @@ export function AgentChat() {
         </div>
       </div>
 
-      {/* Mode switch (only show Support if logged in) */}
-      <div className="mb-4 flex items-center gap-2">
-        <button
-          onClick={() => setMode("chat")}
-          className={`px-3 py-2 text-sm rounded-lg ring-1 ${
-            mode === "chat"
-              ? "bg-slate-900 text-white ring-slate-900"
-              : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-          }`}
-        >
-          Chat
-        </button>
-
-        <button
-          onClick={() => supportAvailable && setMode("support")}
-          disabled={!supportAvailable}
-          className={`px-3 py-2 text-sm rounded-lg ring-1 ${
-            mode === "support"
-              ? "bg-slate-900 text-white ring-slate-900"
-              : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-          } disabled:opacity-50 disabled:hover:bg-white`}
-          title={!supportAvailable ? "Sign in to access support tickets." : ""}
-        >
-          Support
-        </button>
-
-        {!supportAvailable && auth.status !== "loading" && (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-slate-600">
-              Need a human? Sign in to raise and track tickets.
-            </span>
-            <a
-              href="/account"
-              className="px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-            >
-              Sign in
-            </a>
-          </div>
-        )}
-      </div>
-
-      {/* Layout */}
+      {/* Layout: chat always; tickets appear only when logged in */}
       <div
         className={`grid gap-4 ${
-          mode === "support" && supportAvailable ? "lg:grid-cols-5" : "grid-cols-1"
+          isAuthed ? "lg:grid-cols-5" : "grid-cols-1"
         }`}
       >
-        {/* Chat panel */}
-        <div className={mode === "support" && supportAvailable ? "lg:col-span-3" : ""}>
+        {/* Chat panel (always) */}
+        <div className={isAuthed ? "lg:col-span-3" : ""}>
           <div className="rounded-2xl ring-1 ring-slate-200 bg-white shadow-sm">
             {/* Chat header */}
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -438,16 +409,26 @@ export function AgentChat() {
                   PS
                 </span>
                 <div>
-                  <div className="text-sm font-semibold">Pace Shuttles Assistant</div>
+                  <div className="text-sm font-semibold">
+                    Pace Shuttles Assistant
+                  </div>
                   <div className="text-xs text-slate-500">
-                    {pending ? "Thinking…" : "Online"}
+                    {pending ? "Thinking…" : isAuthed ? "Connected" : "Online"}
                   </div>
                 </div>
               </div>
 
-              {!supportAvailable && auth.status !== "loading" && (
-                <div className="hidden sm:block text-xs text-slate-500">
-                  Sign in to unlock tickets & human support
+              {!isAuthed && auth.status !== "loading" && (
+                <div className="hidden sm:flex items-center gap-2">
+                  <div className="text-xs text-slate-500">
+                    Sign in to unlock ticket tracking & human support
+                  </div>
+                  <a
+                    href="/account"
+                    className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    Sign in
+                  </a>
                 </div>
               )}
             </div>
@@ -457,7 +438,9 @@ export function AgentChat() {
               {messages.map((m, i) => (
                 <div
                   key={i}
-                  className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}
+                  className={`flex ${
+                    m.role === "assistant" ? "justify-start" : "justify-end"
+                  }`}
                 >
                   <div
                     className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
@@ -484,7 +467,7 @@ export function AgentChat() {
                   {lastChoices.map((choice, i) => (
                     <button
                       key={i}
-                      className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm"
+                      className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm disabled:opacity-60"
                       onClick={() => handleChoice(choice)}
                       disabled={pending}
                     >
@@ -526,13 +509,14 @@ export function AgentChat() {
             </form>
           </div>
 
-          {!supportAvailable && auth.status !== "loading" && (
+          {!isAuthed && auth.status !== "loading" && (
             <div className="mt-3 rounded-2xl bg-slate-50 ring-1 ring-slate-200 p-4">
               <div className="text-sm font-semibold text-slate-900">
                 Want a human to take over?
               </div>
               <div className="text-sm text-slate-600 mt-1">
-                Sign in and you’ll be able to raise a ticket, track updates, and reply to support.
+                Sign in and you’ll be able to raise a ticket, track updates, and
+                reply to support.
               </div>
               <div className="mt-3">
                 <a
@@ -546,15 +530,17 @@ export function AgentChat() {
           )}
         </div>
 
-        {/* Support panel (only when logged in) */}
-        {mode === "support" && supportAvailable && (
+        {/* Tickets panel (only when logged in) */}
+        {isAuthed && (
           <div className="lg:col-span-2">
             <div className="rounded-2xl ring-1 ring-slate-200 bg-white shadow-sm overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-100">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Your tickets</div>
-                    <div className="text-xs text-slate-500">Open ↔ Resolved ↔ Closed</div>
+                    <div className="text-xs text-slate-500">
+                      Open ↔ Resolved ↔ Closed
+                    </div>
                   </div>
 
                   <button
@@ -568,29 +554,34 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => {
-                        setSelectedTicketId(null);
-                        setTicketDetail(null);
-                        setTicketStatusFilter(s);
-                      }}
-                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                        ticketStatusFilter === s
-                          ? "bg-slate-900 text-white ring-slate-900"
-                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                      }`}
-                    >
-                      {humanStatus(s)}
-                    </button>
-                  ))}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
+                    (s) => (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          setTicketDetail(null);
+                          setSelectedTicketId(null);
+                          setTicketStatusFilter(s);
+                        }}
+                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                          ticketStatusFilter === s
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        {humanStatus(s)}
+                      </button>
+                    )
+                  )}
                 </div>
               </div>
 
+              {/* Ticket list */}
               <div className="max-h-[28vh] overflow-y-auto border-b border-slate-100">
                 {ticketsLoading ? (
-                  <div className="p-4 text-sm text-slate-600">Loading tickets…</div>
+                  <div className="p-4 text-sm text-slate-600">
+                    Loading tickets…
+                  </div>
                 ) : ticketsError ? (
                   <div className="p-4 text-sm text-red-600">{ticketsError}</div>
                 ) : tickets.length === 0 ? (
@@ -599,7 +590,8 @@ export function AgentChat() {
                       No {humanStatus(ticketStatusFilter)} tickets
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
-                      When you raise tickets, they’ll appear here with updates from the support team.
+                      When tickets are raised (by you or the assistant), they’ll
+                      appear here with updates from the support team.
                     </div>
                   </div>
                 ) : (
@@ -635,17 +627,22 @@ export function AgentChat() {
                 )}
               </div>
 
+              {/* Ticket detail */}
               <div className="p-4">
                 {!selectedTicketId ? (
                   <div className="text-sm text-slate-600">
                     Select a ticket to view the conversation.
                   </div>
                 ) : detailLoading ? (
-                  <div className="text-sm text-slate-600">Loading conversation…</div>
+                  <div className="text-sm text-slate-600">
+                    Loading conversation…
+                  </div>
                 ) : detailError ? (
                   <div className="text-sm text-red-600">{detailError}</div>
                 ) : !ticketDetail ? (
-                  <div className="text-sm text-slate-600">Ticket not available.</div>
+                  <div className="text-sm text-slate-600">
+                    Ticket not available.
+                  </div>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
@@ -700,7 +697,9 @@ export function AgentChat() {
 
                     <div className="mt-3">
                       {replyError && (
-                        <div className="text-sm text-red-600 mb-2">{replyError}</div>
+                        <div className="text-sm text-red-600 mb-2">
+                          {replyError}
+                        </div>
                       )}
 
                       <div className="flex gap-2">
@@ -736,6 +735,12 @@ export function AgentChat() {
                           Replying will reopen this ticket (Resolved → Open).
                         </div>
                       )}
+                      {ticketDetail.ticket.status === "closed" && (
+                        <div className="mt-2 text-xs text-slate-500">
+                          Closed tickets can’t be reopened. Please raise a new
+                          ticket.
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
@@ -743,7 +748,8 @@ export function AgentChat() {
             </div>
 
             <div className="mt-3 text-xs text-slate-500">
-              Tip: “Resolved” tickets automatically reopen if you reply. “Closed” tickets are final — you’ll need to raise a new one.
+              “Resolved” tickets reopen automatically when you reply. “Closed”
+              tickets are final.
             </div>
           </div>
         )}
