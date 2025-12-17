@@ -7,18 +7,22 @@ import type {
   AgentResponse,
   AgentChoice,
 } from "@/lib/agent/agent-schema";
-import { createClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 
 /* -------------------------------------------------------------------------- */
-/*  Supabase auth (client-side)                                               */
+/*  Supabase auth (client-side) — MUST match the rest of the app              */
+/*  Your app uses @supabase/ssr createBrowserClient (cookie-based session).   */
 /* -------------------------------------------------------------------------- */
 
-function getSupabaseClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  if (!url || !anon) return null;
-  return createClient(url, anon);
-}
+const sb =
+  typeof window !== "undefined" &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ? createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+    : null;
 
 type AuthState =
   | { status: "loading" }
@@ -140,7 +144,10 @@ export function AgentChat() {
       console.error("Agent failed:", err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Oops — something went wrong. Can you try again?" },
+        {
+          role: "assistant",
+          content: "Oops — something went wrong. Can you try again?",
+        },
       ]);
     } finally {
       setPending(false);
@@ -163,7 +170,10 @@ export function AgentChat() {
       const newMessages: AgentMessage[] = [
         ...messages,
         { role: "user", content: choice.label, payload: choice.action },
-        { role: "assistant", content: "Opening that journey in the schedule view for you…" },
+        {
+          role: "assistant",
+          content: "Opening that journey in the schedule view for you…",
+        },
       ];
       setMessages(newMessages);
 
@@ -186,7 +196,6 @@ export function AgentChat() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
 
   useEffect(() => {
-    const sb = getSupabaseClient();
     if (!sb) {
       // If env isn't available in this build, treat as anon (chat still works)
       setAuth({ status: "anon" });
@@ -196,6 +205,7 @@ export function AgentChat() {
     let mounted = true;
 
     (async () => {
+      // MATCH your /account pattern: getSession() from createBrowserClient
       const { data } = await sb.auth.getSession();
       const email = data.session?.user?.email ?? null;
       if (!mounted) return;
@@ -226,9 +236,8 @@ export function AgentChat() {
     if (!isAuthed && mode === "support") setMode("chat");
   }, [isAuthed, mode]);
 
-  const [ticketStatusFilter, setTicketStatusFilter] = useState<
-    "open" | "resolved" | "closed"
-  >("open");
+  const [ticketStatusFilter, setTicketStatusFilter] =
+    useState<TicketStatus>("open");
   const [tickets, setTickets] = useState<TicketRow[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState<string | null>(null);
@@ -246,11 +255,13 @@ export function AgentChat() {
     setTicketsLoading(true);
     setTicketsError(null);
     try {
-      const res = await fetch(`/api/support/tickets?status=${status}`);
+      const res = await fetch(`/api/support/tickets?status=${status}`, {
+        credentials: "include",
+      });
       const data = await res.json();
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "Failed to load tickets");
+      if (!res.ok || !data?.ok)
+        throw new Error(data?.error ?? "Failed to load tickets");
       setTickets(data.tickets ?? []);
-      // Auto-select first ticket (nice UX)
       if ((data.tickets ?? []).length > 0 && !selectedTicketId) {
         setSelectedTicketId(data.tickets[0].id);
       }
@@ -265,9 +276,12 @@ export function AgentChat() {
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const res = await fetch(`/api/support/tickets/${id}`);
+      const res = await fetch(`/api/support/tickets/${id}`, {
+        credentials: "include",
+      });
       const data = await res.json();
-      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "Failed to load ticket");
+      if (!res.ok || !data?.ok)
+        throw new Error(data?.error ?? "Failed to load ticket");
       setTicketDetail({ ticket: data.ticket, thread: data.thread ?? [] });
     } catch (e: any) {
       setTicketDetail(null);
@@ -277,7 +291,6 @@ export function AgentChat() {
     }
   }
 
-  // Load tickets when support mode becomes active (and when filter changes)
   useEffect(() => {
     if (!isAuthed) return;
     if (mode !== "support") return;
@@ -285,7 +298,6 @@ export function AgentChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, mode, ticketStatusFilter]);
 
-  // Load ticket detail when selection changes
   useEffect(() => {
     if (!isAuthed) return;
     if (mode !== "support") return;
@@ -305,6 +317,7 @@ export function AgentChat() {
       const res = await fetch(`/api/support/tickets/${selectedTicketId}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ message: msg }),
       });
       const data = await res.json();
@@ -313,7 +326,6 @@ export function AgentChat() {
       }
 
       setReplyMsg("");
-      // Refresh detail and list (status may have changed)
       await loadTicketDetail(selectedTicketId);
       await loadTickets(ticketStatusFilter);
     } catch (e: any) {
@@ -323,7 +335,10 @@ export function AgentChat() {
     }
   }
 
-  const supportAvailable = useMemo(() => auth.status !== "loading" && isAuthed, [auth, isAuthed]);
+  const supportAvailable = useMemo(
+    () => auth.status !== "loading" && isAuthed,
+    [auth, isAuthed]
+  );
 
   /* --------------------------------- Render -------------------------------- */
 
@@ -430,7 +445,6 @@ export function AgentChat() {
                 </div>
               </div>
 
-              {/* Small hint shown only when not logged in */}
               {!supportAvailable && auth.status !== "loading" && (
                 <div className="hidden sm:block text-xs text-slate-500">
                   Sign in to unlock tickets & human support
@@ -465,7 +479,6 @@ export function AgentChat() {
                 </div>
               )}
 
-              {/* Structured Button Choices */}
               {lastChoices.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-1">
                   {lastChoices.map((choice, i) => (
@@ -513,7 +526,6 @@ export function AgentChat() {
             </form>
           </div>
 
-          {/* Logged-out friendly hint (below chat) */}
           {!supportAvailable && auth.status !== "loading" && (
             <div className="mt-3 rounded-2xl bg-slate-50 ring-1 ring-slate-200 p-4">
               <div className="text-sm font-semibold text-slate-900">
@@ -542,12 +554,9 @@ export function AgentChat() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Your tickets</div>
-                    <div className="text-xs text-slate-500">
-                      Open ↔ Resolved ↔ Closed
-                    </div>
+                    <div className="text-xs text-slate-500">Open ↔ Resolved ↔ Closed</div>
                   </div>
 
-                  {/* New ticket coming next (API not yet built) */}
                   <button
                     type="button"
                     disabled
@@ -558,7 +567,6 @@ export function AgentChat() {
                   </button>
                 </div>
 
-                {/* Filters */}
                 <div className="mt-3 flex gap-2">
                   {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
                     <button
@@ -580,7 +588,6 @@ export function AgentChat() {
                 </div>
               </div>
 
-              {/* Ticket list */}
               <div className="max-h-[28vh] overflow-y-auto border-b border-slate-100">
                 {ticketsLoading ? (
                   <div className="p-4 text-sm text-slate-600">Loading tickets…</div>
@@ -628,7 +635,6 @@ export function AgentChat() {
                 )}
               </div>
 
-              {/* Ticket detail */}
               <div className="p-4">
                 {!selectedTicketId ? (
                   <div className="text-sm text-slate-600">
@@ -639,9 +645,7 @@ export function AgentChat() {
                 ) : detailError ? (
                   <div className="text-sm text-red-600">{detailError}</div>
                 ) : !ticketDetail ? (
-                  <div className="text-sm text-slate-600">
-                    Ticket not available.
-                  </div>
+                  <div className="text-sm text-slate-600">Ticket not available.</div>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
@@ -694,7 +698,6 @@ export function AgentChat() {
                       )}
                     </div>
 
-                    {/* Reply box */}
                     <div className="mt-3">
                       {replyError && (
                         <div className="text-sm text-red-600 mb-2">{replyError}</div>
@@ -709,7 +712,9 @@ export function AgentChat() {
                               ? "This ticket is closed. Create a new ticket for further help."
                               : "Reply to support…"
                           }
-                          disabled={replySending || ticketDetail.ticket.status === "closed"}
+                          disabled={
+                            replySending || ticketDetail.ticket.status === "closed"
+                          }
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
                         <button
