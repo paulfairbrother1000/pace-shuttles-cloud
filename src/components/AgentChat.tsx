@@ -86,10 +86,6 @@ function humanStatus(status: TicketStatus) {
   return "Closed";
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Component                                                                 */
-/* -------------------------------------------------------------------------- */
-
 export function AgentChat() {
   /* ------------------------------ Chat state ------------------------------ */
   const [messages, setMessages] = useState<AgentMessage[]>([
@@ -241,6 +237,15 @@ export function AgentChat() {
   const [replySending, setReplySending] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
 
+  // New ticket modal state
+  const [newOpen, setNewOpen] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newMessage, setNewMessage] = useState("");
+  const [newRef, setNewRef] = useState("");
+  const [newOutcome, setNewOutcome] = useState("");
+  const [newErr, setNewErr] = useState<string | null>(null);
+  const [newBusy, setNewBusy] = useState(false);
+
   async function loadTickets(status: TicketStatus) {
     setTicketsLoading(true);
     setTicketsError(null);
@@ -255,11 +260,9 @@ export function AgentChat() {
       const rows: TicketRow[] = data.tickets ?? [];
       setTickets(rows);
 
-      // Default selection if none
       if (rows.length > 0 && !selectedTicketId) {
         setSelectedTicketId(rows[0].id);
       }
-      // If current selection is not in filtered list, clear it
       if (selectedTicketId && !rows.some((r) => r.id === selectedTicketId)) {
         setSelectedTicketId(rows[0]?.id ?? null);
         setTicketDetail(null);
@@ -290,7 +293,6 @@ export function AgentChat() {
     }
   }
 
-  // When user signs in/out, reset ticket UI
   useEffect(() => {
     if (!isAuthed) {
       setTickets([]);
@@ -302,22 +304,19 @@ export function AgentChat() {
       setReplyMsg("");
       setReplyError(null);
       setReplySending(false);
+      setNewOpen(false);
       return;
     }
-
-    // On sign-in, load tickets
     loadTickets(ticketStatusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  // When filter changes, load tickets (only if authed)
   useEffect(() => {
     if (!isAuthed) return;
     loadTickets(ticketStatusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, ticketStatusFilter]);
 
-  // When a ticket is selected, load detail
   useEffect(() => {
     if (!isAuthed) return;
     if (!selectedTicketId) return;
@@ -356,7 +355,56 @@ export function AgentChat() {
     }
   }
 
-  /* --------------------------------- Render -------------------------------- */
+  async function createNewTicket() {
+    setNewErr(null);
+    const body = newMessage.trim();
+    if (!body) {
+      setNewErr("Please describe what you need help with.");
+      return;
+    }
+
+    setNewBusy(true);
+    try {
+      const res = await fetch(`/api/support/tickets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: newTitle.trim() ? newTitle.trim() : null,
+          message: body,
+          reference: newRef.trim() ? newRef.trim() : null,
+          desiredOutcome: newOutcome.trim() ? newOutcome.trim() : null,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "Failed to create ticket");
+      }
+
+      // Reset modal
+      setNewOpen(false);
+      setNewTitle("");
+      setNewMessage("");
+      setNewRef("");
+      setNewOutcome("");
+
+      // Switch to Open tickets and refresh
+      setTicketStatusFilter("open");
+      await loadTickets("open");
+
+      // Select created ticket
+      const createdId = data.ticket?.id as number | undefined;
+      if (createdId) {
+        setSelectedTicketId(createdId);
+        await loadTicketDetail(createdId);
+      }
+    } catch (e: any) {
+      setNewErr(e?.message ?? "Failed to create ticket");
+    } finally {
+      setNewBusy(false);
+    }
+  }
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4">
@@ -393,7 +441,7 @@ export function AgentChat() {
         </div>
       </div>
 
-      {/* Layout: chat always; tickets appear only when logged in */}
+      {/* Layout */}
       <div
         className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}
       >
@@ -416,7 +464,6 @@ export function AgentChat() {
                 </div>
               </div>
 
-              {/* No sign-in buttons here (header already has Login) */}
               {!isAuthed && auth.status !== "loading" ? (
                 <div className="hidden sm:block text-xs text-slate-500">
                   Sign in to unlock ticket tracking & human support.
@@ -499,8 +546,6 @@ export function AgentChat() {
               </button>
             </form>
           </div>
-
-          {/* No “Sign in to enable support” panel — login already in global header */}
         </div>
 
         {/* Tickets panel (only when logged in) */}
@@ -518,9 +563,11 @@ export function AgentChat() {
 
                   <button
                     type="button"
-                    disabled
-                    className="text-xs rounded-lg px-3 py-2 bg-slate-100 text-slate-400 ring-1 ring-slate-200 cursor-not-allowed"
-                    title="Next step: add /api/support/tickets (POST) for new tickets."
+                    onClick={() => {
+                      setNewErr(null);
+                      setNewOpen(true);
+                    }}
+                    className="text-xs rounded-lg px-3 py-2 bg-slate-900 text-white ring-1 ring-slate-900 hover:bg-slate-800"
                   >
                     + New ticket
                   </button>
@@ -563,8 +610,8 @@ export function AgentChat() {
                       No {humanStatus(ticketStatusFilter)} tickets
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
-                      When tickets are raised (by you or the assistant), they’ll
-                      appear here with updates from the support team.
+                      When tickets are raised, they’ll appear here with support
+                      updates.
                     </div>
                   </div>
                 ) : (
@@ -727,6 +774,121 @@ export function AgentChat() {
           </div>
         )}
       </div>
+
+      {/* New Ticket Modal (logged-in only) */}
+      {isAuthed && newOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => (newBusy ? null : setNewOpen(false))}
+          />
+          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  Create a new ticket
+                </div>
+                <div className="text-xs text-slate-500">
+                  Tell us what happened — we’ll route it to the right support team.
+                </div>
+              </div>
+              <button
+                onClick={() => (newBusy ? null : setNewOpen(false))}
+                className="text-slate-500 hover:text-slate-900 text-sm"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              {newErr && (
+                <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
+                  {newErr}
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  Short title (optional)
+                </label>
+                <input
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g. Payment failed on checkout"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={newBusy}
+                />
+                <div className="mt-1 text-xs text-slate-500">
+                  If you leave this blank, we’ll create a helpful title automatically.
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  What do you need help with? *
+                </label>
+                <textarea
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  placeholder="Describe the issue or question. Include what you tried and what happened."
+                  className="mt-1 w-full min-h-[120px] rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={newBusy}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-700">
+                    Reference (optional)
+                  </label>
+                  <input
+                    value={newRef}
+                    onChange={(e) => setNewRef(e.target.value)}
+                    placeholder="Booking #, journey, route…"
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={newBusy}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-700">
+                    Desired outcome (optional)
+                  </label>
+                  <input
+                    value={newOutcome}
+                    onChange={(e) => setNewOutcome(e.target.value)}
+                    placeholder="What would ‘fixed’ look like?"
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={newBusy}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <button
+                onClick={() => (newBusy ? null : setNewOpen(false))}
+                className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50"
+                disabled={newBusy}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createNewTicket}
+                className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={newBusy}
+              >
+                {newBusy ? "Creating…" : "Create ticket"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
