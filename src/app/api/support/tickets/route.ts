@@ -29,6 +29,7 @@ function mapUserStatus(zammadState: string): UserTicketStatus {
 
 /**
  * Map user-facing status -> Zammad states to query
+ * (Not currently used; you can keep or remove later)
  */
 function mapQueryStates(status: UserTicketStatus): string[] {
   if (status === "resolved") return ["pending close"];
@@ -162,6 +163,33 @@ async function safeJson(res: Response) {
   }
 }
 
+/**
+ * Utility: fetch Zammad ticket states and build a lookup.
+ * This is the key fix for correct filtering (list tickets often has state_id, not state name).
+ */
+type ZammadTicketStateRow = {
+  id: number;
+  state_type_id: number;
+  name: string;
+  next_state_id: number | null;
+  active: boolean;
+};
+
+async function getTicketStateLookup(): Promise<Map<number, ZammadTicketStateRow>> {
+  const res = await fetch(`${ZAMMAD_BASE}/ticket_states`, { headers: zammadHeaders() });
+  if (!res.ok) {
+    // If this fails we can still limp along with t.state when present,
+    // but the filters may be wrong again — so fail loudly.
+    throw new Error("ZAMMAD_TICKET_STATES_FETCH_FAILED");
+  }
+  const rows = (await res.json()) as ZammadTicketStateRow[];
+  const map = new Map<number, ZammadTicketStateRow>();
+  for (const r of rows || []) {
+    map.set(Number(r.id), r);
+  }
+  return map;
+}
+
 /* ============================================================
    GET /api/support/tickets?status=open|resolved|closed
    ============================================================ */
@@ -193,10 +221,13 @@ export async function GET(req: Request) {
     );
 
     if (!zUser?.id) {
-      return NextResponse.json({ ok: true, tickets: [] });
+      return NextResponse.json({ ok: true, tickets: [], status: statusParam });
     }
 
-    // 2. Fetch ALL tickets for that customer
+    // 2. Fetch ticket_states lookup (id -> name)
+    const stateLookup = await getTicketStateLookup();
+
+    // 3. Fetch ALL tickets for that customer
     const ticketsRes = await fetch(
       `${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`,
       { headers: zammadHeaders() }
@@ -210,20 +241,26 @@ export async function GET(req: Request) {
 
     const tickets = (await ticketsRes.json()) as any[];
 
-    // 3. Map + filter safely
+    // 4. Map + filter safely (use state_id -> ticket_states.name)
     const mapped = tickets.map((t) => {
-      const userStatus =
-        t.state === "pending close"
-          ? "resolved"
-          : t.state === "closed"
-          ? "closed"
-          : "open";
+      const stateId: number | null =
+        t.state_id != null && !Number.isNaN(Number(t.state_id))
+          ? Number(t.state_id)
+          : null;
+
+      // Prefer lookup by state_id, fall back to t.state if present.
+      const zammadStateName: string =
+        (stateId != null ? stateLookup.get(stateId)?.name : null) ||
+        (typeof t.state === "string" ? t.state : "") ||
+        "open";
+
+      const userStatus = mapUserStatus(zammadStateName);
 
       return {
         id: t.id,
         number: t.number,
         title: t.title,
-        state: t.state,
+        state: zammadStateName, // normalized name for UI
         userStatus,
         createdAt: t.created_at,
         updatedAt: t.updated_at,
@@ -301,7 +338,8 @@ export async function POST(req: Request) {
 
         // This route is “user created ticket”, not chat escalation:
         // keep blank or set something lightweight; you can add later.
-        ai_escalation_reason: body?.ai_escalation_reason ?? "User created ticket from Support page.",
+        ai_escalation_reason:
+          body?.ai_escalation_reason ?? "User created ticket from Support page.",
       }),
     });
 
