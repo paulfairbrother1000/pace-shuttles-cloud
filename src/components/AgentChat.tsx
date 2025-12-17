@@ -86,6 +86,23 @@ function humanStatus(status: TicketStatus) {
   return "Closed";
 }
 
+function makeTranscript(msgs: AgentMessage[]) {
+  const lines: string[] = [];
+  for (const m of msgs || []) {
+    const who =
+      m.role === "user"
+        ? "Customer"
+        : m.role === "assistant"
+        ? "Pace Shuttles Assistant"
+        : String(m.role || "Unknown");
+
+    const text = String(m.content || "").trim();
+    if (!text) continue;
+    lines.push(`${who}:\n${text}\n`);
+  }
+  return lines.join("\n");
+}
+
 export function AgentChat() {
   /* ------------------------------ Chat state ------------------------------ */
   const [messages, setMessages] = useState<AgentMessage[]>([
@@ -246,6 +263,12 @@ export function AgentChat() {
   const [newErr, setNewErr] = useState<string | null>(null);
   const [newBusy, setNewBusy] = useState(false);
 
+  // Escalate-from-chat modal state
+  const [escOpen, setEscOpen] = useState(false);
+  const [escUserNote, setEscUserNote] = useState("");
+  const [escBusy, setEscBusy] = useState(false);
+  const [escErr, setEscErr] = useState<string | null>(null);
+
   async function loadTickets(status: TicketStatus) {
     setTicketsLoading(true);
     setTicketsError(null);
@@ -305,6 +328,12 @@ export function AgentChat() {
       setReplyError(null);
       setReplySending(false);
       setNewOpen(false);
+
+      // Escalation UI reset
+      setEscOpen(false);
+      setEscUserNote("");
+      setEscErr(null);
+      setEscBusy(false);
       return;
     }
     loadTickets(ticketStatusFilter);
@@ -406,6 +435,71 @@ export function AgentChat() {
     }
   }
 
+  async function escalateFromChat() {
+    if (!isAuthed) return;
+
+    setEscErr(null);
+    setEscBusy(true);
+
+    try {
+      const transcript = makeTranscript(messages);
+
+      // A short, deterministic failure reason for now.
+      // Later: you can pass richer details from /api/agent (signals, counters, tool errors).
+      const aiFailureReason =
+        "User requested escalation from the chat experience. AI may not have fully resolved the query within the chat flow.";
+
+      const res = await fetch("/api/support/escalate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: null,
+          messages,
+          userNote: escUserNote.trim() ? escUserNote.trim() : null,
+          escalationReason: "Escalated from chat (user requested ticket).",
+          // Optional internal hints
+          aiFailureReason,
+          // If you later generate AI summary inside /api/agent, pass it here.
+          aiSummary: null,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "Failed to raise ticket from chat");
+      }
+
+      // Close modal + reset note
+      setEscOpen(false);
+      setEscUserNote("");
+
+      // Refresh tickets and focus the created ticket
+      setTicketStatusFilter("open");
+      await loadTickets("open");
+
+      const createdId = data.ticket?.id as number | undefined;
+      if (createdId) {
+        setSelectedTicketId(createdId);
+        await loadTicketDetail(createdId);
+      }
+
+      // Add a friendly confirmation message into chat
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "Thanks — I’ve raised a support ticket and included our chat transcript. A Pace Shuttles agent will get back to you here as soon as possible.",
+        },
+      ]);
+    } catch (e: any) {
+      setEscErr(e?.message ?? "Failed to escalate");
+    } finally {
+      setEscBusy(false);
+    }
+  }
+
   return (
     <div className="w-full max-w-6xl mx-auto px-4">
       {/* Page header */}
@@ -464,11 +558,21 @@ export function AgentChat() {
                 </div>
               </div>
 
-              {!isAuthed && auth.status !== "loading" ? (
-                <div className="hidden sm:block text-xs text-slate-500">
-                  Sign in to unlock ticket tracking & human support.
-                </div>
-              ) : null}
+              <div className="flex items-center gap-2">
+                {isAuthed ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEscErr(null);
+                      setEscOpen(true);
+                    }}
+                    className="text-xs rounded-lg px-3 py-2 bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                    title="Raise a ticket and include this chat transcript"
+                  >
+                    Raise a ticket
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             {/* Messages */}
@@ -884,6 +988,80 @@ export function AgentChat() {
                 disabled={newBusy}
               >
                 {newBusy ? "Creating…" : "Create ticket"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Escalate From Chat Modal (logged-in only) */}
+      {isAuthed && escOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => (escBusy ? null : setEscOpen(false))}
+          />
+          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  Raise a ticket from this chat
+                </div>
+                <div className="text-xs text-slate-500">
+                  We’ll include the full chat transcript so support can pick up quickly.
+                </div>
+              </div>
+              <button
+                onClick={() => (escBusy ? null : setEscOpen(false))}
+                className="text-slate-500 hover:text-slate-900 text-sm"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              {escErr && (
+                <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
+                  {escErr}
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  Anything else you want the agent to know? (optional)
+                </label>
+                <textarea
+                  value={escUserNote}
+                  onChange={(e) => setEscUserNote(e.target.value)}
+                  placeholder="Add any key details (booking number, what you expected, what happened)…"
+                  className="mt-1 w-full min-h-[120px] rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={escBusy}
+                />
+                <div className="mt-2 text-xs text-slate-500">
+                  The ticket will include: your note (if any) + the full chat transcript.
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <button
+                onClick={() => (escBusy ? null : setEscOpen(false))}
+                className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50"
+                disabled={escBusy}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={escalateFromChat}
+                className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={escBusy}
+              >
+                {escBusy ? "Raising…" : "Raise ticket"}
               </button>
             </div>
           </div>
