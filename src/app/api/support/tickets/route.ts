@@ -184,10 +184,7 @@ async function fetchTicketStateMap(): Promise<Record<number, string>> {
   return map;
 }
 
-function resolveZammadStateName(
-  ticket: any,
-  stateMap: Record<number, string>
-): string {
+function resolveZammadStateName(ticket: any, stateMap: Record<number, string>): string {
   // Prefer explicit state string if present; else resolve from state_id.
   const direct = ticket?.state;
   if (typeof direct === "string" && direct.trim()) return direct.trim();
@@ -238,7 +235,6 @@ export async function GET(req: Request) {
     }
 
     // 2) Fetch tickets for that customer
-    // NOTE: Zammad returns `state_id` on this endpoint in many cases.
     const ticketsRes = await fetch(`${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`, {
       headers: zammadHeaders(),
     });
@@ -252,32 +248,34 @@ export async function GET(req: Request) {
 
     const tickets = (await ticketsRes.json()) as any[];
 
-    // 3) Map + filter using *resolved* state name
+    // 3) Map safely (IMPORTANT: return `status` for the UI, not `userStatus`)
     const mapped = (tickets || []).map((t) => {
       const zammadStateName = resolveZammadStateName(t, stateMap);
-      const userStatus = mapUserStatus(zammadStateName);
+      const status = mapUserStatus(zammadStateName);
 
       return {
         id: t.id,
         number: t.number,
         title: t.title,
-        // keep both for debugging/UI
+
+        // UI expects `status`
+        status,
+
+        // optional debug fields (harmless)
         state: zammadStateName || t.state || null,
         state_id: typeof t.state_id === "number" ? t.state_id : null,
-        userStatus,
+
         createdAt: t.created_at,
         updatedAt: t.updated_at,
       };
     });
 
+    // 4) Filter
     const desiredZammadStates = mapQueryStates(statusParam).map((s) => s.toLowerCase());
 
     const filtered = mapped.filter((t) => {
-      // Primary filter: our normalized userStatus (because we define "resolved" as pending close)
-      if (t.userStatus !== statusParam) return false;
+      if (t.status !== statusParam) return false;
 
-      // Secondary safety: ensure the underlying Zammad state aligns with what we expect
-      // (prevents weird mis-classification from leaking tickets into wrong tab).
       const z = String(t.state || "").toLowerCase();
       if (!z) return false;
       return desiredZammadStates.includes(z);
@@ -287,7 +285,6 @@ export async function GET(req: Request) {
       ok: true,
       tickets: filtered,
       status: statusParam,
-      // helpful for debugging without exposing sensitive info:
       meta: {
         totalFetched: mapped.length,
         totalReturned: filtered.length,
