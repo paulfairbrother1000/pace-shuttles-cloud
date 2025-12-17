@@ -167,75 +167,84 @@ async function safeJson(res: Response) {
    ============================================================ */
 export async function GET(req: Request) {
   try {
-    const user = await requireUser(); // must throw AUTH_REQUIRED when not signed in
+    const user = await requireUser();
     const url = new URL(req.url);
 
-    const statusParam = (url.searchParams.get("status") || "open") as UserTicketStatus;
-    const status: UserTicketStatus =
-      statusParam === "resolved" || statusParam === "closed" || statusParam === "open"
-        ? statusParam
-        : "open";
+    const statusParam = (url.searchParams.get("status") || "open") as
+      | "open"
+      | "resolved"
+      | "closed";
 
-    // 1) Find Zammad customer user by email
+    // 1. Find Zammad user
     const userRes = await fetch(
       `${ZAMMAD_BASE}/users/search?query=${encodeURIComponent(user.email)}`,
       { headers: zammadHeaders() }
     );
     if (!userRes.ok) {
       return NextResponse.json(
-        { ok: false, error: "ZAMMAD_USER_LOOKUP_FAILED", details: await userRes.text() },
+        { ok: false, error: "ZAMMAD_USER_LOOKUP_FAILED" },
         { status: 502 }
       );
     }
 
-    const found = (await safeJson(userRes)) as any[];
-    const zUser = Array.isArray(found)
-      ? found.find((u) => String(u?.email || "").toLowerCase() === user.email.toLowerCase())
-      : null;
-
-    if (!zUser?.id) {
-      // No Zammad customer record yet — return empty list (don’t treat as error)
-      return NextResponse.json({ ok: true, tickets: [], status });
-    }
-
-    // 2) Pull tickets for that customer (and filter by state)
-    const states = mapQueryStates(status);
-
-    // Zammad supports search via /tickets/search
-    // Query uses its search syntax; this works well on hosted instances.
-    const query = `customer.id:${zUser.id} state:(${states.map((s) => `"${s}"`).join(" OR ")})`;
-    const tRes = await fetch(
-      `${ZAMMAD_BASE}/tickets/search?query=${encodeURIComponent(query)}`,
-      { headers: zammadHeaders() }
+    const users = (await userRes.json()) as any[];
+    const zUser = users.find(
+      (u) => String(u.email).toLowerCase() === user.email.toLowerCase()
     );
 
-    if (!tRes.ok) {
+    if (!zUser?.id) {
+      return NextResponse.json({ ok: true, tickets: [] });
+    }
+
+    // 2. Fetch ALL tickets for that customer
+    const ticketsRes = await fetch(
+      `${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`,
+      { headers: zammadHeaders() }
+    );
+    if (!ticketsRes.ok) {
       return NextResponse.json(
-        { ok: false, error: "ZAMMAD_TICKET_SEARCH_FAILED", details: await tRes.text() },
+        { ok: false, error: "ZAMMAD_TICKET_FETCH_FAILED" },
         { status: 502 }
       );
     }
 
-    const tickets = (await safeJson(tRes)) as any[];
+    const tickets = (await ticketsRes.json()) as any[];
 
-    const shaped = (Array.isArray(tickets) ? tickets : []).map((t) => ({
-      id: t.id,
-      number: t.number,
-      title: t.title,
-      userStatus: mapUserStatus(t.state),
-      state: t.state,
-      createdAt: t.created_at,
-      updatedAt: t.updated_at,
-      lastUpdatedAt: t.updated_at,
-      // optional fields if you want them in UI:
-      priorityId: t.priority_id,
-      groupId: t.group_id,
-    }));
+    // 3. Map + filter safely
+    const mapped = tickets.map((t) => {
+      const userStatus =
+        t.state === "pending close"
+          ? "resolved"
+          : t.state === "closed"
+          ? "closed"
+          : "open";
 
-    return NextResponse.json({ ok: true, tickets: shaped, status });
+      return {
+        id: t.id,
+        number: t.number,
+        title: t.title,
+        state: t.state,
+        userStatus,
+        createdAt: t.created_at,
+        updatedAt: t.updated_at,
+      };
+    });
+
+    const filtered =
+      statusParam === "open"
+        ? mapped.filter((t) => t.userStatus === "open")
+        : statusParam === "resolved"
+        ? mapped.filter((t) => t.userStatus === "resolved")
+        : mapped.filter((t) => t.userStatus === "closed");
+
+    return NextResponse.json({
+      ok: true,
+      tickets: filtered,
+      status: statusParam,
+    });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
-      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
+      return NextResponse.json({ ok: false }, { status: 401 });
     }
     return NextResponse.json(
       { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
