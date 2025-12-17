@@ -2,6 +2,9 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/requireUser";
 
+/**
+ * Zammad configuration
+ */
 const ZAMMAD_BASE = "https://pace-shuttles-helpdesk.zammad.com/api/v1";
 
 function zammadHeaders() {
@@ -14,15 +17,29 @@ function zammadHeaders() {
 }
 
 /**
- * Your Zammad group (Support). You already used group_id=1 in tests.
- * Keep 1 as default, but allow override via env.
+ * Map Zammad state -> user-facing status
  */
-function supportGroupId(): number {
-  const raw = process.env.ZAMMAD_SUPPORT_GROUP_ID;
-  const n = raw ? Number(raw) : 1;
-  return Number.isFinite(n) && n > 0 ? n : 1;
+type UserTicketStatus = "open" | "resolved" | "closed";
+
+function mapUserStatus(zammadState: string): UserTicketStatus {
+  if (zammadState === "pending close") return "resolved";
+  if (zammadState === "closed") return "closed";
+  return "open"; // "new", "open", etc.
 }
 
+/**
+ * Map user-facing status -> Zammad states to query
+ */
+function mapQueryStates(status: UserTicketStatus): string[] {
+  if (status === "resolved") return ["pending close"];
+  if (status === "closed") return ["closed"];
+  return ["new", "open"];
+}
+
+/**
+ * Lightweight category inference (server-side).
+ * You can replace this later with an LLM classifier, but this is deterministic & safe.
+ */
 type ProvisionalCategory =
   | "Prospective Customer"
   | "Prospective Operator"
@@ -31,216 +48,279 @@ type ProvisionalCategory =
   | "Incident"
   | "Request";
 
-/**
- * Deterministic category classifier (no LLM dependency).
- * Tune keywords anytime without changing UI.
- */
-function classifyCategory(text: string): { category: ProvisionalCategory; reason: string } {
+function inferCategoryFromText(text: string): ProvisionalCategory {
   const t = text.toLowerCase();
 
-  const hasAny = (words: string[]) => words.some((w) => t.includes(w));
-
-  // Complaint
-  if (hasAny(["complaint", "unhappy", "angry", "disappointed", "terrible", "awful", "refund", "compensation"])) {
-    return { category: "Complaint", reason: "Detected complaint/refund sentiment keywords." };
-  }
-
-  // Incident (something broken / errors / payments failing)
+  // Complaint / unhappy signals
   if (
-    hasAny([
-      "error",
-      "bug",
-      "broken",
-      "not working",
-      "doesn't work",
-      "failed",
-      "failure",
-      "cannot",
-      "can't",
-      "stuck",
-      "payment",
-      "card",
-      "checkout",
-      "charge",
-      "charged",
-      "booking failed",
-      "api",
-      "500",
-      "403",
-      "401",
-      "timeout",
-    ])
+    t.includes("complain") ||
+    t.includes("unacceptable") ||
+    t.includes("angry") ||
+    t.includes("frustrat") ||
+    t.includes("disappointed") ||
+    t.includes("refund")
   ) {
-    return { category: "Incident", reason: "Detected operational failure / error keywords." };
+    return "Complaint";
   }
 
-  // Prospective Operator
+  // Incident / broken / error
   if (
-    hasAny([
-      "become an operator",
-      "list my boat",
-      "list my helicopter",
-      "partner",
-      "supplier",
-      "fleet",
-      "operator admin",
-      "commission",
-      "onboarding",
-      "integrate",
-    ])
+    t.includes("error") ||
+    t.includes("bug") ||
+    t.includes("broken") ||
+    t.includes("failed") ||
+    t.includes("not working") ||
+    t.includes("can't") ||
+    t.includes("cannot") ||
+    t.includes("unable") ||
+    t.includes("payment") ||
+    t.includes("charged") ||
+    t.includes("checkout")
   ) {
-    return { category: "Prospective Operator", reason: "Detected operator/onboarding keywords." };
+    return "Incident";
   }
 
-  // Prospective Customer (pre-booking questions)
+  // Prospective operator
   if (
-    hasAny([
-      "how much",
-      "price",
-      "availability",
-      "schedule",
-      "timetable",
-      "route",
-      "from",
-      "to",
-      "pickup",
-      "destination",
-      "luggage",
-      "how do i book",
-      "can i book",
-    ])
+    t.includes("operator") ||
+    t.includes("list my boat") ||
+    t.includes("list my helicopter") ||
+    t.includes("become a partner") ||
+    t.includes("add my vehicle") ||
+    t.includes("commission") ||
+    t.includes("onboard")
   ) {
-    return { category: "Prospective Customer", reason: "Detected pre-booking intent keywords." };
+    return "Prospective Operator";
   }
 
-  // Request (feature / change)
-  if (hasAny(["feature", "enhancement", "would be great", "please add", "can you add", "request"])) {
-    return { category: "Request", reason: "Detected feature/change request keywords." };
+  // Prospective customer
+  if (
+    t.includes("price") ||
+    t.includes("availability") ||
+    t.includes("book") ||
+    t.includes("booking") ||
+    t.includes("schedule") ||
+    t.includes("where do you operate") ||
+    t.includes("how much") ||
+    t.includes("quote")
+  ) {
+    return "Prospective Customer";
   }
 
-  // Default: Information
-  return { category: "Information", reason: "Defaulted to Information (no strong signals)." };
+  // Request / feature / change
+  if (
+    t.includes("request") ||
+    t.includes("feature") ||
+    t.includes("can you add") ||
+    t.includes("please add") ||
+    t.includes("i want") ||
+    t.includes("would like")
+  ) {
+    return "Request";
+  }
+
+  return "Information";
 }
 
-function buildTitle(inputTitle: string | null, body: string): string {
-  const t = (inputTitle ?? "").trim();
-  if (t) return t.slice(0, 120);
-
-  // Derive from first line of body
-  const firstLine = body
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean)[0];
-
-  return (firstLine ? firstLine : "Support request").slice(0, 120);
+/**
+ * Tone inference (kept simple & deterministic).
+ * Your chat-driven escalation can override this later.
+ */
+type UserTone = "neutral" | "frustrated" | "happy";
+function inferTone(text: string): UserTone {
+  const t = text.toLowerCase();
+  if (
+    t.includes("thanks") ||
+    t.includes("great") ||
+    t.includes("brilliant") ||
+    t.includes("love") ||
+    t.includes("perfect")
+  )
+    return "happy";
+  if (
+    t.includes("frustrat") ||
+    t.includes("annoy") ||
+    t.includes("angry") ||
+    t.includes("unacceptable") ||
+    t.includes("ridiculous") ||
+    t.includes("still not") ||
+    t.includes("doesn't work")
+  )
+    return "frustrated";
+  return "neutral";
 }
 
-function buildPublicBody(payload: {
-  message: string;
-  reference?: string | null;
-  desiredOutcome?: string | null;
-}) {
-  const parts: string[] = [];
-  parts.push(payload.message.trim());
-
-  if (payload.reference?.trim()) {
-    parts.push(`\n\nReference:\n${payload.reference.trim()}`);
+/**
+ * Utility: safe JSON parse for Zammad responses (sometimes returns empty)
+ */
+async function safeJson(res: Response) {
+  const txt = await res.text();
+  try {
+    return txt ? JSON.parse(txt) : null;
+  } catch {
+    return { _raw: txt };
   }
-  if (payload.desiredOutcome?.trim()) {
-    parts.push(`\n\nDesired outcome:\n${payload.desiredOutcome.trim()}`);
-  }
-  return parts.join("");
 }
 
+/* ============================================================
+   GET /api/support/tickets?status=open|resolved|closed
+   ============================================================ */
+export async function GET(req: Request) {
+  try {
+    const user = await requireUser(); // must throw AUTH_REQUIRED when not signed in
+    const url = new URL(req.url);
+
+    const statusParam = (url.searchParams.get("status") || "open") as UserTicketStatus;
+    const status: UserTicketStatus =
+      statusParam === "resolved" || statusParam === "closed" || statusParam === "open"
+        ? statusParam
+        : "open";
+
+    // 1) Find Zammad customer user by email
+    const userRes = await fetch(
+      `${ZAMMAD_BASE}/users/search?query=${encodeURIComponent(user.email)}`,
+      { headers: zammadHeaders() }
+    );
+    if (!userRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: "ZAMMAD_USER_LOOKUP_FAILED", details: await userRes.text() },
+        { status: 502 }
+      );
+    }
+
+    const found = (await safeJson(userRes)) as any[];
+    const zUser = Array.isArray(found)
+      ? found.find((u) => String(u?.email || "").toLowerCase() === user.email.toLowerCase())
+      : null;
+
+    if (!zUser?.id) {
+      // No Zammad customer record yet — return empty list (don’t treat as error)
+      return NextResponse.json({ ok: true, tickets: [], status });
+    }
+
+    // 2) Pull tickets for that customer (and filter by state)
+    const states = mapQueryStates(status);
+
+    // Zammad supports search via /tickets/search
+    // Query uses its search syntax; this works well on hosted instances.
+    const query = `customer.id:${zUser.id} state:(${states.map((s) => `"${s}"`).join(" OR ")})`;
+    const tRes = await fetch(
+      `${ZAMMAD_BASE}/tickets/search?query=${encodeURIComponent(query)}`,
+      { headers: zammadHeaders() }
+    );
+
+    if (!tRes.ok) {
+      return NextResponse.json(
+        { ok: false, error: "ZAMMAD_TICKET_SEARCH_FAILED", details: await tRes.text() },
+        { status: 502 }
+      );
+    }
+
+    const tickets = (await safeJson(tRes)) as any[];
+
+    const shaped = (Array.isArray(tickets) ? tickets : []).map((t) => ({
+      id: t.id,
+      number: t.number,
+      title: t.title,
+      userStatus: mapUserStatus(t.state),
+      state: t.state,
+      createdAt: t.created_at,
+      updatedAt: t.updated_at,
+      lastUpdatedAt: t.updated_at,
+      // optional fields if you want them in UI:
+      priorityId: t.priority_id,
+      groupId: t.group_id,
+    }));
+
+    return NextResponse.json({ ok: true, tickets: shaped, status });
+  } catch (err: any) {
+    if (err?.message === "AUTH_REQUIRED") {
+      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
+    }
+    return NextResponse.json(
+      { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
+      { status: 500 }
+    );
+  }
+}
+
+/* ============================================================
+   POST /api/support/tickets
+   Create a new ticket (support page “New ticket”)
+   ============================================================ */
 export async function POST(req: Request) {
   try {
-    const user = await requireUser(); // must return { email: string, name?: string }
-    const { title, message, reference, desiredOutcome } = (await req.json()) as {
-      title?: string | null;
-      message?: string;
-      reference?: string | null;
-      desiredOutcome?: string | null;
-    };
+    const user = await requireUser();
 
-    if (!message || typeof message !== "string" || !message.trim()) {
+    const body = await req.json().catch(() => ({}));
+    const message = typeof body?.message === "string" ? body.message.trim() : "";
+    const userProvidedTitle = typeof body?.title === "string" ? body.title.trim() : "";
+
+    if (!message) {
       return NextResponse.json({ ok: false, error: "MESSAGE_REQUIRED" }, { status: 400 });
     }
 
-    const publicBody = buildPublicBody({
-      message,
-      reference: reference ?? null,
-      desiredOutcome: desiredOutcome ?? null,
-    });
+    // Derive title + category if not provided
+    const derivedTitle =
+      userProvidedTitle ||
+      message.split("\n").find(Boolean)?.slice(0, 80) ||
+      "Support request";
 
-    const finalTitle = buildTitle(title ?? null, publicBody);
+    const inferredCategory = inferCategoryFromText(`${derivedTitle}\n${message}`);
+    const inferredTone = inferTone(`${derivedTitle}\n${message}`);
 
-    const { category, reason } = classifyCategory(`${finalTitle}\n\n${publicBody}`);
+    // You’ve been using group_id = 1 in your tests (Pace Shuttles Support)
+    const groupId = Number(body?.group_id || 1);
 
-    /**
-     * 1) Create ticket (with public first article)
-     */
     const createRes = await fetch(`${ZAMMAD_BASE}/tickets`, {
       method: "POST",
       headers: zammadHeaders(),
       body: JSON.stringify({
-        title: finalTitle,
-        group_id: supportGroupId(),
+        title: derivedTitle,
+        group_id: groupId,
         customer: user.email,
         article: {
-          subject: finalTitle,
-          body: publicBody,
+          subject: derivedTitle,
+          body: message,
           type: "note",
-          internal: false,
+          internal: false, // customer-visible
         },
-        // custom fields you created (examples from your tests):
-        ai_category: category,
-        ai_tone: "neutral",
-        ai_escalation_reason: "",
+
+        // your custom fields (as created in Zammad)
+        ai_category: inferredCategory,
+        ai_tone: inferredTone,
+
+        // This route is “user created ticket”, not chat escalation:
+        // keep blank or set something lightweight; you can add later.
+        ai_escalation_reason: body?.ai_escalation_reason ?? "User created ticket from Support page.",
       }),
     });
 
     if (!createRes.ok) {
-      return NextResponse.json({ ok: false, error: await createRes.text() }, { status: 502 });
+      return NextResponse.json(
+        { ok: false, error: "ZAMMAD_TICKET_CREATE_FAILED", details: await createRes.text() },
+        { status: 502 }
+      );
     }
 
-    const created = await createRes.json();
-
-    /**
-     * 2) Add agent-only internal note: why the category was chosen
-     */
-    try {
-      await fetch(`${ZAMMAD_BASE}/ticket_articles`, {
-        method: "POST",
-        headers: zammadHeaders(),
-        body: JSON.stringify({
-          ticket_id: created.id,
-          subject: "AI Classification (Internal)",
-          body:
-            `AI – Provisional Category: ${category}\n` +
-            `Reason: ${reason}\n\n` +
-            `Notes:\n- Title was ${title?.trim() ? "user-provided" : "derived from message"}.\n` +
-            `- This is a user-created ticket (not an AI escalation).`,
-          type: "note",
-          internal: true,
-        }),
-      });
-    } catch {
-      // non-fatal
-    }
+    const ticket = await safeJson(createRes);
 
     return NextResponse.json({
       ok: true,
-      ticket: {
-        id: created.id,
-        number: created.number,
-        title: created.title,
-        status: created.state === "pending close" ? "resolved" : created.state === "closed" ? "closed" : "open",
+      ticket,
+      derived: {
+        title: derivedTitle,
+        ai_category: inferredCategory,
+        ai_tone: inferredTone,
       },
     });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
       return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
     }
-    return NextResponse.json({ ok: false, error: err?.message ?? "UNEXPECTED_ERROR" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
+      { status: 500 }
+    );
   }
 }
