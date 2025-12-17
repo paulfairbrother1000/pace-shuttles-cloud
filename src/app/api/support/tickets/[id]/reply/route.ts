@@ -19,19 +19,21 @@ function zammadHeaders() {
 }
 
 /**
- * Zammad Cloud: the reliable state signal is state_id (ticket.state is often blank).
+ * Zammad Cloud: use state_id (ticket.state may be blank).
  *
- * Default Zammad state IDs:
+ * Your tenant's ticket_states:
  *  1 = new
  *  2 = open
- *  3 = pending reminder
- *  4 = pending close   <-- treat as Resolved
- *  5 = closed          <-- Closed (terminal)
+ *  6 = pending close  <-- treat as Resolved
+ *  4 = closed         <-- Closed (terminal)
+ *  5 = merged
  */
-function mapUserStatusByStateId(stateId: number): "open" | "resolved" | "closed" {
-  if (stateId === 4) return "resolved"; // pending close
-  if (stateId === 5) return "closed";
-  return "open"; // new/open/etc.
+function mapUserStatusByStateId(
+  stateId: number
+): "open" | "resolved" | "closed" {
+  if (stateId === 6) return "resolved"; // pending close
+  if (stateId === 4) return "closed";   // closed
+  return "open";
 }
 
 /**
