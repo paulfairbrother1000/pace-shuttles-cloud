@@ -229,8 +229,12 @@ function htmlToText(input: string) {
 /*  Zammad widget loader                                                      */
 /* -------------------------------------------------------------------------- */
 
-const ZAMMAD_WIDGET_SRC =
-  "https://pace-shuttles-helpdesk.zammad.com/assets/chat/chat-no-jquery.min.js";
+// ✅ NEW: explicit host constants so the widget never tries to auto-detect “undefined”
+const ZAMMAD_HOST = "https://pace-shuttles-helpdesk.zammad.com";
+const ZAMMAD_CHAT_ID = 1;
+
+// Keep script src derived from host
+const ZAMMAD_WIDGET_SRC = `${ZAMMAD_HOST}/assets/chat/chat-no-jquery.min.js`;
 
 declare global {
   interface Window {
@@ -238,6 +242,7 @@ declare global {
   }
 }
 
+// ✅ NEW: a safer loader that resolves if script already loaded + waits for window.ZammadChat
 async function ensureZammadWidgetLoaded(): Promise<void> {
   if (typeof window === "undefined") return;
   if (window.ZammadChat) return;
@@ -246,21 +251,46 @@ async function ensureZammadWidgetLoaded(): Promise<void> {
     const existing = document.querySelector(
       `script[src="${ZAMMAD_WIDGET_SRC}"]`
     ) as HTMLScriptElement | null;
+
     if (existing) {
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("Zammad script failed")));
-      // might already be loaded
-      if ((existing as any).readyState === "complete") resolve();
+      // If it already loaded, resolve immediately
+      if ((existing as any).dataset?.loaded === "1") return resolve();
+
+      existing.addEventListener("load", () => {
+        (existing as any).dataset.loaded = "1";
+        resolve();
+      });
+      existing.addEventListener("error", () =>
+        reject(new Error("Zammad script failed"))
+      );
+
+      // In some browsers the script may already be complete
+      if ((existing as any).readyState === "complete") {
+        (existing as any).dataset.loaded = "1";
+        resolve();
+      }
       return;
     }
 
     const s = document.createElement("script");
     s.src = ZAMMAD_WIDGET_SRC;
     s.async = true;
-    s.onload = () => resolve();
+    s.onload = () => {
+      (s as any).dataset.loaded = "1";
+      resolve();
+    };
     s.onerror = () => reject(new Error("Zammad script failed"));
     document.head.appendChild(s);
   });
+
+  // Give the script a tick to populate window.ZammadChat
+  if (!window.ZammadChat) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  if (!window.ZammadChat) {
+    throw new Error("ZammadChat did not initialise (window.ZammadChat missing).");
+  }
 }
 
 export function AgentChat() {
@@ -349,9 +379,15 @@ export function AgentChat() {
     | { stage: "none" }
     | { stage: "offer_human" }
     | { stage: "ticket_compose" }
-    | { stage: "opening_live_chat"; status: "loading" | "ready" | "error"; error?: string };
+    | {
+        stage: "opening_live_chat";
+        status: "loading" | "ready" | "error";
+        error?: string;
+      };
 
-  const [escalation, setEscalation] = useState<EscalationState>({ stage: "none" });
+  const [escalation, setEscalation] = useState<EscalationState>({
+    stage: "none",
+  });
 
   // Ticket-from-chat modal state
   const [escTicketOpen, setEscTicketOpen] = useState(false);
@@ -481,7 +517,8 @@ export function AgentChat() {
     if (typeof window === "undefined") return;
     if (!isAuthed) return;
 
-    const pendingHuman = localStorage.getItem("ps_support_pending_human") === "1";
+    const pendingHuman =
+      localStorage.getItem("ps_support_pending_human") === "1";
     if (!pendingHuman) return;
 
     // Clear flag and continue
@@ -613,16 +650,21 @@ export function AgentChat() {
     setReplyError(null);
 
     try {
-      const res = await fetch(`/api/support/tickets/${selectedTicketId}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ message: msg }),
-      });
+      const res = await fetch(
+        `/api/support/tickets/${selectedTicketId}/reply`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ message: msg }),
+        }
+      );
       const data = await res.json();
 
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.message ?? data?.error ?? "Failed to send reply");
+        throw new Error(
+          data?.message ?? data?.error ?? "Failed to send reply"
+        );
       }
 
       setReplyMsg("");
@@ -718,16 +760,20 @@ export function AgentChat() {
       await ensureZammadWidgetLoaded();
 
       // Init widget only once per page load
-      if (!zammadInitRef.current && typeof window !== "undefined" && window.ZammadChat) {
+      if (
+        !zammadInitRef.current &&
+        typeof window !== "undefined" &&
+        window.ZammadChat
+      ) {
         zammadInitRef.current = true;
 
         // Manual open mode. We'll programmatically click a hidden open button.
         new window.ZammadChat({
-  chatId: 1,
-  show: false,
-  host: "https://pace-shuttles-helpdesk.zammad.com",
-});
-
+          chatId: ZAMMAD_CHAT_ID,
+          show: false,
+          host: ZAMMAD_HOST, // ✅ keep host explicit to avoid “undefined”
+          debug: true, // ✅ tells you why it isn’t showing (console)
+        });
       }
 
       // Open it
@@ -754,7 +800,9 @@ export function AgentChat() {
   function continueChat() {
     appendUserMessage("No — continue chatting");
     setEscalation({ stage: "none" });
-    appendAssistantMessage("No problem — we’ll keep going here. What would you like to do next?");
+    appendAssistantMessage(
+      "No problem — we’ll keep going here. What would you like to do next?"
+    );
   }
 
   function openTicketCompose() {
@@ -818,10 +866,13 @@ export function AgentChat() {
 
       const data = await res.json();
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? data?.details ?? "Failed to create ticket");
+        throw new Error(
+          data?.error ?? data?.details ?? "Failed to create ticket"
+        );
       }
 
-      const ticketNumber = data.ticket?.number ?? data.ticket?.ticket?.number ?? null;
+      const ticketNumber =
+        data.ticket?.number ?? data.ticket?.ticket?.number ?? null;
 
       setEscTicketOpen(false);
       setEscTicketTitle("");
@@ -900,7 +951,9 @@ export function AgentChat() {
       </div>
 
       {/* Layout */}
-      <div className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}>
+      <div
+        className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}
+      >
         {/* Chat panel (always) */}
         <div className={isAuthed ? "lg:col-span-3" : ""}>
           <div className="rounded-2xl ring-1 ring-slate-200 bg-white shadow-sm">
@@ -911,7 +964,9 @@ export function AgentChat() {
                   PS
                 </span>
                 <div>
-                  <div className="text-sm font-semibold">Pace Shuttles Assistant</div>
+                  <div className="text-sm font-semibold">
+                    Pace Shuttles Assistant
+                  </div>
                   <div className="text-xs text-slate-500">
                     {pending ? "Thinking…" : isAuthed ? "Connected" : "Online"}
                   </div>
@@ -930,7 +985,9 @@ export function AgentChat() {
               {messages.map((m, i) => (
                 <div
                   key={i}
-                  className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}
+                  className={`flex ${
+                    m.role === "assistant" ? "justify-start" : "justify-end"
+                  }`}
                 >
                   <div
                     className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
@@ -997,7 +1054,8 @@ export function AgentChat() {
                         </button>
                       </div>
                       <div className="mt-2 text-xs text-slate-500">
-                        If live agents aren’t available, raising a ticket includes the full transcript.
+                        If live agents aren’t available, raising a ticket includes
+                        the full transcript.
                       </div>
                     </>
                   )}
@@ -1068,7 +1126,9 @@ export function AgentChat() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Your tickets</div>
-                    <div className="text-xs text-slate-500">Open ↔ Resolved ↔ Closed</div>
+                    <div className="text-xs text-slate-500">
+                      Open ↔ Resolved ↔ Closed
+                    </div>
                   </div>
 
                   <button
@@ -1084,30 +1144,34 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => {
-                        setTicketDetail(null);
-                        setSelectedTicketId(null);
-                        setTicketStatusFilter(s);
-                      }}
-                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                        ticketStatusFilter === s
-                          ? "bg-slate-900 text-white ring-slate-900"
-                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                      }`}
-                    >
-                      {humanStatus(s)}
-                    </button>
-                  ))}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
+                    (s) => (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          setTicketDetail(null);
+                          setSelectedTicketId(null);
+                          setTicketStatusFilter(s);
+                        }}
+                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                          ticketStatusFilter === s
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        {humanStatus(s)}
+                      </button>
+                    )
+                  )}
                 </div>
               </div>
 
               {/* Ticket list */}
               <div className="max-h-[28vh] overflow-y-auto border-b border-slate-100">
                 {ticketsLoading ? (
-                  <div className="p-4 text-sm text-slate-600">Loading tickets…</div>
+                  <div className="p-4 text-sm text-slate-600">
+                    Loading tickets…
+                  </div>
                 ) : ticketsError ? (
                   <div className="p-4 text-sm text-red-600">{ticketsError}</div>
                 ) : tickets.length === 0 ? (
@@ -1116,7 +1180,8 @@ export function AgentChat() {
                       No {humanStatus(ticketStatusFilter)} tickets
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
-                      When tickets are raised, they’ll appear here with support updates.
+                      When tickets are raised, they’ll appear here with support
+                      updates.
                     </div>
                   </div>
                 ) : (
@@ -1159,11 +1224,15 @@ export function AgentChat() {
                     Select a ticket to view the conversation.
                   </div>
                 ) : detailLoading ? (
-                  <div className="text-sm text-slate-600">Loading conversation…</div>
+                  <div className="text-sm text-slate-600">
+                    Loading conversation…
+                  </div>
                 ) : detailError ? (
                   <div className="text-sm text-red-600">{detailError}</div>
                 ) : !ticketDetail ? (
-                  <div className="text-sm text-slate-600">Ticket not available.</div>
+                  <div className="text-sm text-slate-600">
+                    Ticket not available.
+                  </div>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
@@ -1187,7 +1256,9 @@ export function AgentChat() {
 
                     <div className="mt-3 max-h-[22vh] overflow-y-auto space-y-2 pr-1">
                       {ticketDetail.thread.length === 0 ? (
-                        <div className="text-sm text-slate-600">No public messages yet.</div>
+                        <div className="text-sm text-slate-600">
+                          No public messages yet.
+                        </div>
                       ) : (
                         ticketDetail.thread.map((a) => {
                           const isCustomer =
@@ -1216,7 +1287,9 @@ export function AgentChat() {
 
                     <div className="mt-3">
                       {replyError && (
-                        <div className="text-sm text-red-600 mb-2">{replyError}</div>
+                        <div className="text-sm text-red-600 mb-2">
+                          {replyError}
+                        </div>
                       )}
 
                       <div className="flex gap-2">
@@ -1229,7 +1302,8 @@ export function AgentChat() {
                               : "Reply to support…"
                           }
                           disabled={
-                            replySending || ticketDetail.ticket.status === "closed"
+                            replySending ||
+                            ticketDetail.ticket.status === "closed"
                           }
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
@@ -1254,7 +1328,8 @@ export function AgentChat() {
                       )}
                       {ticketDetail.ticket.status === "closed" && (
                         <div className="mt-2 text-xs text-slate-500">
-                          Closed tickets can’t be reopened. Please raise a new ticket.
+                          Closed tickets can’t be reopened. Please raise a new
+                          ticket.
                         </div>
                       )}
                     </div>
@@ -1264,8 +1339,8 @@ export function AgentChat() {
             </div>
 
             <div className="mt-3 text-xs text-slate-500">
-              “Resolved” tickets reopen automatically when you reply. “Closed” tickets
-              are final.
+              “Resolved” tickets reopen automatically when you reply. “Closed”
+              tickets are final.
             </div>
           </div>
         )}
@@ -1304,8 +1379,9 @@ export function AgentChat() {
                 </div>
               ) : (
                 <div className="text-sm text-slate-700">
-                  If the live chat doesn’t appear, it usually means no agents are online.
-                  You can raise a ticket instead and we’ll include the full transcript.
+                  If the live chat doesn’t appear, it usually means no agents are
+                  online. You can raise a ticket instead and we’ll include the
+                  full transcript.
                 </div>
               )}
 
@@ -1346,7 +1422,8 @@ export function AgentChat() {
                   Raise a ticket for a human agent
                 </div>
                 <div className="text-xs text-slate-500">
-                  Tell us what you want help with — we’ll attach the full transcript.
+                  Tell us what you want help with — we’ll attach the full
+                  transcript.
                 </div>
               </div>
               <button
@@ -1439,7 +1516,8 @@ export function AgentChat() {
                   Create a new ticket
                 </div>
                 <div className="text-xs text-slate-500">
-                  Tell us what happened — we’ll route it to the right support team.
+                  Tell us what happened — we’ll route it to the right support
+                  team.
                 </div>
               </div>
               <button
@@ -1470,7 +1548,8 @@ export function AgentChat() {
                   disabled={newBusy}
                 />
                 <div className="mt-1 text-xs text-slate-500">
-                  If you leave this blank, we’ll create a helpful title automatically.
+                  If you leave this blank, we’ll create a helpful title
+                  automatically.
                 </div>
               </div>
 
