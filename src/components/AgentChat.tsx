@@ -1,7 +1,7 @@
 // src/components/AgentChat.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AgentMessage,
   AgentResponse,
@@ -87,63 +87,32 @@ function humanStatus(status: TicketStatus) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Zammad live chat integration (in-place, manual open)                       */
+/*  Escalation interception (client-side SSOT)                                */
+/*  Prevents the LLM from "refusing" to connect to a human.                   */
 /* -------------------------------------------------------------------------- */
 
-declare global {
-  interface Window {
-    ZammadChat?: any;
-  }
-}
+function isHumanRequest(text: string) {
+  const t = String(text || "").toLowerCase();
 
-type LiveAgentMode = "off" | "starting" | "live" | "unavailable" | "error";
-
-function normalizeZammadHtmlToText(input: string) {
-  // Minimal sanitation for things that sometimes leak into customer-visible
-  // replies (e.g. <br>, <div>, etc.). Keeps it safe and readable.
-  return String(input || "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<div[^>]*>/gi, "")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<p[^>]*>/gi, "")
-    .replace(/<\/?[^>]+>/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-async function loadScriptOnce(src: string) {
-  if (typeof document === "undefined") return;
-
-  const existing = document.querySelector<HTMLScriptElement>(
-    `script[data-ps-zammad="true"][src="${src}"]`
+  // Keep this intentionally broad; it’s a UX intent detector.
+  return (
+    t.includes("human") ||
+    t.includes("agent") ||
+    t.includes("representative") ||
+    t.includes("real person") ||
+    t.includes("someone") && t.includes("talk") ||
+    t.includes("live chat") ||
+    t.includes("escalat")
   );
-  if (existing) {
-    // already loaded (or in progress)
-    if ((existing as any)._psLoaded) return;
-    await new Promise<void>((resolve, reject) => {
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error("LOAD_FAILED")), {
-        once: true,
-      });
-    });
-    (existing as any)._psLoaded = true;
-    return;
-  }
+}
 
-  await new Promise<void>((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.async = true;
-    s.defer = true;
-    s.dataset.psZammad = "true";
-    s.onload = () => {
-      (s as any)._psLoaded = true;
-      resolve();
-    };
-    s.onerror = () => reject(new Error("LOAD_FAILED"));
-    document.body.appendChild(s);
-  });
+function makeAssistantMessage(
+  content: string,
+  choices?: AgentChoice[]
+): AgentMessage {
+  const m: AgentMessage = { role: "assistant", content };
+  if (choices && choices.length) (m as any).choices = choices;
+  return m;
 }
 
 export function AgentChat() {
@@ -191,7 +160,7 @@ export function AgentChat() {
         setMessages((prev) => {
           if (!prev.length) return prev;
           const updated = [...prev];
-          updated[updated.length - 1].choices = data.choices;
+          (updated[updated.length - 1] as any).choices = data.choices;
           return updated;
         });
       }
@@ -208,209 +177,6 @@ export function AgentChat() {
       setPending(false);
     }
   }
-
-  function handleSend(msg: string) {
-    if (!msg.trim()) return;
-    const newMessages = [...messages, { role: "user", content: msg }];
-    setMessages(newMessages);
-    callAgent(newMessages);
-  }
-
-  /* -------------------- Live agent (Zammad widget) state ------------------- */
-  const [liveMode, setLiveMode] = useState<LiveAgentMode>("off");
-  const [liveErr, setLiveErr] = useState<string | null>(null);
-  const zammadMountRef = useRef<HTMLDivElement>(null);
-  const zammadInitRef = useRef(false);
-
-  const ZAMMAD_HOST = useMemo(() => {
-    // Keep host stable and explicit.
-    // If you ever want env-driven, swap this to NEXT_PUBLIC_ZAMMAD_HOST.
-    return "https://pace-shuttles-helpdesk.zammad.com";
-  }, []);
-
-  const ZAMMAD_CHAT_SCRIPT = useMemo(
-    () => `${ZAMMAD_HOST}/assets/chat/chat-no-jquery.min.js`,
-    [ZAMMAD_HOST]
-  );
-
-  async function checkLiveAgentAvailability(): Promise<boolean> {
-    // If you have a server route, use it. If it doesn't exist or errors, treat as "unknown/unavailable".
-    try {
-      const res = await fetch("/api/support/live/available", {
-        credentials: "include",
-      });
-      if (!res.ok) return false;
-      const data = await res.json().catch(() => ({}));
-      return Boolean((data as any)?.ok && (data as any)?.available);
-    } catch {
-      return false;
-    }
-  }
-
-  async function startLiveAgentInPlace() {
-    if (liveMode === "live" || liveMode === "starting") return;
-
-    setLiveErr(null);
-    setLiveMode("starting");
-
-    // 1) Check availability (soft)
-    const available = await checkLiveAgentAvailability();
-    if (!available) {
-      setLiveMode("unavailable");
-      return;
-    }
-
-    // 2) Load widget script
-    try {
-      await loadScriptOnce(ZAMMAD_CHAT_SCRIPT);
-    } catch {
-      setLiveMode("error");
-      setLiveErr("Failed to load live chat. Please try again.");
-      return;
-    }
-
-    // 3) Mount widget into our chat panel container
-    try {
-      const target = zammadMountRef.current;
-      if (!target) {
-        setLiveMode("error");
-        setLiveErr("Live chat container missing.");
-        return;
-      }
-
-      // Clean any prior mount DOM
-      target.innerHTML = "";
-
-      // Initialize only once per page lifetime; Zammad widget manages its own state.
-      // If you need per-session reset later, we can extend this.
-      if (!zammadInitRef.current) {
-        zammadInitRef.current = true;
-
-        // Some Zammad versions expect a jQuery object for target. The no-jquery build usually accepts a DOM node.
-        // If it doesn't, we can adapt with a thin wrapper later.
-        const ZC = window.ZammadChat;
-        if (typeof ZC !== "function") {
-          setLiveMode("error");
-          setLiveErr("Live chat library did not initialize.");
-          return;
-        }
-
-        // Create a hidden manual-open button (Zammad uses this class hook)
-        // We render it in React below, but also ensure class exists.
-        // The widget uses document.querySelector('.open-zammad-chat').
-        // (We keep it as part of the DOM always, so it’s stable.)
-        new ZC({
-          chatId: 1,
-          show: false,
-          debug: false,
-          host: ZAMMAD_HOST,
-          // Try to mount inside our panel
-          target,
-          // Optional styling knobs
-          fontSize: "12px",
-          // NOTE: We can pass `title` etc if you want.
-        });
-      }
-
-      // 4) Open chat (manual open mechanism)
-      // Use the documented hook: add .open-zammad-chat to a button and click it.
-      // The button exists in the render tree; click it programmatically.
-      requestAnimationFrame(() => {
-        const btn = document.querySelector<HTMLButtonElement>(".open-zammad-chat");
-        if (btn) btn.click();
-      });
-
-      setLiveMode("live");
-    } catch (e: any) {
-      console.error(e);
-      setLiveMode("error");
-      setLiveErr("Failed to start live chat. Please try again.");
-    }
-  }
-
-  function stopLiveAgentAndReturnToAssistant() {
-    // We do NOT destroy the Zammad widget instance here (to avoid side effects).
-    // We simply hide the mount area and return UX to assistant.
-    setLiveMode("off");
-    setLiveErr(null);
-  }
-
-  function handleChoice(choice: AgentChoice) {
-    // SPECIAL CASE: journey buttons with deep-link URLs
-    const action: any = (choice as any).action;
-    if (action && action.type === "openJourney" && action.url) {
-      const url: string = action.url;
-
-      const newMessages: AgentMessage[] = [
-        ...messages,
-        { role: "user", content: choice.label, payload: choice.action },
-        {
-          role: "assistant",
-          content: "Opening that journey in the schedule view for you…",
-        },
-      ];
-      setMessages(newMessages);
-
-      if (typeof window !== "undefined") window.location.href = url;
-      return;
-    }
-
-    // OPTIONAL: login action button (doesn't change existing flows unless the agent returns it)
-    if (action && action.type === "login") {
-      const loginUrl =
-        typeof action.url === "string" && action.url
-          ? action.url
-          : "https://www.paceshuttles.com/login";
-
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: choice.label, payload: choice.action },
-        {
-          role: "assistant",
-          content: "Opening the login page…",
-        },
-      ]);
-
-      if (typeof window !== "undefined") window.location.href = loginUrl;
-      return;
-    }
-
-    // OPTIONAL: live agent action button (only triggers when agent returns such a choice)
-    if (action && (action.type === "contactLiveAgent" || action.type === "liveAgent")) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: choice.label, payload: choice.action },
-        {
-          role: "assistant",
-          content: "Connecting you to a live agent…",
-        },
-      ]);
-      // Kick off in-place Zammad handover
-      startLiveAgentInPlace();
-      return;
-    }
-
-    // OPTIONAL: continue chat button so the choice is recorded as a user turn
-    if (action && action.type === "continueChat") {
-      const newMessages = [
-        ...messages,
-        { role: "user", content: choice.label, payload: choice.action },
-      ];
-      setMessages(newMessages);
-      callAgent(newMessages);
-      return;
-    }
-
-    const newMessages = [
-      ...messages,
-      { role: "user", content: choice.label, payload: choice.action },
-    ];
-    setMessages(newMessages);
-    callAgent(newMessages);
-  }
-
-  const last = messages[messages.length - 1];
-  const lastChoices = last?.choices ?? [];
 
   /* ------------------------------ Auth state ------------------------------ */
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -445,14 +211,6 @@ export function AgentChat() {
   }, []);
 
   const isAuthed = auth.status === "authed";
-
-  // If user logs out while in live chat mode, return to assistant mode
-  useEffect(() => {
-    if (!isAuthed && liveMode !== "off") {
-      stopLiveAgentAndReturnToAssistant();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
 
   /* ------------------------------ Tickets UI ------------------------------ */
   const [ticketStatusFilter, setTicketStatusFilter] =
@@ -517,16 +275,7 @@ export function AgentChat() {
       const data = await res.json();
       if (!res.ok || !data?.ok)
         throw new Error(data?.error ?? "Failed to load ticket");
-
-      // sanitize any html that leaks into customer view
-      const thread = Array.isArray(data.thread)
-        ? data.thread.map((a: any) => ({
-            ...a,
-            body: normalizeZammadHtmlToText(a?.body),
-          }))
-        : [];
-
-      setTicketDetail({ ticket: data.ticket, thread });
+      setTicketDetail({ ticket: data.ticket, thread: data.thread ?? [] });
     } catch (e: any) {
       setTicketDetail(null);
       setDetailError(e?.message ?? "Failed to load ticket");
@@ -648,6 +397,122 @@ export function AgentChat() {
     }
   }
 
+  function handleSend(msg: string) {
+    if (!msg.trim()) return;
+
+    // Always record the user's message
+    const userTurn: AgentMessage = { role: "user", content: msg };
+    const newMessages = [...messages, userTurn];
+    setMessages(newMessages);
+
+    // 🚨 Client-side escalation override:
+    // If user asks for a human, DO NOT let the LLM refuse. Show escalation options immediately.
+    if (isHumanRequest(msg)) {
+      if (!isAuthed) {
+        const choiceLogin: AgentChoice = {
+          label: "Sign in to contact support",
+          action: { type: "login" },
+        } as any;
+
+        const choiceContinue: AgentChoice = {
+          label: "Continue chatting",
+          action: { type: "continueChat" },
+        } as any;
+
+        setMessages((prev) => [
+          ...prev,
+          makeAssistantMessage(
+            "I can get a human to help — you’ll just need to sign in first. Once you’re signed in, you can raise a ticket for a human agent (with the full transcript).",
+            [choiceLogin, choiceContinue]
+          ),
+        ]);
+        return;
+      }
+
+      const choiceTicket: AgentChoice = {
+        label: "Yes — raise a ticket for a human",
+        action: { type: "openNewTicketModal" },
+      } as any;
+
+      const choiceContinue: AgentChoice = {
+        label: "No — continue chatting",
+        action: { type: "continueChat" },
+      } as any;
+
+      setMessages((prev) => [
+        ...prev,
+        makeAssistantMessage(
+          "Would you like to raise a ticket for a human agent to review? You can write exactly what you need, and we’ll attach the transcript.",
+          [choiceTicket, choiceContinue]
+        ),
+      ]);
+      return;
+    }
+
+    // Normal LLM path
+    callAgent(newMessages);
+  }
+
+  function handleChoice(choice: AgentChoice) {
+    // SPECIAL CASE: journey buttons with deep-link URLs
+    const action: any = (choice as any).action;
+    if (action && action.type === "openJourney" && action.url) {
+      const url: string = action.url;
+
+      const newMessages: AgentMessage[] = [
+        ...messages,
+        { role: "user", content: choice.label, payload: choice.action },
+        {
+          role: "assistant",
+          content: "Opening that journey in the schedule view for you…",
+        },
+      ];
+      setMessages(newMessages);
+
+      if (typeof window !== "undefined") window.location.href = url;
+      return;
+    }
+
+    // Record the user's choice as a user message (so you don't lose it)
+    const withChoice = [
+      ...messages,
+      { role: "user", content: choice.label, payload: choice.action } as any,
+    ];
+    setMessages(withChoice);
+
+    // Local-only actions
+    if (action?.type === "login") {
+      if (typeof window !== "undefined") window.location.href = "/login";
+      return;
+    }
+
+    if (action?.type === "openNewTicketModal") {
+      setNewErr(null);
+      setNewOpen(true);
+
+      // Helpful defaults (user can overwrite)
+      if (!newTitle.trim()) setNewTitle("Request for human support");
+      if (!newMessage.trim())
+        setNewMessage(
+          "Please describe what you need help with (a human agent will respond)."
+        );
+
+      return;
+    }
+
+    if (action?.type === "continueChat") {
+      // Continue via agent, with the choice recorded as input
+      callAgent(withChoice);
+      return;
+    }
+
+    // Default: send to agent
+    callAgent(withChoice);
+  }
+
+  const last = messages[messages.length - 1];
+  const lastChoices = (last as any)?.choices ?? [];
+
   return (
     <div className="w-full max-w-6xl mx-auto px-4">
       {/* Page header */}
@@ -698,16 +563,10 @@ export function AgentChat() {
                 </span>
                 <div>
                   <div className="text-sm font-semibold">
-                    {liveMode === "live" ? "Pace Shuttles Support" : "Pace Shuttles Assistant"}
+                    Pace Shuttles Assistant
                   </div>
                   <div className="text-xs text-slate-500">
-                    {liveMode === "live"
-                      ? "Live agent chat"
-                      : pending
-                      ? "Thinking…"
-                      : isAuthed
-                      ? "Connected"
-                      : "Online"}
+                    {pending ? "Thinking…" : isAuthed ? "Connected" : "Online"}
                   </div>
                 </div>
               </div>
@@ -716,141 +575,83 @@ export function AgentChat() {
                 <div className="hidden sm:block text-xs text-slate-500">
                   Sign in to unlock ticket tracking & human support.
                 </div>
-              ) : liveMode === "live" ? (
-                <button
-                  type="button"
-                  onClick={stopLiveAgentAndReturnToAssistant}
-                  className="text-xs rounded-lg px-3 py-2 bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                >
-                  Back to assistant
-                </button>
               ) : null}
             </div>
 
-            {/* Messages OR Live widget */}
-            {liveMode === "live" ? (
-              <div className="p-4">
-                {/* Hidden manual-open hook required by Zammad docs */}
-                <button
-                  type="button"
-                  className="open-zammad-chat"
-                  style={{ display: "none" }}
-                >
-                  Open chat
-                </button>
-
-                <div className="mb-3 text-sm text-slate-700">
-                  You’re now connected to a live support agent. If you don’t see the
-                  chat, it may mean no agents are online.
-                </div>
-
-                {liveErr && (
-                  <div className="mb-3 text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
-                    {liveErr}
-                  </div>
-                )}
-
-                {/* Zammad widget mount point (renders inside your existing chat panel) */}
+            {/* Messages */}
+            <div className="h-[70vh] overflow-y-auto px-4 py-4 space-y-3">
+              {messages.map((m, i) => (
                 <div
-                  ref={zammadMountRef}
-                  className="rounded-2xl ring-1 ring-slate-200 bg-white overflow-hidden min-h-[60vh]"
-                />
-              </div>
-            ) : (
-              <>
-                {/* Messages */}
-                <div className="h-[70vh] overflow-y-auto px-4 py-4 space-y-3">
-                  {messages.map((m, i) => (
-                    <div
-                      key={i}
-                      className={`flex ${
-                        m.role === "assistant" ? "justify-start" : "justify-end"
-                      }`}
-                    >
-                      <div
-                        className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
-                          m.role === "assistant"
-                            ? "bg-slate-50 text-slate-900 ring-slate-200"
-                            : "bg-blue-600 text-white ring-blue-600"
-                        }`}
-                      >
-                        {m.content}
-                      </div>
-                    </div>
-                  ))}
-
-                  {pending && (
-                    <div className="flex justify-start">
-                      <div className="bg-slate-50 text-slate-900 ring-1 ring-slate-200 px-4 py-3 rounded-2xl w-24 animate-pulse text-sm">
-                        •••
-                      </div>
-                    </div>
-                  )}
-
-                  {lastChoices.length > 0 && (
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {lastChoices.map((choice, i) => (
-                        <button
-                          key={i}
-                          className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm disabled:opacity-60"
-                          onClick={() => handleChoice(choice)}
-                          disabled={pending}
-                        >
-                          {choice.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Live agent status affordance (does not change existing flows) */}
-                  {isAuthed && liveMode === "starting" && (
-                    <div className="pt-2 text-sm text-slate-600">
-                      Checking for live agents…
-                    </div>
-                  )}
-                  {isAuthed && liveMode === "unavailable" && (
-                    <div className="pt-2 text-sm text-slate-600">
-                      No live agents are available right now.
-                    </div>
-                  )}
-                  {isAuthed && liveMode === "error" && (
-                    <div className="pt-2 text-sm text-red-600">
-                      {liveErr ?? "Live chat failed to start."}
-                    </div>
-                  )}
-
-                  <div ref={bottomRef} />
-                </div>
-
-                {/* Input */}
-                <form
-                  className="p-4 border-t border-slate-100 flex gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const form = e.currentTarget as HTMLFormElement & {
-                      message: { value: string };
-                    };
-                    const val = form.message.value;
-                    form.reset();
-                    handleSend(val);
-                  }}
+                  key={i}
+                  className={`flex ${
+                    m.role === "assistant" ? "justify-start" : "justify-end"
+                  }`}
                 >
-                  <input
-                    name="message"
-                    className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Ask about countries, destinations, bookings…"
-                    disabled={pending}
-                  />
-                  <button
-                    type="submit"
-                    disabled={pending}
-                    className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm disabled:opacity-60 hover:bg-blue-700"
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
+                      m.role === "assistant"
+                        ? "bg-slate-50 text-slate-900 ring-slate-200"
+                        : "bg-blue-600 text-white ring-blue-600"
+                    }`}
                   >
-                    Send
-                  </button>
-                </form>
-              </>
-            )}
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+
+              {pending && (
+                <div className="flex justify-start">
+                  <div className="bg-slate-50 text-slate-900 ring-1 ring-slate-200 px-4 py-3 rounded-2xl w-24 animate-pulse text-sm">
+                    •••
+                  </div>
+                </div>
+              )}
+
+              {lastChoices.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {lastChoices.map((choice: AgentChoice, i: number) => (
+                    <button
+                      key={i}
+                      className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm disabled:opacity-60"
+                      onClick={() => handleChoice(choice)}
+                      disabled={pending}
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div ref={bottomRef} />
+            </div>
+
+            {/* Input */}
+            <form
+              className="p-4 border-t border-slate-100 flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.currentTarget as HTMLFormElement & {
+                  message: { value: string };
+                };
+                const val = form.message.value;
+                form.reset();
+                handleSend(val);
+              }}
+            >
+              <input
+                name="message"
+                className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Ask about countries, destinations, bookings…"
+                disabled={pending}
+              />
+              <button
+                type="submit"
+                disabled={pending}
+                className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm disabled:opacity-60 hover:bg-blue-700"
+              >
+                Send
+              </button>
+            </form>
           </div>
         </div>
 
@@ -880,23 +681,25 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => {
-                        setTicketDetail(null);
-                        setSelectedTicketId(null);
-                        setTicketStatusFilter(s);
-                      }}
-                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                        ticketStatusFilter === s
-                          ? "bg-slate-900 text-white ring-slate-900"
-                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                      }`}
-                    >
-                      {humanStatus(s)}
-                    </button>
-                  ))}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
+                    (s) => (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          setTicketDetail(null);
+                          setSelectedTicketId(null);
+                          setTicketStatusFilter(s);
+                        }}
+                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                          ticketStatusFilter === s
+                            ? "bg-slate-900 text-white ring-slate-900"
+                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        {humanStatus(s)}
+                      </button>
+                    )
+                  )}
                 </div>
               </div>
 
@@ -1036,7 +839,8 @@ export function AgentChat() {
                               : "Reply to support…"
                           }
                           disabled={
-                            replySending || ticketDetail.ticket.status === "closed"
+                            replySending ||
+                            ticketDetail.ticket.status === "closed"
                           }
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
@@ -1195,14 +999,6 @@ export function AgentChat() {
           </div>
         </div>
       )}
-
-      {/* Developer convenience: allow manual start live chat without altering existing agent logic */}
-      {/* (Hidden by default; turn into a visible control only if you want it.) */}
-      <div className="hidden">
-        <button type="button" onClick={startLiveAgentInPlace}>
-          Start live agent
-        </button>
-      </div>
     </div>
   );
 }
