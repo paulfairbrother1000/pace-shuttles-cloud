@@ -229,12 +229,16 @@ function htmlToText(input: string) {
 /*  Zammad widget loader                                                      */
 /* -------------------------------------------------------------------------- */
 
-// ✅ NEW: explicit host constants so the widget never tries to auto-detect “undefined”
+/**
+ * IMPORTANT (based on your console test):
+ * - wss://pace-shuttles-helpdesk.zammad.com/ws works
+ * - wss://pace-shuttles-helpdesk.zammad.com/ fails
+ *
+ * So we must ensure the widget uses /ws (if supported) and never "undefined".
+ */
 const ZAMMAD_HOST = "https://pace-shuttles-helpdesk.zammad.com";
-const ZAMMAD_CHAT_ID = 1;
-
-// Keep script src derived from host
 const ZAMMAD_WIDGET_SRC = `${ZAMMAD_HOST}/assets/chat/chat-no-jquery.min.js`;
+const ZAMMAD_CHAT_CSS_URL = `${ZAMMAD_HOST}/assets/chat/chat.css`;
 
 declare global {
   interface Window {
@@ -242,10 +246,9 @@ declare global {
   }
 }
 
-// ✅ NEW: a safer loader that resolves if script already loaded + waits for window.ZammadChat
 async function ensureZammadWidgetLoaded(): Promise<void> {
   if (typeof window === "undefined") return;
-  if (window.ZammadChat) return;
+  if (typeof window.ZammadChat === "function") return;
 
   await new Promise<void>((resolve, reject) => {
     const existing = document.querySelector(
@@ -253,43 +256,25 @@ async function ensureZammadWidgetLoaded(): Promise<void> {
     ) as HTMLScriptElement | null;
 
     if (existing) {
-      // If it already loaded, resolve immediately
-      if ((existing as any).dataset?.loaded === "1") return resolve();
-
-      existing.addEventListener("load", () => {
-        (existing as any).dataset.loaded = "1";
-        resolve();
-      });
+      // Already appended; wait for load
+      existing.addEventListener("load", () => resolve());
       existing.addEventListener("error", () =>
-        reject(new Error("Zammad script failed"))
+        reject(new Error("Zammad script failed to load"))
       );
-
-      // In some browsers the script may already be complete
-      if ((existing as any).readyState === "complete") {
-        (existing as any).dataset.loaded = "1";
-        resolve();
-      }
       return;
     }
 
     const s = document.createElement("script");
     s.src = ZAMMAD_WIDGET_SRC;
     s.async = true;
-    s.onload = () => {
-      (s as any).dataset.loaded = "1";
-      resolve();
-    };
-    s.onerror = () => reject(new Error("Zammad script failed"));
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Zammad script failed to load"));
     document.head.appendChild(s);
   });
 
-  // Give the script a tick to populate window.ZammadChat
-  if (!window.ZammadChat) {
-    await new Promise((r) => setTimeout(r, 50));
-  }
-
-  if (!window.ZammadChat) {
-    throw new Error("ZammadChat did not initialise (window.ZammadChat missing).");
+  // Safety: after load we expect a constructor on window
+  if (typeof window.ZammadChat !== "function") {
+    throw new Error("ZammadChat constructor not available after script load");
   }
 }
 
@@ -650,21 +635,16 @@ export function AgentChat() {
     setReplyError(null);
 
     try {
-      const res = await fetch(
-        `/api/support/tickets/${selectedTicketId}/reply`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ message: msg }),
-        }
-      );
+      const res = await fetch(`/api/support/tickets/${selectedTicketId}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ message: msg }),
+      });
       const data = await res.json();
 
       if (!res.ok || !data?.ok) {
-        throw new Error(
-          data?.message ?? data?.error ?? "Failed to send reply"
-        );
+        throw new Error(data?.message ?? data?.error ?? "Failed to send reply");
       }
 
       setReplyMsg("");
@@ -763,20 +743,30 @@ export function AgentChat() {
       if (
         !zammadInitRef.current &&
         typeof window !== "undefined" &&
-        window.ZammadChat
+        typeof window.ZammadChat === "function"
       ) {
         zammadInitRef.current = true;
 
-        // Manual open mode. We'll programmatically click a hidden open button.
+        /**
+         * Critical hardening:
+         * - host MUST include protocol, otherwise it becomes a path on current origin
+         * - provide cssUrl to avoid "https://undefined/assets/..."
+         * - attempt to force wsPath=/ws (your environment requires it)
+         *
+         * If wsPath is ignored by the library, it is harmless.
+         */
         new window.ZammadChat({
-          chatId: ZAMMAD_CHAT_ID,
-          show: false,
-          host: ZAMMAD_HOST, // ✅ keep host explicit to avoid “undefined”
-          debug: true, // ✅ tells you why it isn’t showing (console)
+          chatId: 1,
+          show: false, // manual open
+          debug: true,
+          host: ZAMMAD_HOST,
+          cssAutoload: true,
+          cssUrl: ZAMMAD_CHAT_CSS_URL,
+          wsPath: "/ws",
         });
       }
 
-      // Open it
+      // Open it (manual open mode)
       setTimeout(() => {
         openZammadBtnRef.current?.click();
       }, 50);
@@ -858,7 +848,8 @@ export function AgentChat() {
           // server may ignore these extras safely; existing route should not break
           title: titleHint,
           message: messageToSend, // ALWAYS non-empty => avoids MESSAGE_REQUIRED
-          ai_escalation_reason: "User requested a human from chat escalation flow.",
+          ai_escalation_reason:
+            "User requested a human from chat escalation flow.",
           provisional_category_hint: categoryHint,
           source: "chat_escalation",
         }),
@@ -1144,25 +1135,23 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
-                    (s) => (
-                      <button
-                        key={s}
-                        onClick={() => {
-                          setTicketDetail(null);
-                          setSelectedTicketId(null);
-                          setTicketStatusFilter(s);
-                        }}
-                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                          ticketStatusFilter === s
-                            ? "bg-slate-900 text-white ring-slate-900"
-                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                        }`}
-                      >
-                        {humanStatus(s)}
-                      </button>
-                    )
-                  )}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setTicketDetail(null);
+                        setSelectedTicketId(null);
+                        setTicketStatusFilter(s);
+                      }}
+                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                        ticketStatusFilter === s
+                          ? "bg-slate-900 text-white ring-slate-900"
+                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      {humanStatus(s)}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -1302,8 +1291,7 @@ export function AgentChat() {
                               : "Reply to support…"
                           }
                           disabled={
-                            replySending ||
-                            ticketDetail.ticket.status === "closed"
+                            replySending || ticketDetail.ticket.status === "closed"
                           }
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
@@ -1380,8 +1368,8 @@ export function AgentChat() {
               ) : (
                 <div className="text-sm text-slate-700">
                   If the live chat doesn’t appear, it usually means no agents are
-                  online. You can raise a ticket instead and we’ll include the
-                  full transcript.
+                  online. You can raise a ticket instead and we’ll include the full
+                  transcript.
                 </div>
               )}
 
