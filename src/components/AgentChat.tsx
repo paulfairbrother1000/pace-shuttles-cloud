@@ -1,7 +1,7 @@
 // src/components/AgentChat.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentMessage,
   AgentResponse,
@@ -22,6 +22,23 @@ const sb =
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
       )
     : null;
+
+/* -------------------------------------------------------------------------- */
+/*  Optional Zammad Chat widget (for live agent “drop-in”)                    */
+/*  - Requires you to paste the widget snippet values into env vars.          */
+/*  - If not configured / no agents available, we fall back to ticket.        */
+/* -------------------------------------------------------------------------- */
+
+declare global {
+  interface Window {
+    // Zammad widget uses a function named `zammadChat` in many deployments.
+    // We keep it loose because implementations vary.
+    zammadChat?: any;
+  }
+}
+
+const ZAMMAD_CHAT_HOST = process.env.NEXT_PUBLIC_ZAMMAD_CHAT_HOST; // e.g. "https://pace-shuttles-helpdesk.zammad.com"
+const ZAMMAD_CHAT_ID = process.env.NEXT_PUBLIC_ZAMMAD_CHAT_ID; // e.g. "1"
 
 type AuthState =
   | { status: "loading" }
@@ -86,21 +103,47 @@ function humanStatus(status: TicketStatus) {
   return "Closed";
 }
 
-function makeTranscript(msgs: AgentMessage[]) {
-  const lines: string[] = [];
-  for (const m of msgs || []) {
-    const who =
-      m.role === "user"
-        ? "Customer"
-        : m.role === "assistant"
-        ? "Pace Shuttles Assistant"
-        : String(m.role || "Unknown");
+/* -------------------------------------------------------------------------- */
+/*  Escalation rules (v1)                                                     */
+/* -------------------------------------------------------------------------- */
 
-    const text = String(m.content || "").trim();
-    if (!text) continue;
-    lines.push(`${who}:\n${text}\n`);
-  }
-  return lines.join("\n");
+function looksLikeHumanRequest(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("human") ||
+    t.includes("agent") ||
+    t.includes("representative") ||
+    t.includes("person") ||
+    t.includes("someone real") ||
+    t.includes("talk to") ||
+    t.includes("speak to") ||
+    t.includes("live chat")
+  );
+}
+
+function looksFrustrated(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("frustrat") ||
+    t.includes("annoy") ||
+    t.includes("angry") ||
+    t.includes("unacceptable") ||
+    t.includes("ridiculous") ||
+    t.includes("useless") ||
+    t.includes("this is bad") ||
+    t.includes("doesn't work") ||
+    t.includes("does not work") ||
+    t.includes("still not working")
+  );
+}
+
+function buildTranscript(msgs: AgentMessage[]) {
+  // Whole agent chat history, suitable for “public view” in the ticket.
+  // Keep it simple & readable.
+  return msgs
+    .filter((m) => typeof m?.content === "string" && m.content.trim())
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
 }
 
 export function AgentChat() {
@@ -129,6 +172,8 @@ export function AgentChat() {
         content: "Restarted! How can I help with your Pace Shuttles adventure?",
       },
     ]);
+    setEscalationOpen(false);
+    setLiveChatMode(false);
   }
 
   async function callAgent(newMessages: AgentMessage[]) {
@@ -168,6 +213,41 @@ export function AgentChat() {
 
   function handleSend(msg: string) {
     if (!msg.trim()) return;
+
+    // Intercept “human / frustration” escalation (v1).
+    const shouldOfferEscalation = looksLikeHumanRequest(msg) || looksFrustrated(msg);
+
+    if (shouldOfferEscalation) {
+      if (!isAuthed) {
+        // Not logged in: we cannot raise/track tickets for this user.
+        const next: AgentMessage[] = [
+          ...messages,
+          { role: "user", content: msg },
+          {
+            role: "assistant",
+            content:
+              "I can bring in a human, but you’ll need to log in first so we can connect it to your support record. Use the Login button in the header, then come back here and I’ll hand it over.",
+          },
+        ];
+        setMessages(next);
+        return;
+      }
+
+      // Logged in: offer live agent (and ticket fallback)
+      const next: AgentMessage[] = [
+        ...messages,
+        { role: "user", content: msg },
+        {
+          role: "assistant",
+          content:
+            "Would you like to contact a live agent? If no one is available, I can raise a ticket and an agent will get back to you — with the full transcript.",
+        },
+      ];
+      setMessages(next);
+      setEscalationOpen(true);
+      return;
+    }
+
     const newMessages = [...messages, { role: "user", content: msg }];
     setMessages(newMessages);
     callAgent(newMessages);
@@ -263,12 +343,6 @@ export function AgentChat() {
   const [newErr, setNewErr] = useState<string | null>(null);
   const [newBusy, setNewBusy] = useState(false);
 
-  // Escalate-from-chat modal state
-  const [escOpen, setEscOpen] = useState(false);
-  const [escUserNote, setEscUserNote] = useState("");
-  const [escBusy, setEscBusy] = useState(false);
-  const [escErr, setEscErr] = useState<string | null>(null);
-
   async function loadTickets(status: TicketStatus) {
     setTicketsLoading(true);
     setTicketsError(null);
@@ -328,12 +402,8 @@ export function AgentChat() {
       setReplyError(null);
       setReplySending(false);
       setNewOpen(false);
-
-      // Escalation UI reset
-      setEscOpen(false);
-      setEscUserNote("");
-      setEscErr(null);
-      setEscBusy(false);
+      setEscalationOpen(false);
+      setLiveChatMode(false);
       return;
     }
     loadTickets(ticketStatusFilter);
@@ -384,10 +454,17 @@ export function AgentChat() {
     }
   }
 
-  async function createNewTicket() {
+  async function createNewTicket(overrides?: {
+    title?: string | null;
+    message?: string | null;
+    reference?: string | null;
+    desiredOutcome?: string | null;
+    ai_escalation_reason?: string | null;
+  }) {
     setNewErr(null);
-    const body = newMessage.trim();
-    if (!body) {
+
+    const bodyText = (overrides?.message ?? newMessage).trim();
+    if (!bodyText) {
       setNewErr("Please describe what you need help with.");
       return;
     }
@@ -399,10 +476,17 @@ export function AgentChat() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          title: newTitle.trim() ? newTitle.trim() : null,
-          message: body,
-          reference: newRef.trim() ? newRef.trim() : null,
-          desiredOutcome: newOutcome.trim() ? newOutcome.trim() : null,
+          title:
+            overrides?.title ??
+            (newTitle.trim() ? newTitle.trim() : null),
+          message: bodyText,
+          reference:
+            overrides?.reference ??
+            (newRef.trim() ? newRef.trim() : null),
+          desiredOutcome:
+            overrides?.desiredOutcome ??
+            (newOutcome.trim() ? newOutcome.trim() : null),
+          ai_escalation_reason: overrides?.ai_escalation_reason ?? null,
         }),
       });
 
@@ -411,7 +495,7 @@ export function AgentChat() {
         throw new Error(data?.error ?? "Failed to create ticket");
       }
 
-      // Reset modal
+      // Reset modal fields
       setNewOpen(false);
       setNewTitle("");
       setNewMessage("");
@@ -428,6 +512,16 @@ export function AgentChat() {
         setSelectedTicketId(createdId);
         await loadTicketDetail(createdId);
       }
+
+      // Helpful in-chat confirmation
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "Done — I’ve raised a ticket for you and included the transcript. A support agent will get back to you as soon as possible.",
+        },
+      ]);
     } catch (e: any) {
       setNewErr(e?.message ?? "Failed to create ticket");
     } finally {
@@ -435,69 +529,130 @@ export function AgentChat() {
     }
   }
 
-  async function escalateFromChat() {
-    if (!isAuthed) return;
+  /* ------------------------- Escalation (live agent) ---------------------- */
+  const [escalationOpen, setEscalationOpen] = useState(false);
+  const [escalationBusy, setEscalationBusy] = useState(false);
+  const [escalationErr, setEscalationErr] = useState<string | null>(null);
 
-    setEscErr(null);
-    setEscBusy(true);
+  const [liveChatMode, setLiveChatMode] = useState(false);
+  const transcript = useMemo(() => buildTranscript(messages), [messages]);
+
+  async function ensureZammadWidgetLoaded(): Promise<boolean> {
+    // If you already inject the widget globally elsewhere, this will be a no-op.
+    if (!ZAMMAD_CHAT_HOST || !ZAMMAD_CHAT_ID) return false;
+    if (typeof window === "undefined") return false;
+
+    // If function already present, assume loaded.
+    if (typeof window.zammadChat === "function") return true;
+
+    // Try to load the widget script. Many Zammad installs expose it at /assets/chat/chat.min.js
+    // (If your URL differs, set up a proper embed separately.)
+    const scriptUrl = `${ZAMMAD_CHAT_HOST.replace(/\/$/, "")}/assets/chat/chat.min.js`;
+
+    // Avoid double-inject
+    if (document.querySelector(`script[data-ps-zammad-chat="1"]`)) {
+      // Give it a moment to attach
+      await new Promise((r) => setTimeout(r, 300));
+      return typeof window.zammadChat === "function";
+    }
+
+    await new Promise<void>((resolve) => {
+      const s = document.createElement("script");
+      s.src = scriptUrl;
+      s.async = true;
+      s.setAttribute("data-ps-zammad-chat", "1");
+      s.onload = () => resolve();
+      s.onerror = () => resolve();
+      document.body.appendChild(s);
+    });
+
+    return typeof window.zammadChat === "function";
+  }
+
+  async function startLiveAgentFlow() {
+    setEscalationBusy(true);
+    setEscalationErr(null);
 
     try {
-      const transcript = makeTranscript(messages);
+      // 1) Load widget if configured.
+      const loaded = await ensureZammadWidgetLoaded();
 
-      // A short, deterministic failure reason for now.
-      // Later: you can pass richer details from /api/agent (signals, counters, tool errors).
-      const aiFailureReason =
-        "User requested escalation from the chat experience. AI may not have fully resolved the query within the chat flow.";
+      // 2) If widget available, start it. If no agents are available,
+      // Zammad simply won’t display it (per Zammad’s behaviour).
+      if (loaded && ZAMMAD_CHAT_HOST && ZAMMAD_CHAT_ID) {
+        try {
+          window.zammadChat?.({
+            host: ZAMMAD_CHAT_HOST,
+            chatId: Number(ZAMMAD_CHAT_ID),
+            // You can enable debug in Zammad widget if needed:
+            // debug: true,
+          });
 
-      const res = await fetch("/api/support/escalate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          title: null,
-          messages,
-          userNote: escUserNote.trim() ? escUserNote.trim() : null,
-          escalationReason: "Escalated from chat (user requested ticket).",
-          // Optional internal hints
-          aiFailureReason,
-          // If you later generate AI summary inside /api/agent, pass it here.
-          aiSummary: null,
-        }),
-      });
+          setLiveChatMode(true);
+          setEscalationOpen(false);
 
-      const data = await res.json();
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? "Failed to raise ticket from chat");
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content:
+                "Connecting you to a live agent now… If no one is available, I can raise a ticket with the full transcript.",
+            },
+          ]);
+
+          // Give widget a moment to show; if it doesn’t, we fall back to ticket.
+          await new Promise((r) => setTimeout(r, 1200));
+
+          // If Zammad doesn’t show (e.g. no agents available), we can’t reliably detect it
+          // without deeper widget hooks. For now, offer ticket fallback immediately.
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content:
+                "If you don’t see the live chat widget appear, it usually means no agents are available right now. Would you like me to raise a ticket instead?",
+            },
+          ]);
+
+          // Keep the escalation modal closed; user can hit “New ticket” or we can pop modal.
+          return;
+        } catch {
+          // fall through to ticket fallback
+        }
       }
 
-      // Close modal + reset note
-      setEscOpen(false);
-      setEscUserNote("");
-
-      // Refresh tickets and focus the created ticket
-      setTicketStatusFilter("open");
-      await loadTickets("open");
-
-      const createdId = data.ticket?.id as number | undefined;
-      if (createdId) {
-        setSelectedTicketId(createdId);
-        await loadTicketDetail(createdId);
-      }
-
-      // Add a friendly confirmation message into chat
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "Thanks — I’ve raised a support ticket and included our chat transcript. A Pace Shuttles agent will get back to you here as soon as possible.",
-        },
-      ]);
-    } catch (e: any) {
-      setEscErr(e?.message ?? "Failed to escalate");
+      // Not configured / couldn’t load widget: fallback to ticket creation offer
+      setEscalationErr(
+        "Live chat isn’t available right now. I can raise a ticket and a support agent will get back to you."
+      );
     } finally {
-      setEscBusy(false);
+      setEscalationBusy(false);
     }
+  }
+
+  function openTicketFromTranscript() {
+    if (!isAuthed) return;
+
+    // Pre-fill the ticket modal, but keep user in control (no extra forms required beyond confirm).
+    setNewErr(null);
+    setNewTitle(""); // Let server derive
+    setNewRef("");
+    setNewOutcome("Talk to a human / handover from chat");
+    setNewMessage(
+      `Transcript (Pace Shuttles Assistant)\n\n${transcript}`
+    );
+    setNewOpen(true);
+    setEscalationOpen(false);
+
+    // Also add a small in-chat message so it feels continuous
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content:
+          "No problem — I can raise a ticket for a human to pick up. I’ll include the full chat transcript so you don’t have to repeat yourself.",
+      },
+    ]);
   }
 
   return (
@@ -536,9 +691,7 @@ export function AgentChat() {
       </div>
 
       {/* Layout */}
-      <div
-        className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}
-      >
+      <div className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}>
         {/* Chat panel (always) */}
         <div className={isAuthed ? "lg:col-span-3" : ""}>
           <div className="rounded-2xl ring-1 ring-slate-200 bg-white shadow-sm">
@@ -549,30 +702,18 @@ export function AgentChat() {
                   PS
                 </span>
                 <div>
-                  <div className="text-sm font-semibold">
-                    Pace Shuttles Assistant
-                  </div>
+                  <div className="text-sm font-semibold">Pace Shuttles Assistant</div>
                   <div className="text-xs text-slate-500">
-                    {pending ? "Thinking…" : isAuthed ? "Connected" : "Online"}
+                    {pending ? "Thinking…" : liveChatMode ? "Live agent mode" : isAuthed ? "Connected" : "Online"}
                   </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {isAuthed ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEscErr(null);
-                      setEscOpen(true);
-                    }}
-                    className="text-xs rounded-lg px-3 py-2 bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-                    title="Raise a ticket and include this chat transcript"
-                  >
-                    Raise a ticket
-                  </button>
-                ) : null}
-              </div>
+              {!isAuthed && auth.status !== "loading" ? (
+                <div className="hidden sm:block text-xs text-slate-500">
+                  Sign in to unlock ticket tracking & human support.
+                </div>
+              ) : null}
             </div>
 
             {/* Messages */}
@@ -580,9 +721,7 @@ export function AgentChat() {
               {messages.map((m, i) => (
                 <div
                   key={i}
-                  className={`flex ${
-                    m.role === "assistant" ? "justify-start" : "justify-end"
-                  }`}
+                  className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}
                 >
                   <div
                     className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
@@ -660,9 +799,7 @@ export function AgentChat() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Your tickets</div>
-                    <div className="text-xs text-slate-500">
-                      Open ↔ Resolved ↔ Closed
-                    </div>
+                    <div className="text-xs text-slate-500">Open ↔ Resolved ↔ Closed</div>
                   </div>
 
                   <button
@@ -678,34 +815,30 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
-                    (s) => (
-                      <button
-                        key={s}
-                        onClick={() => {
-                          setTicketDetail(null);
-                          setSelectedTicketId(null);
-                          setTicketStatusFilter(s);
-                        }}
-                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                          ticketStatusFilter === s
-                            ? "bg-slate-900 text-white ring-slate-900"
-                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                        }`}
-                      >
-                        {humanStatus(s)}
-                      </button>
-                    )
-                  )}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setTicketDetail(null);
+                        setSelectedTicketId(null);
+                        setTicketStatusFilter(s);
+                      }}
+                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                        ticketStatusFilter === s
+                          ? "bg-slate-900 text-white ring-slate-900"
+                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      {humanStatus(s)}
+                    </button>
+                  ))}
                 </div>
               </div>
 
               {/* Ticket list */}
               <div className="max-h-[28vh] overflow-y-auto border-b border-slate-100">
                 {ticketsLoading ? (
-                  <div className="p-4 text-sm text-slate-600">
-                    Loading tickets…
-                  </div>
+                  <div className="p-4 text-sm text-slate-600">Loading tickets…</div>
                 ) : ticketsError ? (
                   <div className="p-4 text-sm text-red-600">{ticketsError}</div>
                 ) : tickets.length === 0 ? (
@@ -714,8 +847,7 @@ export function AgentChat() {
                       No {humanStatus(ticketStatusFilter)} tickets
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
-                      When tickets are raised, they’ll appear here with support
-                      updates.
+                      When tickets are raised, they’ll appear here with support updates.
                     </div>
                   </div>
                 ) : (
@@ -754,19 +886,13 @@ export function AgentChat() {
               {/* Ticket detail */}
               <div className="p-4">
                 {!selectedTicketId ? (
-                  <div className="text-sm text-slate-600">
-                    Select a ticket to view the conversation.
-                  </div>
+                  <div className="text-sm text-slate-600">Select a ticket to view the conversation.</div>
                 ) : detailLoading ? (
-                  <div className="text-sm text-slate-600">
-                    Loading conversation…
-                  </div>
+                  <div className="text-sm text-slate-600">Loading conversation…</div>
                 ) : detailError ? (
                   <div className="text-sm text-red-600">{detailError}</div>
                 ) : !ticketDetail ? (
-                  <div className="text-sm text-slate-600">
-                    Ticket not available.
-                  </div>
+                  <div className="text-sm text-slate-600">Ticket not available.</div>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
@@ -775,8 +901,7 @@ export function AgentChat() {
                           {ticketDetail.ticket.title}
                         </div>
                         <div className="text-xs text-slate-500 mt-0.5">
-                          #{ticketDetail.ticket.number} • Created{" "}
-                          {fmtDateTime(ticketDetail.ticket.createdAt)}
+                          #{ticketDetail.ticket.number} • Created {fmtDateTime(ticketDetail.ticket.createdAt)}
                         </div>
                       </div>
                       <span
@@ -790,13 +915,10 @@ export function AgentChat() {
 
                     <div className="mt-3 max-h-[22vh] overflow-y-auto space-y-2 pr-1">
                       {ticketDetail.thread.length === 0 ? (
-                        <div className="text-sm text-slate-600">
-                          No public messages yet.
-                        </div>
+                        <div className="text-sm text-slate-600">No public messages yet.</div>
                       ) : (
                         ticketDetail.thread.map((a) => {
-                          const isCustomer =
-                            (a.sender ?? "").toLowerCase() === "customer";
+                          const isCustomer = (a.sender ?? "").toLowerCase() === "customer";
                           return (
                             <div
                               key={a.id}
@@ -807,9 +929,7 @@ export function AgentChat() {
                               }`}
                             >
                               <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mb-1">
-                                <span className="font-medium">
-                                  {isCustomer ? "You" : "Support"}
-                                </span>
+                                <span className="font-medium">{isCustomer ? "You" : "Support"}</span>
                                 <span>{fmtDateTime(a.createdAt)}</span>
                               </div>
                               <div className="whitespace-pre-wrap">{a.body}</div>
@@ -820,11 +940,7 @@ export function AgentChat() {
                     </div>
 
                     <div className="mt-3">
-                      {replyError && (
-                        <div className="text-sm text-red-600 mb-2">
-                          {replyError}
-                        </div>
-                      )}
+                      {replyError && <div className="text-sm text-red-600 mb-2">{replyError}</div>}
 
                       <div className="flex gap-2">
                         <textarea
@@ -835,18 +951,14 @@ export function AgentChat() {
                               ? "This ticket is closed. Create a new ticket for further help."
                               : "Reply to support…"
                           }
-                          disabled={
-                            replySending || ticketDetail.ticket.status === "closed"
-                          }
+                          disabled={replySending || ticketDetail.ticket.status === "closed"}
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
                         <button
                           type="button"
                           onClick={sendReply}
                           disabled={
-                            replySending ||
-                            ticketDetail.ticket.status === "closed" ||
-                            !replyMsg.trim()
+                            replySending || ticketDetail.ticket.status === "closed" || !replyMsg.trim()
                           }
                           className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm disabled:opacity-60 hover:bg-blue-700"
                         >
@@ -861,8 +973,7 @@ export function AgentChat() {
                       )}
                       {ticketDetail.ticket.status === "closed" && (
                         <div className="mt-2 text-xs text-slate-500">
-                          Closed tickets can’t be reopened. Please raise a new
-                          ticket.
+                          Closed tickets can’t be reopened. Please raise a new ticket.
                         </div>
                       )}
                     </div>
@@ -872,20 +983,78 @@ export function AgentChat() {
             </div>
 
             <div className="mt-3 text-xs text-slate-500">
-              “Resolved” tickets reopen automatically when you reply. “Closed”
-              tickets are final.
+              “Resolved” tickets reopen automatically when you reply. “Closed” tickets are final.
             </div>
           </div>
         )}
       </div>
 
+      {/* Escalation Modal (logged-in only) */}
+      {isAuthed && escalationOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => (escalationBusy ? null : setEscalationOpen(false))}
+          />
+          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Contact a live agent?</div>
+                <div className="text-xs text-slate-500">
+                  If no one is available, we can raise a ticket and an agent will get back to you.
+                </div>
+              </div>
+              <button
+                onClick={() => (escalationBusy ? null : setEscalationOpen(false))}
+                className="text-slate-500 hover:text-slate-900 text-sm"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              {escalationErr && (
+                <div className="text-sm text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded-xl px-3 py-2">
+                  {escalationErr}
+                </div>
+              )}
+
+              <div className="text-sm text-slate-700">
+                We’ll keep the conversation seamless — no forms. Your full transcript will be included if we create a ticket.
+              </div>
+
+              <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 p-3">
+                <div className="text-xs font-medium text-slate-700 mb-1">Transcript preview</div>
+                <pre className="text-xs text-slate-700 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                  {transcript}
+                </pre>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <button
+                onClick={() => openTicketFromTranscript()}
+                className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-60"
+                disabled={escalationBusy}
+              >
+                No — raise a ticket
+              </button>
+              <button
+                onClick={startLiveAgentFlow}
+                className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={escalationBusy}
+              >
+                {escalationBusy ? "Checking…" : "Yes — live agent"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* New Ticket Modal (logged-in only) */}
       {isAuthed && newOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
           <div
             className="absolute inset-0 bg-black/30"
             onClick={() => (newBusy ? null : setNewOpen(false))}
@@ -893,9 +1062,7 @@ export function AgentChat() {
           <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
             <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  Create a new ticket
-                </div>
+                <div className="text-sm font-semibold text-slate-900">Create a new ticket</div>
                 <div className="text-xs text-slate-500">
                   Tell us what happened — we’ll route it to the right support team.
                 </div>
@@ -917,9 +1084,7 @@ export function AgentChat() {
               )}
 
               <div>
-                <label className="text-xs font-medium text-slate-700">
-                  Short title (optional)
-                </label>
+                <label className="text-xs font-medium text-slate-700">Short title (optional)</label>
                 <input
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
@@ -933,9 +1098,7 @@ export function AgentChat() {
               </div>
 
               <div>
-                <label className="text-xs font-medium text-slate-700">
-                  What do you need help with? *
-                </label>
+                <label className="text-xs font-medium text-slate-700">What do you need help with? *</label>
                 <textarea
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
@@ -947,9 +1110,7 @@ export function AgentChat() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    Reference (optional)
-                  </label>
+                  <label className="text-xs font-medium text-slate-700">Reference (optional)</label>
                   <input
                     value={newRef}
                     onChange={(e) => setNewRef(e.target.value)}
@@ -960,9 +1121,7 @@ export function AgentChat() {
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    Desired outcome (optional)
-                  </label>
+                  <label className="text-xs font-medium text-slate-700">Desired outcome (optional)</label>
                   <input
                     value={newOutcome}
                     onChange={(e) => setNewOutcome(e.target.value)}
@@ -983,85 +1142,22 @@ export function AgentChat() {
                 Cancel
               </button>
               <button
-                onClick={createNewTicket}
+                onClick={() =>
+                  createNewTicket({
+                    title: newTitle.trim() ? newTitle.trim() : null,
+                    message: newMessage.trim(),
+                    reference: newRef.trim() ? newRef.trim() : null,
+                    desiredOutcome: newOutcome.trim() ? newOutcome.trim() : null,
+                    ai_escalation_reason:
+                      newMessage.includes("Transcript (Pace Shuttles Assistant)")
+                        ? "Chat escalation: user requested a human (transcript included)."
+                        : "User created ticket from Support page.",
+                  })
+                }
                 className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
                 disabled={newBusy}
               >
                 {newBusy ? "Creating…" : "Create ticket"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Escalate From Chat Modal (logged-in only) */}
-      {isAuthed && escOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => (escBusy ? null : setEscOpen(false))}
-          />
-          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  Raise a ticket from this chat
-                </div>
-                <div className="text-xs text-slate-500">
-                  We’ll include the full chat transcript so support can pick up quickly.
-                </div>
-              </div>
-              <button
-                onClick={() => (escBusy ? null : setEscOpen(false))}
-                className="text-slate-500 hover:text-slate-900 text-sm"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="px-5 py-4 space-y-3">
-              {escErr && (
-                <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
-                  {escErr}
-                </div>
-              )}
-
-              <div>
-                <label className="text-xs font-medium text-slate-700">
-                  Anything else you want the agent to know? (optional)
-                </label>
-                <textarea
-                  value={escUserNote}
-                  onChange={(e) => setEscUserNote(e.target.value)}
-                  placeholder="Add any key details (booking number, what you expected, what happened)…"
-                  className="mt-1 w-full min-h-[120px] rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  disabled={escBusy}
-                />
-                <div className="mt-2 text-xs text-slate-500">
-                  The ticket will include: your note (if any) + the full chat transcript.
-                </div>
-              </div>
-            </div>
-
-            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
-              <button
-                onClick={() => (escBusy ? null : setEscOpen(false))}
-                className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50"
-                disabled={escBusy}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={escalateFromChat}
-                className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
-                disabled={escBusy}
-              >
-                {escBusy ? "Raising…" : "Raise ticket"}
               </button>
             </div>
           </div>
