@@ -723,10 +723,11 @@ export function AgentChat() {
 
         // Manual open mode. We'll programmatically click a hidden open button.
         new window.ZammadChat({
-          chatId: 1,
-          show: false,
-          // Optional: debug: true,
-        });
+  chatId: 1,
+  show: false,
+  host: "https://pace-shuttles-helpdesk.zammad.com",
+});
+
       }
 
       // Open it
