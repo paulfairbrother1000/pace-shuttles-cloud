@@ -12,6 +12,7 @@ import { createBrowserClient } from "@supabase/ssr";
 /* -------------------------------------------------------------------------- */
 /*  Supabase auth (client-side) — MUST match the rest of the app              */
 /* -------------------------------------------------------------------------- */
+
 const sb =
   typeof window !== "undefined" &&
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -85,150 +86,63 @@ function humanStatus(status: TicketStatus) {
   return "Closed";
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Local persistence so chat survives login / refresh                         */
-/* -------------------------------------------------------------------------- */
-const LS_KEY = "ps_agent_chat_v1";
-const LS_ESC_KEY = "ps_agent_escalation_v1";
-
-type EscalationState =
-  | { mode: "none" }
-  | { mode: "await_login_for_human" } // anon asked for human; preserve context across login
-  | { mode: "await_raise_ticket_decision"; transcriptPreview: string } // logged-in, no live agent; ask to raise ticket
-  | { mode: "raising_ticket"; transcriptPreview: string }
-  | { mode: "done" };
-
-function safeReadJSON<T>(key: string): T | null {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
+function stripHtmlToText(input: string) {
+  if (!input) return "";
+  // Convert common line breaks first
+  let s = input.replace(/<br\s*\/?>/gi, "\n");
+  // Remove wrapping divs etc but keep their text
+  s = s.replace(/<\/(div|p|li|ul|ol|span)>/gi, "\n");
+  s = s.replace(/<(div|p|li|ul|ol|span)[^>]*>/gi, "");
+  // Remove remaining tags
+  s = s.replace(/<\/?[^>]+>/g, "");
+  // Decode a couple of common entities
+  s = s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+  // Clean up excessive whitespace
+  s = s.replace(/\n{3,}/g, "\n\n").trim();
+  return s;
 }
 
-function safeWriteJSON(key: string, val: any) {
-  try {
-    localStorage.setItem(key, JSON.stringify(val));
-  } catch {
-    // ignore
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Human / escalation detection (simple + deterministic for now)             */
-/* -------------------------------------------------------------------------- */
-function looksLikeHumanRequest(text: string) {
+function isHumanRequest(text: string) {
   const t = (text || "").toLowerCase();
   return (
     t.includes("human") ||
     t.includes("agent") ||
-    t.includes("live") ||
-    t.includes("someone") ||
-    t.includes("representative") ||
+    t.includes("live chat") ||
     t.includes("person") ||
-    t.includes("speak to") ||
+    t.includes("someone real") ||
     t.includes("talk to") ||
-    t.includes("real") ||
-    t.includes("operator")
+    t.includes("speak to")
   );
 }
 
-function transcriptFromMessages(messages: AgentMessage[]) {
-  const lines: string[] = [];
-  for (const m of messages) {
-    if (!m?.content) continue;
-    const who = m.role === "user" ? "User" : "Assistant";
-    lines.push(`${who}: ${String(m.content).trim()}`);
-  }
-  return lines.join("\n\n").trim();
-}
+type EscalationStage =
+  | "idle"
+  | "prompt_login"
+  | "ask_live_agent"
+  | "checking_live"
+  | "live_unavailable_offer_ticket"
+  | "offer_ticket_anyway";
 
-function defaultGreeting(): AgentMessage[] {
-  return [
+const LS_ESCALATE_AFTER_LOGIN = "ps_escalate_after_login_v1";
+
+export function AgentChat() {
+  /* ------------------------------ Chat state ------------------------------ */
+  const [messages, setMessages] = useState<AgentMessage[]>([
     {
       role: "assistant",
       content:
         "Hi! 👋 I can help you explore destinations, availability and your bookings. How can I help?",
     },
-  ];
-}
-
-export function AgentChat() {
-  /* ------------------------------ Chat state ------------------------------ */
-  const [messages, setMessages] = useState<AgentMessage[]>(defaultGreeting);
+  ]);
   const [pending, setPending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  /* ------------------------------ Escalation state ------------------------------ */
-  const [escalation, setEscalation] = useState<EscalationState>({ mode: "none" });
-  const [liveCheckDisabled, setLiveCheckDisabled] = useState(false);
-
-  /* ------------------------------ Tickets UI ------------------------------ */
-  const [ticketStatusFilter, setTicketStatusFilter] =
-    useState<TicketStatus>("open");
-  const [tickets, setTickets] = useState<TicketRow[]>([]);
-  const [ticketsLoading, setTicketsLoading] = useState(false);
-  const [ticketsError, setTicketsError] = useState<string | null>(null);
-
-  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
-  const [ticketDetail, setTicketDetail] = useState<TicketDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-
-  const [replyMsg, setReplyMsg] = useState("");
-  const [replySending, setReplySending] = useState(false);
-  const [replyError, setReplyError] = useState<string | null>(null);
-
-  // New ticket modal state
-  const [newOpen, setNewOpen] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-  const [newMessage, setNewMessage] = useState("");
-  const [newRef, setNewRef] = useState("");
-  const [newOutcome, setNewOutcome] = useState("");
-  const [newErr, setNewErr] = useState<string | null>(null);
-  const [newBusy, setNewBusy] = useState(false);
-
-  /* ------------------------------ Auth state ------------------------------ */
-  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
-  const isAuthed = auth.status === "authed";
-
-  /* -------------------------------------------------------------------------- */
-  /*  Restore chat + escalation on first mount                                  */
-  /* -------------------------------------------------------------------------- */
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const savedMsgs = safeReadJSON<AgentMessage[]>(LS_KEY);
-    if (savedMsgs && Array.isArray(savedMsgs) && savedMsgs.length > 0) {
-      setMessages(savedMsgs);
-    }
-
-    const savedEsc = safeReadJSON<EscalationState>(LS_ESC_KEY);
-    if (savedEsc && typeof savedEsc === "object" && (savedEsc as any).mode) {
-      setEscalation(savedEsc);
-    }
-  }, []);
-
-  /* Persist chat + escalation */
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    safeWriteJSON(LS_KEY, messages);
-  }, [messages]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    safeWriteJSON(LS_ESC_KEY, escalation);
-  }, [escalation]);
-
-  /* ------------------------------ Scroll ------------------------------ */
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     });
   };
-  useEffect(scrollToBottom, [messages, pending, escalation]);
+  useEffect(scrollToBottom, [messages, pending]);
 
   function resetChat() {
     setMessages([
@@ -237,12 +151,24 @@ export function AgentChat() {
         content: "Restarted! How can I help with your Pace Shuttles adventure?",
       },
     ]);
-    setEscalation({ mode: "none" });
+    setEscalationStage("idle");
+    setEscalationContext(null);
   }
 
-  /* -------------------------------------------------------------------------- */
-  /*  Agent call (normal mode)                                                  */
-  /* -------------------------------------------------------------------------- */
+  function appendMessage(m: AgentMessage) {
+    setMessages((prev) => [...prev, m]);
+  }
+
+  function setLastAssistantChoices(choices: AgentChoice[] | undefined) {
+    setMessages((prev) => {
+      if (!prev.length) return prev;
+      const updated = [...prev];
+      // attach choices to the last message (we ensure it’s an assistant message when calling)
+      updated[updated.length - 1] = { ...updated[updated.length - 1], choices };
+      return updated;
+    });
+  }
+
   async function callAgent(newMessages: AgentMessage[]) {
     setPending(true);
     try {
@@ -266,21 +192,18 @@ export function AgentChat() {
       }
     } catch (err) {
       console.error("Agent failed:", err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "Oops — something went wrong. Can you try again?",
-        },
-      ]);
+      appendMessage({
+        role: "assistant",
+        content: "Oops — something went wrong. Can you try again?",
+      });
     } finally {
       setPending(false);
     }
   }
 
-  /* -------------------------------------------------------------------------- */
-  /*  Supabase auth watcher                                                     */
-  /* -------------------------------------------------------------------------- */
+  /* ------------------------------ Auth state ------------------------------ */
+  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
+
   useEffect(() => {
     if (!sb) {
       setAuth({ status: "anon" });
@@ -310,309 +233,224 @@ export function AgentChat() {
     };
   }, []);
 
-  /* -------------------------------------------------------------------------- */
-  /*  If user logged in after being told to log in for human escalation,        */
-  /*  continue the escalation flow WITHOUT losing chat                          */
-  /* -------------------------------------------------------------------------- */
+  const isAuthed = auth.status === "authed";
+
+  /* --------------------------- Escalation state --------------------------- */
+  const [escalationStage, setEscalationStage] =
+    useState<EscalationStage>("idle");
+
+  // Keep the last “human request” message so we can build a better ticket later
+  const [escalationContext, setEscalationContext] = useState<{
+    triggerText: string;
+  } | null>(null);
+
+  // After login: if we previously asked the user to login to escalate, continue automatically.
   useEffect(() => {
     if (!isAuthed) return;
-
-    if (escalation.mode === "await_login_for_human") {
-      // Continue to "Would you like to contact a live agent?"
-      startHumanEscalationFlow();
+    const flag =
+      typeof window !== "undefined" ? localStorage.getItem(LS_ESCALATE_AFTER_LOGIN) : null;
+    if (flag) {
+      localStorage.removeItem(LS_ESCALATE_AFTER_LOGIN);
+      // Continue to “ask live agent” stage without losing chat state.
+      startEscalationFlow(escalationContext?.triggerText || "Talk to a human");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  /* -------------------------------------------------------------------------- */
-  /*  Live agent availability check (best-effort)                               */
-  /*  If endpoint doesn't exist yet (404), treat as "not available" quietly.    */
-  /* -------------------------------------------------------------------------- */
-  async function checkLiveAgentAvailability(): Promise<boolean> {
-    if (liveCheckDisabled) return false;
+  function startEscalationFlow(triggerText: string) {
+    setEscalationContext({ triggerText });
 
+    if (!isAuthed) {
+      setEscalationStage("prompt_login");
+
+      // assistant message with action button
+      appendMessage({
+        role: "assistant",
+        content:
+          "I can get a human to help — you’ll just need to sign in first. Once you’re signed in, I can connect you to a live agent (if available) or raise a ticket with the full transcript.",
+      });
+
+      // attach “Login” action button
+      setTimeout(() => {
+        setLastAssistantChoices([
+          {
+            label: "Login",
+            action: { type: "openUrl", url: "/login", carryEscalation: true },
+          } as any,
+          {
+            label: "No — continue chatting",
+            action: { type: "escalation_continue_chat" },
+          } as any,
+        ]);
+      }, 0);
+
+      return;
+    }
+
+    // authed
+    setEscalationStage("ask_live_agent");
+    appendMessage({
+      role: "assistant",
+      content:
+        "Would you like to contact a live agent? If no one is available, I can raise a ticket and an agent will get back to you — with the full transcript.",
+    });
+    setTimeout(() => {
+      setLastAssistantChoices([
+        {
+          label: "Yes — contact a live agent",
+          action: { type: "escalation_live_agent" },
+        } as any,
+        {
+          label: "No — raise a ticket instead",
+          action: { type: "escalation_raise_ticket" },
+        } as any,
+        {
+          label: "No — continue chatting",
+          action: { type: "escalation_continue_chat" },
+        } as any,
+      ]);
+    }, 0);
+  }
+
+  async function checkLiveAgentAvailability(): Promise<boolean> {
+    // If the endpoint doesn’t exist yet, we treat it as unavailable.
     try {
       const res = await fetch("/api/support/live/available", {
         method: "GET",
         credentials: "include",
       });
-
-      if (res.status === 404) {
-        // Endpoint not implemented (yet). Disable further checks this session.
-        setLiveCheckDisabled(true);
-        return false;
-      }
-
-      // If unauth, just treat unavailable (we gate live support behind login anyway)
-      if (res.status === 401) return false;
-
-      const data = await res.json().catch(() => null);
-
       if (!res.ok) return false;
-      return !!data?.available;
+      const data = await res.json().catch(() => null);
+      return !!data?.ok && !!data?.available;
     } catch {
       return false;
     }
   }
 
-  /* -------------------------------------------------------------------------- */
-  /*  Human escalation flow                                                     */
-  /* -------------------------------------------------------------------------- */
-  function pushAssistant(content: string, choices?: AgentChoice[]) {
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content, ...(choices ? { choices } : {}) },
-    ]);
-  }
-
-  function pushUser(content: string, payload?: any) {
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", content, ...(payload ? { payload } : {}) },
-    ]);
-  }
-
-  function loginUrl() {
-    return "/login";
-  }
-
-  async function startHumanEscalationFlow() {
-    // must be authed to proceed
-    if (!isAuthed) {
-      setEscalation({ mode: "await_login_for_human" });
-      pushAssistant(
-        "I can get a human to help — you’ll just need to sign in first. Once you’re signed in, I can connect you to a live agent (if available) or raise a ticket with the full transcript.",
-        [
-          {
-            label: "Log in",
-            action: { type: "openLogin", url: loginUrl() },
-          } as any,
-        ]
-      );
-      return;
-    }
-
-    // ask user permission for live agent
-    pushAssistant(
-      "Would you like to contact a live agent? If no one is available, I can raise a ticket and an agent will get back to you — with the full transcript.",
-      [
-        { label: "Yes — contact a live agent", action: { type: "humanYes" } } as any,
-        { label: "No — raise a ticket instead", action: { type: "humanNoRaiseTicket" } } as any,
-        { label: "No — continue chatting", action: { type: "humanNoContinue" } } as any,
-      ]
-    );
-
-    // we are now waiting for the user choice (stored implicitly by the buttons)
-    setEscalation({ mode: "none" });
-  }
-
-  async function offerTicketFromTranscript() {
-    const transcript = transcriptFromMessages(messages);
-    const preview = transcript.length > 1200 ? transcript.slice(0, 1200) + "…" : transcript;
-
-    setEscalation({ mode: "await_raise_ticket_decision", transcriptPreview: preview });
-
-    pushAssistant(
-      "No live agents are available right now. Would you like me to raise a ticket and an agent will get back to you — with the full transcript?",
-      [
-        { label: "Yes — raise a ticket", action: { type: "raiseTicketYes" } } as any,
-        { label: "No — continue chatting", action: { type: "raiseTicketNo" } } as any,
-      ]
-    );
-
-    // Optional collapsible preview (kept simple: message bubble text)
-    pushAssistant(`Preview transcript that will be sent:\n\n${preview}`);
-  }
-
-  async function createTranscriptTicket() {
-    if (!isAuthed) {
-      // anon → must sign in
-      setEscalation({ mode: "await_login_for_human" });
-      pushAssistant("To raise a support ticket, please sign in first.", [
-        { label: "Log in", action: { type: "openLogin", url: loginUrl() } } as any,
-      ]);
-      return;
-    }
-
-    const transcript = transcriptFromMessages(messages).trim();
-    if (!transcript) {
-      pushAssistant("I couldn’t build a transcript to send. Please type one more message and try again.");
-      return;
-    }
-
-    setEscalation({
-      mode: "raising_ticket",
-      transcriptPreview:
-        transcript.length > 1200 ? transcript.slice(0, 1200) + "…" : transcript,
-    });
-
-    // IMPORTANT: your API requires `message` (non-empty). We always send transcript in message.
-    const body = [
-      "Transcript (Pace Shuttles Assistant)",
-      "",
-      transcript,
-    ].join("\n");
-
-    try {
-      const res = await fetch(`/api/support/tickets`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          // Let server infer title/category/tone for now.
-          title: null,
-          message: body,
-          ai_escalation_reason: "Chat escalation → user requested human support.",
-        }),
-      });
-
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? data?.message ?? "Failed to create ticket");
-      }
-
-      const createdId = data.ticket?.id as number | undefined;
-
-      pushAssistant(
-        `Done — I’ve raised a ticket for a human agent. ${
-          data.ticket?.number ? `Ticket #${data.ticket.number}.` : ""
-        }`
-      );
-
-      // Refresh tickets panel
-      setTicketStatusFilter("open");
-      await loadTickets("open");
-
-      if (createdId) {
-        setSelectedTicketId(createdId);
-        await loadTicketDetail(createdId);
-      }
-
-      setEscalation({ mode: "done" });
-    } catch (e: any) {
-      pushAssistant(
-        `Sorry — I couldn’t raise the ticket just now (${e?.message ?? "unknown error"}). Please try again.`
-      );
-      setEscalation({ mode: "none" });
-    }
-  }
-
-  /* -------------------------------------------------------------------------- */
-  /*  Normal send handler with interception for “human” requests                */
-  /* -------------------------------------------------------------------------- */
+  /* ------------------------------ User send ------------------------------- */
   function handleSend(msg: string) {
-    const trimmed = msg.trim();
-    if (!trimmed) return;
+    const text = msg.trim();
+    if (!text) return;
 
-    // Always record the user message in chat history
-    const newMessages = [...messages, { role: "user", content: trimmed }];
-    setMessages(newMessages);
-
-    // Intercept human/support requests (local flow)
-    if (looksLikeHumanRequest(trimmed)) {
-      if (!isAuthed) {
-        setEscalation({ mode: "await_login_for_human" });
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content:
-              "I can get a human to help — you’ll just need to sign in first. Once you’re signed in, I can connect you to a live agent (if available) or raise a ticket with the full transcript.",
-            choices: [
-              {
-                label: "Log in",
-                action: { type: "openLogin", url: loginUrl() },
-              } as any,
-            ],
-          },
-        ]);
-        return;
-      }
-
-      // Logged in: start escalation options
-      startHumanEscalationFlow();
+    // If user asks for a human, intercept and start escalation flow
+    if (isHumanRequest(text)) {
+      appendMessage({ role: "user", content: text });
+      startEscalationFlow(text);
       return;
     }
 
-    // If we are in an escalation “ask” mode, and user typed, just continue with agent
+    const newMessages = [...messages, { role: "user", content: text }];
+    setMessages(newMessages);
     callAgent(newMessages);
   }
 
-  /* -------------------------------------------------------------------------- */
-  /*  Choice handler (agent choices + our local escalation buttons)             */
-  /* -------------------------------------------------------------------------- */
-  function handleChoice(choice: AgentChoice) {
+  /* ------------------------------ Choices -------------------------------- */
+  async function handleChoice(choice: AgentChoice) {
+    // Always record button selections into the transcript
+    appendMessage({
+      role: "user",
+      content: choice.label,
+      payload: (choice as any).action,
+    });
+
     const action: any = (choice as any).action;
 
-    // Record the click as a user message so history is consistent
-    pushUser(choice.label, action);
-
-    // Login action
-    if (action && action.type === "openLogin") {
-      const url = action.url || loginUrl();
-      if (typeof window !== "undefined") window.location.href = url;
-      return;
-    }
-
-    // Existing special case: openJourney deep link
+    // Deep link journeys (existing behavior)
     if (action && action.type === "openJourney" && action.url) {
-      const url: string = action.url;
-      pushAssistant("Opening that journey in the schedule view for you…");
-      if (typeof window !== "undefined") window.location.href = url;
+      appendMessage({
+        role: "assistant",
+        content: "Opening that journey in the schedule view for you…",
+      });
+      if (typeof window !== "undefined") window.location.href = action.url;
       return;
     }
 
-    // Human escalation choices
-    if (action?.type === "humanYes") {
-      (async () => {
-        const available = await checkLiveAgentAvailability();
-
-        // If/when Zammad live chat widget is integrated, this is where we “drop in” the agent.
-        // For now: if not available, offer ticket.
-        if (!available) {
-          await offerTicketFromTranscript();
-          return;
+    // Open URL actions (login button)
+    if (action && action.type === "openUrl" && action.url) {
+      if (action.carryEscalation) {
+        try {
+          localStorage.setItem(LS_ESCALATE_AFTER_LOGIN, String(Date.now()));
+        } catch {
+          // ignore
         }
-
-        // Placeholder until live chat integration is wired
-        pushAssistant(
-          "A live agent is available — live chat handover is not wired up yet in this build. For now, I can raise a ticket with the full transcript.",
-          [
-            { label: "Yes — raise a ticket", action: { type: "raiseTicketYes" } } as any,
-            { label: "No — continue chatting", action: { type: "raiseTicketNo" } } as any,
-          ]
-        );
-      })();
+      }
+      if (typeof window !== "undefined") window.location.href = action.url;
       return;
     }
 
-    if (action?.type === "humanNoContinue") {
-      pushAssistant("No problem — we’ll keep going here. What would you like to do next?");
+    // Escalation actions
+    if (action?.type === "escalation_continue_chat") {
+      setEscalationStage("idle");
+      appendMessage({
+        role: "assistant",
+        content: "No problem — we’ll keep going here. What would you like to do next?",
+      });
       return;
     }
 
-    if (action?.type === "humanNoRaiseTicket") {
-      // Explicit “no live agent, but yes ticket”
-      createTranscriptTicket();
+    if (action?.type === "escalation_live_agent") {
+      if (!isAuthed) {
+        // defensive: should not happen, but handle
+        startEscalationFlow(escalationContext?.triggerText || "Talk to a human");
+        return;
+      }
+
+      setEscalationStage("checking_live");
+      appendMessage({
+        role: "assistant",
+        content: "Checking for a live agent…",
+      });
+
+      const available = await checkLiveAgentAvailability();
+      if (available) {
+        // Placeholder until Zammad live-chat embedding is wired
+        appendMessage({
+          role: "assistant",
+          content:
+            "A live agent is available — connecting you now… (Live chat handoff is the next step to implement.)",
+        });
+        setEscalationStage("idle");
+        return;
+      }
+
+      setEscalationStage("live_unavailable_offer_ticket");
+      appendMessage({
+        role: "assistant",
+        content:
+          "No live agents are available right now. Would you like me to raise a ticket and an agent will get back to you — with the full transcript?",
+      });
+      setTimeout(() => {
+        setLastAssistantChoices([
+          {
+            label: "Yes — raise a ticket",
+            action: { type: "escalation_raise_ticket" },
+          } as any,
+          {
+            label: "No — continue chatting",
+            action: { type: "escalation_continue_chat" },
+          } as any,
+        ]);
+      }, 0);
       return;
     }
 
-    if (action?.type === "raiseTicketYes") {
-      createTranscriptTicket();
+    if (action?.type === "escalation_raise_ticket") {
+      // Open “Raise ticket from chat” modal (lets user write what they want)
+      if (!isAuthed) {
+        startEscalationFlow(escalationContext?.triggerText || "Talk to a human");
+        return;
+      }
+      setRaiseOpen(true);
+      setRaiseErr(null);
+      // Seed the user message with something helpful, but let them edit.
+      if (!raiseMessage.trim()) {
+        setRaiseMessage(escalationContext?.triggerText || "");
+      }
       return;
     }
 
-    if (action?.type === "raiseTicketNo") {
-      pushAssistant("No problem — we’ll keep going here. What would you like to do next?");
-      setEscalation({ mode: "none" });
-      return;
-    }
-
-    // Default: send the button label back into the agent
-    const newMessages = [
-      ...messages,
-      { role: "user", content: choice.label, payload: choice.action },
-    ];
+    // Default: send button label back into the agent
+    const newMessages = [...messages, { role: "user", content: choice.label, payload: action }];
     setMessages(newMessages);
     callAgent(newMessages);
   }
@@ -620,9 +458,50 @@ export function AgentChat() {
   const last = messages[messages.length - 1];
   const lastChoices = last?.choices ?? [];
 
-  /* -------------------------------------------------------------------------- */
-  /*  Tickets API helpers                                                      */
-  /* -------------------------------------------------------------------------- */
+  /* ------------------------------ Tickets UI ------------------------------ */
+  const [ticketStatusFilter, setTicketStatusFilter] =
+    useState<TicketStatus>("open");
+  const [tickets, setTickets] = useState<TicketRow[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsError, setTicketsError] = useState<string | null>(null);
+
+  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
+  const [ticketDetail, setTicketDetail] = useState<TicketDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [replyMsg, setReplyMsg] = useState("");
+  const [replySending, setReplySending] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
+
+  // New ticket modal state (Support page)
+  const [newOpen, setNewOpen] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newMessage, setNewMessage] = useState("");
+  const [newRef, setNewRef] = useState("");
+  const [newOutcome, setNewOutcome] = useState("");
+  const [newErr, setNewErr] = useState<string | null>(null);
+  const [newBusy, setNewBusy] = useState(false);
+
+  // Raise ticket from chat (escalation) modal
+  const [raiseOpen, setRaiseOpen] = useState(false);
+  const [raiseTitle, setRaiseTitle] = useState("");
+  const [raiseMessage, setRaiseMessage] = useState("");
+  const [raiseErr, setRaiseErr] = useState<string | null>(null);
+  const [raiseBusy, setRaiseBusy] = useState(false);
+  const [showTranscriptPreview, setShowTranscriptPreview] = useState(false);
+
+  const transcriptText = useMemo(() => {
+    const lines: string[] = [];
+    for (const m of messages) {
+      const who = m.role === "user" ? "User" : "Assistant";
+      const content = (m.content || "").trim();
+      if (!content) continue;
+      lines.push(`${who}: ${content}`);
+    }
+    return lines.join("\n\n");
+  }, [messages]);
+
   async function loadTickets(status: TicketStatus) {
     setTicketsLoading(true);
     setTicketsError(null);
@@ -682,6 +561,9 @@ export function AgentChat() {
       setReplyError(null);
       setReplySending(false);
       setNewOpen(false);
+      setRaiseOpen(false);
+      setRaiseErr(null);
+      setRaiseBusy(false);
       return;
     }
     loadTickets(ticketStatusFilter);
@@ -751,7 +633,6 @@ export function AgentChat() {
           message: body,
           reference: newRef.trim() ? newRef.trim() : null,
           desiredOutcome: newOutcome.trim() ? newOutcome.trim() : null,
-          ai_escalation_reason: "User created ticket from Support page.",
         }),
       });
 
@@ -760,18 +641,15 @@ export function AgentChat() {
         throw new Error(data?.error ?? "Failed to create ticket");
       }
 
-      // Reset modal
       setNewOpen(false);
       setNewTitle("");
       setNewMessage("");
       setNewRef("");
       setNewOutcome("");
 
-      // Switch to Open tickets and refresh
       setTicketStatusFilter("open");
       await loadTickets("open");
 
-      // Select created ticket
       const createdId = data.ticket?.id as number | undefined;
       if (createdId) {
         setSelectedTicketId(createdId);
@@ -781,6 +659,73 @@ export function AgentChat() {
       setNewErr(e?.message ?? "Failed to create ticket");
     } finally {
       setNewBusy(false);
+    }
+  }
+
+  async function raiseTicketFromChat() {
+    setRaiseErr(null);
+    const ask = raiseMessage.trim();
+    if (!ask) {
+      setRaiseErr("Please tell us what you want to ask a human.");
+      return;
+    }
+
+    setRaiseBusy(true);
+    try {
+      // Build message body that includes the human ask + transcript.
+      const composed = [
+        "User request for a human agent:",
+        ask,
+        "",
+        "Transcript (Pace Shuttles Assistant):",
+        transcriptText,
+      ].join("\n");
+
+      const res = await fetch(`/api/support/tickets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: raiseTitle.trim() ? raiseTitle.trim() : null,
+          message: composed,
+          ai_escalation_reason: "Escalation requested from chat.",
+        }),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? "Failed to create ticket");
+      }
+
+      setRaiseOpen(false);
+      setRaiseTitle("");
+      setRaiseMessage("");
+      setShowTranscriptPreview(false);
+
+      // Refresh tickets + select created
+      setTicketStatusFilter("open");
+      await loadTickets("open");
+
+      const createdId = data.ticket?.id as number | undefined;
+      const createdNumber = data.ticket?.number as string | undefined;
+
+      if (createdId) {
+        setSelectedTicketId(createdId);
+        await loadTicketDetail(createdId);
+      }
+
+      appendMessage({
+        role: "assistant",
+        content: `Done — I’ve raised a ticket for a human agent${
+          createdNumber ? `. Ticket #${createdNumber}.` : "."
+        }`,
+      });
+
+      setEscalationStage("idle");
+    } catch (e: any) {
+      setRaiseErr(e?.message ?? "Failed to create ticket");
+    } finally {
+      setRaiseBusy(false);
     }
   }
 
@@ -820,9 +765,7 @@ export function AgentChat() {
       </div>
 
       {/* Layout */}
-      <div
-        className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}
-      >
+      <div className={`grid gap-4 ${isAuthed ? "lg:grid-cols-5" : "grid-cols-1"}`}>
         {/* Chat panel (always) */}
         <div className={isAuthed ? "lg:col-span-3" : ""}>
           <div className="rounded-2xl ring-1 ring-slate-200 bg-white shadow-sm">
@@ -833,9 +776,7 @@ export function AgentChat() {
                   PS
                 </span>
                 <div>
-                  <div className="text-sm font-semibold">
-                    Pace Shuttles Assistant
-                  </div>
+                  <div className="text-sm font-semibold">Pace Shuttles Assistant</div>
                   <div className="text-xs text-slate-500">
                     {pending ? "Thinking…" : isAuthed ? "Connected" : "Online"}
                   </div>
@@ -854,9 +795,7 @@ export function AgentChat() {
               {messages.map((m, i) => (
                 <div
                   key={i}
-                  className={`flex ${
-                    m.role === "assistant" ? "justify-start" : "justify-end"
-                  }`}
+                  className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}
                 >
                   <div
                     className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ring-1 ${
@@ -865,24 +804,7 @@ export function AgentChat() {
                         : "bg-blue-600 text-white ring-blue-600"
                     }`}
                   >
-                    <div className="whitespace-pre-wrap">{m.content}</div>
-
-                    {/* Inline choices attached to this message */}
-                    {m.choices && m.choices.length > 0 ? (
-                      <div className="flex flex-wrap gap-2 pt-3">
-                        {m.choices.map((c, idx) => (
-                          <button
-                            key={idx}
-                            className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm disabled:opacity-60"
-                            onClick={() => handleChoice(c)}
-                            disabled={pending}
-                            type="button"
-                          >
-                            {c.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
+                    {m.content}
                   </div>
                 </div>
               ))}
@@ -895,8 +817,7 @@ export function AgentChat() {
                 </div>
               )}
 
-              {/* Back-compat: structured button choices from last message */}
-              {lastChoices.length > 0 && last?.choices !== lastChoices && (
+              {lastChoices.length > 0 && (
                 <div className="flex flex-wrap gap-2 pt-1">
                   {lastChoices.map((choice, i) => (
                     <button
@@ -904,7 +825,6 @@ export function AgentChat() {
                       className="bg-blue-600 text-white px-3 py-2 rounded-xl hover:bg-blue-700 text-sm disabled:opacity-60"
                       onClick={() => handleChoice(choice)}
                       disabled={pending}
-                      type="button"
                     >
                       {choice.label}
                     </button>
@@ -953,9 +873,7 @@ export function AgentChat() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Your tickets</div>
-                    <div className="text-xs text-slate-500">
-                      Open ↔ Resolved ↔ Closed
-                    </div>
+                    <div className="text-xs text-slate-500">Open ↔ Resolved ↔ Closed</div>
                   </div>
 
                   <button
@@ -971,35 +889,30 @@ export function AgentChat() {
                 </div>
 
                 <div className="mt-3 flex gap-2">
-                  {(["open", "resolved", "closed"] as TicketStatus[]).map(
-                    (s) => (
-                      <button
-                        key={s}
-                        onClick={() => {
-                          setTicketDetail(null);
-                          setSelectedTicketId(null);
-                          setTicketStatusFilter(s);
-                        }}
-                        className={`text-xs rounded-lg px-3 py-2 ring-1 ${
-                          ticketStatusFilter === s
-                            ? "bg-slate-900 text-white ring-slate-900"
-                            : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
-                        }`}
-                        type="button"
-                      >
-                        {humanStatus(s)}
-                      </button>
-                    )
-                  )}
+                  {(["open", "resolved", "closed"] as TicketStatus[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setTicketDetail(null);
+                        setSelectedTicketId(null);
+                        setTicketStatusFilter(s);
+                      }}
+                      className={`text-xs rounded-lg px-3 py-2 ring-1 ${
+                        ticketStatusFilter === s
+                          ? "bg-slate-900 text-white ring-slate-900"
+                          : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      {humanStatus(s)}
+                    </button>
+                  ))}
                 </div>
               </div>
 
               {/* Ticket list */}
               <div className="max-h-[28vh] overflow-y-auto border-b border-slate-100">
                 {ticketsLoading ? (
-                  <div className="p-4 text-sm text-slate-600">
-                    Loading tickets…
-                  </div>
+                  <div className="p-4 text-sm text-slate-600">Loading tickets…</div>
                 ) : ticketsError ? (
                   <div className="p-4 text-sm text-red-600">{ticketsError}</div>
                 ) : tickets.length === 0 ? (
@@ -1008,8 +921,7 @@ export function AgentChat() {
                       No {humanStatus(ticketStatusFilter)} tickets
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
-                      When tickets are raised, they’ll appear here with support
-                      updates.
+                      When tickets are raised, they’ll appear here with support updates.
                     </div>
                   </div>
                 ) : (
@@ -1021,7 +933,6 @@ export function AgentChat() {
                         className={`w-full text-left p-4 hover:bg-slate-50 ${
                           selectedTicketId === t.id ? "bg-slate-50" : ""
                         }`}
-                        type="button"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -1029,7 +940,7 @@ export function AgentChat() {
                               {t.title || `Ticket #${t.number}`}
                             </div>
                             <div className="text-xs text-slate-500 mt-0.5">
-                              Updated {fmtDateTime(t.updatedAt)}
+                              #{t.number} • Updated {fmtDateTime(t.updatedAt)}
                             </div>
                           </div>
                           <span
@@ -1053,15 +964,11 @@ export function AgentChat() {
                     Select a ticket to view the conversation.
                   </div>
                 ) : detailLoading ? (
-                  <div className="text-sm text-slate-600">
-                    Loading conversation…
-                  </div>
+                  <div className="text-sm text-slate-600">Loading conversation…</div>
                 ) : detailError ? (
                   <div className="text-sm text-red-600">{detailError}</div>
                 ) : !ticketDetail ? (
-                  <div className="text-sm text-slate-600">
-                    Ticket not available.
-                  </div>
+                  <div className="text-sm text-slate-600">Ticket not available.</div>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
@@ -1085,13 +992,11 @@ export function AgentChat() {
 
                     <div className="mt-3 max-h-[22vh] overflow-y-auto space-y-2 pr-1">
                       {ticketDetail.thread.length === 0 ? (
-                        <div className="text-sm text-slate-600">
-                          No public messages yet.
-                        </div>
+                        <div className="text-sm text-slate-600">No public messages yet.</div>
                       ) : (
                         ticketDetail.thread.map((a) => {
-                          const isCustomer =
-                            (a.sender ?? "").toLowerCase() === "customer";
+                          const isCustomer = (a.sender ?? "").toLowerCase() === "customer";
+                          const body = stripHtmlToText(a.body || "");
                           return (
                             <div
                               key={a.id}
@@ -1102,12 +1007,10 @@ export function AgentChat() {
                               }`}
                             >
                               <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mb-1">
-                                <span className="font-medium">
-                                  {isCustomer ? "You" : "Support"}
-                                </span>
+                                <span className="font-medium">{isCustomer ? "You" : "Support"}</span>
                                 <span>{fmtDateTime(a.createdAt)}</span>
                               </div>
-                              <div className="whitespace-pre-wrap">{a.body}</div>
+                              <div className="whitespace-pre-wrap">{body}</div>
                             </div>
                           );
                         })
@@ -1116,9 +1019,7 @@ export function AgentChat() {
 
                     <div className="mt-3">
                       {replyError && (
-                        <div className="text-sm text-red-600 mb-2">
-                          {replyError}
-                        </div>
+                        <div className="text-sm text-red-600 mb-2">{replyError}</div>
                       )}
 
                       <div className="flex gap-2">
@@ -1130,10 +1031,7 @@ export function AgentChat() {
                               ? "This ticket is closed. Create a new ticket for further help."
                               : "Reply to support…"
                           }
-                          disabled={
-                            replySending ||
-                            ticketDetail.ticket.status === "closed"
-                          }
+                          disabled={replySending || ticketDetail.ticket.status === "closed"}
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />
                         <button
@@ -1157,8 +1055,7 @@ export function AgentChat() {
                       )}
                       {ticketDetail.ticket.status === "closed" && (
                         <div className="mt-2 text-xs text-slate-500">
-                          Closed tickets can’t be reopened. Please raise a new
-                          ticket.
+                          Closed tickets can’t be reopened. Please raise a new ticket.
                         </div>
                       )}
                     </div>
@@ -1168,20 +1065,15 @@ export function AgentChat() {
             </div>
 
             <div className="mt-3 text-xs text-slate-500">
-              “Resolved” tickets reopen automatically when you reply. “Closed”
-              tickets are final.
+              “Resolved” tickets reopen automatically when you reply. “Closed” tickets are final.
             </div>
           </div>
         )}
       </div>
 
-      {/* New Ticket Modal (logged-in only) */}
+      {/* New Ticket Modal (support page, logged-in only) */}
       {isAuthed && newOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
           <div
             className="absolute inset-0 bg-black/30"
             onClick={() => (newBusy ? null : setNewOpen(false))}
@@ -1189,19 +1081,15 @@ export function AgentChat() {
           <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
             <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  Create a new ticket
-                </div>
+                <div className="text-sm font-semibold text-slate-900">Create a new ticket</div>
                 <div className="text-xs text-slate-500">
-                  Tell us what happened — we’ll route it to the right support
-                  team.
+                  Tell us what happened — we’ll route it to the right support team.
                 </div>
               </div>
               <button
                 onClick={() => (newBusy ? null : setNewOpen(false))}
                 className="text-slate-500 hover:text-slate-900 text-sm"
                 aria-label="Close"
-                type="button"
               >
                 ✕
               </button>
@@ -1215,9 +1103,7 @@ export function AgentChat() {
               )}
 
               <div>
-                <label className="text-xs font-medium text-slate-700">
-                  Short title (optional)
-                </label>
+                <label className="text-xs font-medium text-slate-700">Short title (optional)</label>
                 <input
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
@@ -1226,8 +1112,7 @@ export function AgentChat() {
                   disabled={newBusy}
                 />
                 <div className="mt-1 text-xs text-slate-500">
-                  If you leave this blank, we’ll create a helpful title
-                  automatically.
+                  If you leave this blank, we’ll create a helpful title automatically.
                 </div>
               </div>
 
@@ -1246,9 +1131,7 @@ export function AgentChat() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    Reference (optional)
-                  </label>
+                  <label className="text-xs font-medium text-slate-700">Reference (optional)</label>
                   <input
                     value={newRef}
                     onChange={(e) => setNewRef(e.target.value)}
@@ -1278,7 +1161,6 @@ export function AgentChat() {
                 onClick={() => (newBusy ? null : setNewOpen(false))}
                 className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50"
                 disabled={newBusy}
-                type="button"
               >
                 Cancel
               </button>
@@ -1286,9 +1168,103 @@ export function AgentChat() {
                 onClick={createNewTicket}
                 className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
                 disabled={newBusy}
-                type="button"
               >
                 {newBusy ? "Creating…" : "Create ticket"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Raise Ticket From Chat Modal (escalation) */}
+      {isAuthed && raiseOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => (raiseBusy ? null : setRaiseOpen(false))}
+          />
+          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Raise a ticket</div>
+                <div className="text-xs text-slate-500">
+                  Tell the human agent what you want help with — we’ll attach the transcript automatically.
+                </div>
+              </div>
+              <button
+                onClick={() => (raiseBusy ? null : setRaiseOpen(false))}
+                className="text-slate-500 hover:text-slate-900 text-sm"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              {raiseErr && (
+                <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
+                  {raiseErr}
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">Short title (optional)</label>
+                <input
+                  value={raiseTitle}
+                  onChange={(e) => setRaiseTitle(e.target.value)}
+                  placeholder="e.g. Help making a booking for Jolly Harbour → Nobu"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={raiseBusy}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  What would you like to ask a human? *
+                </label>
+                <textarea
+                  value={raiseMessage}
+                  onChange={(e) => setRaiseMessage(e.target.value)}
+                  placeholder="Write exactly what you want from a human agent."
+                  className="mt-1 w-full min-h-[120px] rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={raiseBusy}
+                />
+              </div>
+
+              <button
+                type="button"
+                className="text-xs text-slate-600 underline"
+                onClick={() => setShowTranscriptPreview((v) => !v)}
+                disabled={raiseBusy}
+              >
+                {showTranscriptPreview ? "Hide transcript preview" : "Preview transcript that will be sent"}
+              </button>
+
+              {showTranscriptPreview && (
+                <pre className="text-xs bg-slate-50 ring-1 ring-slate-200 rounded-xl p-3 whitespace-pre-wrap max-h-48 overflow-y-auto">
+                  {transcriptText}
+                </pre>
+              )}
+
+              <div className="text-xs text-slate-500">
+                We’ll store the full transcript to help improve the assistant over time.
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+              <button
+                onClick={() => (raiseBusy ? null : setRaiseOpen(false))}
+                className="text-sm rounded-xl px-4 py-2 ring-1 ring-slate-200 hover:bg-slate-50"
+                disabled={raiseBusy}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={raiseTicketFromChat}
+                className="text-sm rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={raiseBusy}
+              >
+                {raiseBusy ? "Raising…" : "Raise ticket"}
               </button>
             </div>
           </div>
