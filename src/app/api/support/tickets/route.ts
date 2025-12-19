@@ -3,19 +3,9 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/requireUser";
 
 /**
- * Zammad  configuration
+ * Zammad configuration
  */
 const ZAMMAD_BASE = "https://pace-shuttles-helpdesk.zammad.com/api/v1";
-
-/**
- * Optional: set ZAMMAD_DEFAULT_GROUP_ID in Vercel envs (recommended)
- * - Your real support group is typically "Pace Shuttles Support" (id: 2 in your screenshot)
- */
-const DEFAULT_GROUP_ID = (() => {
-  const raw = process.env.ZAMMAD_DEFAULT_GROUP_ID;
-  const n = raw ? Number(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : 2;
-})();
 
 function zammadHeaders() {
   const token = process.env.ZAMMAD_API_TOKEN;
@@ -49,7 +39,6 @@ function mapQueryStates(status: UserTicketStatus): string[] {
 
 /**
  * Lightweight category inference (server-side).
- * You can replace this later with an LLM classifier, but this is deterministic & safe.
  */
 type ProvisionalCategory =
   | "Prospective Customer"
@@ -62,7 +51,6 @@ type ProvisionalCategory =
 function inferCategoryFromText(text: string): ProvisionalCategory {
   const t = text.toLowerCase();
 
-  // Complaint / unhappy signals
   if (
     t.includes("complain") ||
     t.includes("unacceptable") ||
@@ -74,7 +62,6 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
     return "Complaint";
   }
 
-  // Incident / broken / error
   if (
     t.includes("error") ||
     t.includes("bug") ||
@@ -91,7 +78,6 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
     return "Incident";
   }
 
-  // Prospective operator
   if (
     t.includes("operator") ||
     t.includes("list my boat") ||
@@ -104,7 +90,6 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
     return "Prospective Operator";
   }
 
-  // Prospective customer
   if (
     t.includes("price") ||
     t.includes("availability") ||
@@ -118,7 +103,6 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
     return "Prospective Customer";
   }
 
-  // Request / feature / change
   if (
     t.includes("request") ||
     t.includes("feature") ||
@@ -133,9 +117,6 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
   return "Information";
 }
 
-/**
- * Tone inference (kept simple & deterministic).
- */
 type UserTone = "neutral" | "frustrated" | "happy";
 function inferTone(text: string): UserTone {
   const t = text.toLowerCase();
@@ -160,9 +141,6 @@ function inferTone(text: string): UserTone {
   return "neutral";
 }
 
-/**
- * Utility: safe JSON parse for Zammad responses (sometimes returns empty)
- */
 async function safeJson(res: Response) {
   const txt = await res.text();
   try {
@@ -197,18 +175,75 @@ function resolveZammadStateName(
   ticket: any,
   stateMap: Record<number, string>
 ): string {
-  // Prefer explicit state string if present; else resolve from state_id.
   const direct = ticket?.state;
   if (typeof direct === "string" && direct.trim()) return direct.trim();
 
   const id = ticket?.state_id;
   if (typeof id === "number" && stateMap[id]) return stateMap[id];
 
-  // Some Zammad payloads may use `stateId` etc; be defensive.
   const altId = ticket?.stateId ?? ticket?.stateID;
   if (typeof altId === "number" && stateMap[altId]) return stateMap[altId];
 
   return "";
+}
+
+/**
+ * Group defaulting:
+ * - Your real support group is id=2 ("Pace Shuttles Support")
+ * - Allow override by env
+ */
+function defaultGroupId(): number {
+  const raw = process.env.ZAMMAD_DEFAULT_GROUP_ID;
+  const n = raw ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n > 0) return n;
+  return 2;
+}
+
+/**
+ * Best-effort: Try creating with optional custom fields; if Zammad rejects
+ * because fields don't exist (common on hosted setups), retry without them.
+ */
+async function createTicketWithFallback(payload: any) {
+  const first = await fetch(`${ZAMMAD_BASE}/tickets`, {
+    method: "POST",
+    headers: zammadHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  if (first.ok) return { ok: true as const, res: first };
+
+  const firstText = await first.text();
+
+  // Retry on common validation/attribute failures
+  if (first.status === 400 || first.status === 422) {
+    const stripped = { ...payload };
+    delete stripped.ai_category;
+    delete stripped.ai_tone;
+    delete stripped.ai_escalation_reason;
+    delete stripped.provisional_category_hint;
+    delete stripped.source;
+
+    const second = await fetch(`${ZAMMAD_BASE}/tickets`, {
+      method: "POST",
+      headers: zammadHeaders(),
+      body: JSON.stringify(stripped),
+    });
+
+    if (second.ok) return { ok: true as const, res: second };
+
+    const secondText = await second.text();
+    return {
+      ok: false as const,
+      status: second.status,
+      details: `First attempt (${first.status}): ${firstText}\nSecond attempt (${second.status}): ${secondText}`,
+    };
+  }
+
+  return {
+    ok: false as const,
+    status: first.status,
+    details: firstText,
+  };
 }
 
 /* ============================================================
@@ -219,10 +254,8 @@ export async function GET(req: Request) {
     const user = await requireUser();
     const url = new URL(req.url);
 
-    const statusParam = (url.searchParams.get("status") ||
-      "open") as UserTicketStatus;
+    const statusParam = (url.searchParams.get("status") || "open") as UserTicketStatus;
 
-    // 0) Pull ticket state map (id->name) so we classify correctly even if Zammad only returns state_id
     const stateMap = await fetchTicketStateMap();
 
     // 1) Find Zammad user (by email)
@@ -248,12 +281,9 @@ export async function GET(req: Request) {
     }
 
     // 2) Fetch tickets for that customer
-    const ticketsRes = await fetch(
-      `${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`,
-      {
-        headers: zammadHeaders(),
-      }
-    );
+    const ticketsRes = await fetch(`${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`, {
+      headers: zammadHeaders(),
+    });
 
     if (!ticketsRes.ok) {
       return NextResponse.json(
@@ -268,7 +298,6 @@ export async function GET(req: Request) {
 
     const tickets = (await ticketsRes.json()) as any[];
 
-    // 3) Map safely (IMPORTANT: return `status` for the UI, not `userStatus`)
     const mapped = (tickets || []).map((t) => {
       const zammadStateName = resolveZammadStateName(t, stateMap);
       const status = mapUserStatus(zammadStateName);
@@ -277,27 +306,18 @@ export async function GET(req: Request) {
         id: t.id,
         number: t.number,
         title: t.title,
-
-        // UI expects `status`
         status,
-
-        // optional debug fields (harmless)
         state: zammadStateName || t.state || null,
         state_id: typeof t.state_id === "number" ? t.state_id : null,
-
         createdAt: t.created_at,
         updatedAt: t.updated_at,
       };
     });
 
-    // 4) Filter
-    const desiredZammadStates = mapQueryStates(statusParam).map((s) =>
-      s.toLowerCase()
-    );
+    const desiredZammadStates = mapQueryStates(statusParam).map((s) => s.toLowerCase());
 
     const filtered = mapped.filter((t) => {
       if (t.status !== statusParam) return false;
-
       const z = String(t.state || "").toLowerCase();
       if (!z) return false;
       return desiredZammadStates.includes(z);
@@ -314,10 +334,7 @@ export async function GET(req: Request) {
     });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
-      return NextResponse.json(
-        { ok: false, error: "AUTH_REQUIRED" },
-        { status: 401 }
-      );
+      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
     }
     return NextResponse.json(
       { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
@@ -336,67 +353,71 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => ({}));
     const message = typeof body?.message === "string" ? body.message.trim() : "";
-    const userProvidedTitle =
-      typeof body?.title === "string" ? body.title.trim() : "";
+    const userProvidedTitle = typeof body?.title === "string" ? body.title.trim() : "";
+
+    const reference = typeof body?.reference === "string" ? body.reference.trim() : "";
+    const desiredOutcome =
+      typeof body?.desiredOutcome === "string" ? body.desiredOutcome.trim() : "";
 
     if (!message) {
-      return NextResponse.json(
-        { ok: false, error: "MESSAGE_REQUIRED" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "MESSAGE_REQUIRED" }, { status: 400 });
     }
 
-    // Derive title + category if not provided
     const derivedTitle =
-      userProvidedTitle ||
-      message.split("\n").find(Boolean)?.slice(0, 80) ||
-      "Support request";
+      userProvidedTitle || message.split("\n").find(Boolean)?.slice(0, 80) || "Support request";
 
     const inferredCategory = inferCategoryFromText(`${derivedTitle}\n${message}`);
     const inferredTone = inferTone(`${derivedTitle}\n${message}`);
 
-    // Default to your real support group.
-    // NOTE: In your Zammad, group_id 1 = "Users" and group_id 2 = "Pace Shuttles Support".
-    // You can override by sending body.group_id or setting ZAMMAD_DEFAULT_GROUP_ID.
-    const groupId = Number(body?.group_id || DEFAULT_GROUP_ID);
+    // IMPORTANT: default to your real support group (id=2)
+    const groupIdRaw = body?.group_id;
+    const groupId =
+      Number.isFinite(Number(groupIdRaw)) && Number(groupIdRaw) > 0
+        ? Number(groupIdRaw)
+        : defaultGroupId();
 
-    const createRes = await fetch(`${ZAMMAD_BASE}/tickets`, {
-      method: "POST",
-      headers: zammadHeaders(),
-      body: JSON.stringify({
-        title: derivedTitle,
-        group_id: groupId,
-        customer: user.email,
-        article: {
-          subject: derivedTitle,
-          body: message,
-          type: "note",
-          internal: false, // customer-visible
-        },
+    // Put reference/outcome into the body so we don't rely on custom fields existing
+    const bodyParts = [message];
+    if (reference) bodyParts.push(`\nReference: ${reference}`);
+    if (desiredOutcome) bodyParts.push(`\nDesired outcome: ${desiredOutcome}`);
+    const finalBody = bodyParts.join("\n").trim();
 
-        // custom fields (as created in Zammad)
-        ai_category: inferredCategory,
-        ai_tone: inferredTone,
+    const payload: any = {
+      title: derivedTitle,
+      group_id: groupId,
+      customer: user.email,
+      article: {
+        subject: derivedTitle,
+        body: finalBody,
+        type: "note",
+        internal: false, // customer-visible
+      },
 
-        // Support-page created ticket (not chat escalation)
-        ai_escalation_reason:
-          body?.ai_escalation_reason ??
-          "User created ticket from Support page.",
-      }),
-    });
+      // OPTIONAL custom fields / metadata:
+      // These may fail if not defined in Zammad, so we retry without them.
+      ai_category: inferredCategory,
+      ai_tone: inferredTone,
+      ai_escalation_reason:
+        body?.ai_escalation_reason ?? "User created ticket from Support page.",
+      provisional_category_hint: body?.provisional_category_hint,
+      source: body?.source,
+    };
 
-    if (!createRes.ok) {
+    const create = await createTicketWithFallback(payload);
+
+    if (!create.ok) {
       return NextResponse.json(
         {
           ok: false,
           error: "ZAMMAD_TICKET_CREATE_FAILED",
-          details: await createRes.text(),
+          status: create.status,
+          details: create.details,
         },
         { status: 502 }
       );
     }
 
-    const ticket = await safeJson(createRes);
+    const ticket = await safeJson(create.res);
 
     return NextResponse.json({
       ok: true,
@@ -405,14 +426,12 @@ export async function POST(req: Request) {
         title: derivedTitle,
         ai_category: inferredCategory,
         ai_tone: inferredTone,
+        group_id: groupId,
       },
     });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
-      return NextResponse.json(
-        { ok: false, error: "AUTH_REQUIRED" },
-        { status: 401 }
-      );
+      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
     }
     return NextResponse.json(
       { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
