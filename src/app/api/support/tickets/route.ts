@@ -7,13 +7,15 @@ import { requireUser } from "@/lib/requireUser";
  */
 const ZAMMAD_BASE = "https://pace-shuttles-helpdesk.zammad.com/api/v1";
 
-// IMPORTANT: Your support group in Zammad is id=2 ("Pace Shuttles Support").
-// Make this configurable, but default safely to 2 (NOT 1, which is "Users").
-const SUPPORT_GROUP_ID = Number(process.env.ZAMMAD_SUPPORT_GROUP_ID || 2);
-
-// If you ever add more allowed support groups, list them here.
-// For now, hard-enforce the single correct group to prevent misrouting.
-const ALLOWED_GROUP_IDS = new Set<number>([SUPPORT_GROUP_ID]);
+/**
+ * Optional: set ZAMMAD_DEFAULT_GROUP_ID in Vercel envs (recommended)
+ * - Your real support group is typically "Pace Shuttles Support" (id: 2 in your screenshot)
+ */
+const DEFAULT_GROUP_ID = (() => {
+  const raw = process.env.ZAMMAD_DEFAULT_GROUP_ID;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 2;
+})();
 
 function zammadHeaders() {
   const token = process.env.ZAMMAD_API_TOKEN;
@@ -132,8 +134,7 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
 }
 
 /**
- * Tone   inference (kept simple & deterministic).
- * Your chat-driven escalation can override this later.
+ * Tone inference (kept simple & deterministic).
  */
 type UserTone = "neutral" | "frustrated" | "happy";
 function inferTone(text: string): UserTone {
@@ -354,24 +355,17 @@ export async function POST(req: Request) {
     const inferredCategory = inferCategoryFromText(`${derivedTitle}\n${message}`);
     const inferredTone = inferTone(`${derivedTitle}\n${message}`);
 
-    // HARDEN group routing:
-    // - Default to SUPPORT_GROUP_ID (2)
-    // - If a caller provides group_id, only allow it if it's explicitly whitelisted
-    const requestedGroupId = Number(body?.group_id);
-    const groupId =
-      Number.isFinite(requestedGroupId) && ALLOWED_GROUP_IDS.has(requestedGroupId)
-        ? requestedGroupId
-        : SUPPORT_GROUP_ID;
+    // Default to your real support group.
+    // NOTE: In your Zammad, group_id 1 = "Users" and group_id 2 = "Pace Shuttles Support".
+    // You can override by sending body.group_id or setting ZAMMAD_DEFAULT_GROUP_ID.
+    const groupId = Number(body?.group_id || DEFAULT_GROUP_ID);
 
     const createRes = await fetch(`${ZAMMAD_BASE}/tickets`, {
       method: "POST",
       headers: zammadHeaders(),
       body: JSON.stringify({
         title: derivedTitle,
-
-        // Always route into the real support group (not "Users")
         group_id: groupId,
-
         customer: user.email,
         article: {
           subject: derivedTitle,
@@ -386,7 +380,8 @@ export async function POST(req: Request) {
 
         // Support-page created ticket (not chat escalation)
         ai_escalation_reason:
-          body?.ai_escalation_reason ?? "User created ticket from Support page.",
+          body?.ai_escalation_reason ??
+          "User created ticket from Support page.",
       }),
     });
 
@@ -406,15 +401,6 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       ticket,
-
-      // Helpful debug info (safe to expose)
-      routing: {
-        requestedGroupId: Number.isFinite(requestedGroupId)
-          ? requestedGroupId
-          : null,
-        usedGroupId: groupId,
-      },
-
       derived: {
         title: derivedTitle,
         ai_category: inferredCategory,
