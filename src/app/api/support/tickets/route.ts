@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/requireUser";
 
 /**
- * Zammad configuration
+ * Zammad  configuration
  */
 const ZAMMAD_BASE = "https://pace-shuttles-helpdesk.zammad.com/api/v1";
 
