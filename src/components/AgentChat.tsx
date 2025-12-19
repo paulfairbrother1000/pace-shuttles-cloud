@@ -23,6 +23,12 @@ const sb =
       )
     : null;
 
+/* -------------------------------------------------------------------------- */
+/*  Zammad support group hardening                                            */
+/*  IMPORTANT: avoid default group_id=1 ("Users")                             */
+/* -------------------------------------------------------------------------- */
+const SUPPORT_GROUP_ID = 2; // Pace Shuttles Support
+
 type AuthState =
   | { status: "loading" }
   | { status: "anon" }
@@ -612,6 +618,9 @@ export function AgentChat() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
+          // IMPORTANT: always force tickets into the real support group
+          group_id: SUPPORT_GROUP_ID,
+
           title: newTitle.trim() ? newTitle.trim() : null,
           message: body,
           reference: newRef.trim() ? newRef.trim() : null,
@@ -716,6 +725,9 @@ export function AgentChat() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
+          // IMPORTANT: always force tickets into the real support group
+          group_id: SUPPORT_GROUP_ID,
+
           // server may ignore these extras safely; existing route should not break
           title: titleHint,
           message: messageToSend, // ALWAYS non-empty => avoids MESSAGE_REQUIRED
@@ -859,7 +871,8 @@ export function AgentChat() {
                   {!isAuthed ? (
                     <>
                       <div className="text-sm text-slate-700">
-                        You’ll need to sign in to raise a ticket for a human agent.
+                        You’ll need to sign in to raise a ticket for a human
+                        agent.
                       </div>
                       <div className="mt-3 flex gap-2">
                         <a
@@ -1143,7 +1156,8 @@ export function AgentChat() {
                               : "Reply to support…"
                           }
                           disabled={
-                            replySending || ticketDetail.ticket.status === "closed"
+                            replySending ||
+                            ticketDetail.ticket.status === "closed"
                           }
                           className="min-h-[44px] max-h-28 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
                         />

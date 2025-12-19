@@ -18,6 +18,18 @@ function toISO(dt: any): string | null {
   }
 }
 
+function normEmail(v: any): string {
+  return String(v ?? "").trim().toLowerCase();
+}
+
+async function safeText(res: Response) {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
 export async function GET(
   req: Request,
   { params }: { params: { id: string } }
@@ -33,23 +45,57 @@ export async function GET(
       );
     }
 
+    const userEmail = normEmail(user.email);
+
     // 1) Load ticket
     const ticketRes = await fetch(`${ZAMMAD_BASE}/tickets/${ticketId}`, {
       headers: zammadHeaders(),
     });
 
     if (!ticketRes.ok) {
+      // Surface auth/perm problems clearly (these are very common with Zammad group permissions)
+      if (ticketRes.status === 401 || ticketRes.status === 403) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "ZAMMAD_NOT_AUTHORIZED",
+            details: await safeText(ticketRes),
+          },
+          { status: 502 }
+        );
+      }
+
       return NextResponse.json(
-        { ok: false, error: await ticketRes.text() },
+        {
+          ok: false,
+          error: "ZAMMAD_TICKET_FETCH_FAILED",
+          details: await safeText(ticketRes),
+        },
         { status: 502 }
       );
     }
 
-    const ticket = await ticketRes.json();
+    const ticket = await ticketRes.json().catch(() => null);
 
-    // Ownership check
-    const email = await getTicketCustomerEmail(ticket);
-    if (!email || email !== user.email.toLowerCase()) {
+    if (!ticket || !ticket?.id) {
+      return NextResponse.json(
+        { ok: false, error: "ZAMMAD_TICKET_INVALID_RESPONSE" },
+        { status: 502 }
+      );
+    }
+
+    // Ownership check (normalize both sides)
+    const ticketCustomerEmail = normEmail(await getTicketCustomerEmail(ticket));
+
+    // If we can't resolve the customer email, fail closed (prevents leaking other users' tickets)
+    if (!ticketCustomerEmail) {
+      return NextResponse.json(
+        { ok: false, error: "FORBIDDEN" },
+        { status: 403 }
+      );
+    }
+
+    if (ticketCustomerEmail !== userEmail) {
       return NextResponse.json(
         { ok: false, error: "FORBIDDEN" },
         { status: 403 }
@@ -66,13 +112,29 @@ export async function GET(
     );
 
     if (!artRes.ok) {
+      // Again: likely permissions (group access) rather than “bad code”
+      if (artRes.status === 401 || artRes.status === 403) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "ZAMMAD_ARTICLES_NOT_AUTHORIZED",
+            details: await safeText(artRes),
+          },
+          { status: 502 }
+        );
+      }
+
       return NextResponse.json(
-        { ok: false, error: await artRes.text() },
+        {
+          ok: false,
+          error: "ZAMMAD_ARTICLE_FETCH_FAILED",
+          details: await safeText(artRes),
+        },
         { status: 502 }
       );
     }
 
-    const articlesRaw = await artRes.json();
+    const articlesRaw = await artRes.json().catch(() => []);
     const articles: any[] = Array.isArray(articlesRaw) ? articlesRaw : [];
 
     // Only customer-visible articles
