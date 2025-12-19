@@ -124,7 +124,7 @@ function inferCategoryFromText(text: string): ProvisionalCategory {
 }
 
 /**
- * Tone inference (kept simple & deterministic).
+ * Tone   inference (kept simple & deterministic).
  * Your chat-driven escalation can override this later.
  */
 type UserTone = "neutral" | "frustrated" | "happy";
