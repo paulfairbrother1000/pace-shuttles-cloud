@@ -254,7 +254,8 @@ export async function GET(req: Request) {
     const user = await requireUser();
     const url = new URL(req.url);
 
-    const statusParam = (url.searchParams.get("status") || "open") as UserTicketStatus;
+    const statusParam = (url.searchParams.get("status") ||
+      "open") as UserTicketStatus;
 
     const stateMap = await fetchTicketStateMap();
 
@@ -281,9 +282,10 @@ export async function GET(req: Request) {
     }
 
     // 2) Fetch tickets for that customer
-    const ticketsRes = await fetch(`${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`, {
-      headers: zammadHeaders(),
-    });
+    const ticketsRes = await fetch(
+      `${ZAMMAD_BASE}/tickets?customer_id=${zUser.id}`,
+      { headers: zammadHeaders() }
+    );
 
     if (!ticketsRes.ok) {
       return NextResponse.json(
@@ -314,7 +316,9 @@ export async function GET(req: Request) {
       };
     });
 
-    const desiredZammadStates = mapQueryStates(statusParam).map((s) => s.toLowerCase());
+    const desiredZammadStates = mapQueryStates(statusParam).map((s) =>
+      s.toLowerCase()
+    );
 
     const filtered = mapped.filter((t) => {
       if (t.status !== statusParam) return false;
@@ -334,7 +338,10 @@ export async function GET(req: Request) {
     });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
-      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
+      return NextResponse.json(
+        { ok: false, error: "AUTH_REQUIRED" },
+        { status: 401 }
+      );
     }
     return NextResponse.json(
       { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
@@ -353,18 +360,25 @@ export async function POST(req: Request) {
 
     const body = await req.json().catch(() => ({}));
     const message = typeof body?.message === "string" ? body.message.trim() : "";
-    const userProvidedTitle = typeof body?.title === "string" ? body.title.trim() : "";
+    const userProvidedTitle =
+      typeof body?.title === "string" ? body.title.trim() : "";
 
-    const reference = typeof body?.reference === "string" ? body.reference.trim() : "";
+    const reference =
+      typeof body?.reference === "string" ? body.reference.trim() : "";
     const desiredOutcome =
       typeof body?.desiredOutcome === "string" ? body.desiredOutcome.trim() : "";
 
     if (!message) {
-      return NextResponse.json({ ok: false, error: "MESSAGE_REQUIRED" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "MESSAGE_REQUIRED" },
+        { status: 400 }
+      );
     }
 
     const derivedTitle =
-      userProvidedTitle || message.split("\n").find(Boolean)?.slice(0, 80) || "Support request";
+      userProvidedTitle ||
+      message.split("\n").find(Boolean)?.slice(0, 80) ||
+      "Support request";
 
     const inferredCategory = inferCategoryFromText(`${derivedTitle}\n${message}`);
     const inferredTone = inferTone(`${derivedTitle}\n${message}`);
@@ -382,22 +396,32 @@ export async function POST(req: Request) {
     if (desiredOutcome) bodyParts.push(`\nDesired outcome: ${desiredOutcome}`);
     const finalBody = bodyParts.join("\n").trim();
 
+    // ✅ Correct, single payload definition (fixes your deployment error)
+    // ✅ CRITICAL: use article.type="email" for customer-visible messages
     const payload: any = {
       title: derivedTitle,
       group_id: groupId,
       customer: user.email,
-     const payload = {
-  title: derivedTitle,
-  group_id: groupId, // should resolve to 2
-  customer: user.email,
-  article: {
-    subject: derivedTitle,
-    body: finalBody,
-    type: "email",     // 🔥 CRITICAL FIX
-    internal: false,
-  },
-};
+      article: {
+        subject: derivedTitle,
+        body: finalBody,
+        type: "email",
+        internal: false,
+      },
 
+      // Keep these optional - fallback removes if not supported
+      ai_category: inferredCategory,
+      ai_tone: inferredTone,
+      ai_escalation_reason:
+        typeof body?.ai_escalation_reason === "string"
+          ? body.ai_escalation_reason
+          : "User created ticket from Support page.",
+      provisional_category_hint:
+        typeof body?.provisional_category_hint === "string"
+          ? body.provisional_category_hint
+          : undefined,
+      source: typeof body?.source === "string" ? body.source : undefined,
+    };
 
     const create = await createTicketWithFallback(payload);
 
@@ -427,7 +451,10 @@ export async function POST(req: Request) {
     });
   } catch (err: any) {
     if (err?.message === "AUTH_REQUIRED") {
-      return NextResponse.json({ ok: false, error: "AUTH_REQUIRED" }, { status: 401 });
+      return NextResponse.json(
+        { ok: false, error: "AUTH_REQUIRED" },
+        { status: 401 }
+      );
     }
     return NextResponse.json(
       { ok: false, error: err?.message ?? "UNEXPECTED_ERROR" },
