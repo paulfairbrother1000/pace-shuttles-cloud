@@ -87,7 +87,7 @@ function humanStatus(status: TicketStatus) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Transcript + escalation helpers                                            */
+/*  Transcript + escalation helpers                                           */
 /* -------------------------------------------------------------------------- */
 
 function isHumanRequest(text: string) {
@@ -225,59 +225,6 @@ function htmlToText(input: string) {
     .trim();
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Zammad widget loader                                                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * IMPORTANT (based on your console test):
- * - wss://pace-shuttles-helpdesk.zammad.com/ws works
- * - wss://pace-shuttles-helpdesk.zammad.com/ fails
- *
- * So we must ensure the widget uses /ws (if supported) and never "undefined".
- */
-const ZAMMAD_HOST = "https://pace-shuttles-helpdesk.zammad.com";
-const ZAMMAD_WIDGET_SRC = `${ZAMMAD_HOST}/assets/chat/chat-no-jquery.min.js`;
-const ZAMMAD_CHAT_CSS_URL = `${ZAMMAD_HOST}/assets/chat/chat.css`;
-
-declare global {
-  interface Window {
-    ZammadChat?: any;
-  }
-}
-
-async function ensureZammadWidgetLoaded(): Promise<void> {
-  if (typeof window === "undefined") return;
-  if (typeof window.ZammadChat === "function") return;
-
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector(
-      `script[src="${ZAMMAD_WIDGET_SRC}"]`
-    ) as HTMLScriptElement | null;
-
-    if (existing) {
-      // Already appended; wait for load
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () =>
-        reject(new Error("Zammad script failed to load"))
-      );
-      return;
-    }
-
-    const s = document.createElement("script");
-    s.src = ZAMMAD_WIDGET_SRC;
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Zammad script failed to load"));
-    document.head.appendChild(s);
-  });
-
-  // Safety: after load we expect a constructor on window
-  if (typeof window.ZammadChat !== "function") {
-    throw new Error("ZammadChat constructor not available after script load");
-  }
-}
-
 export function AgentChat() {
   /* ------------------------------ Chat state ------------------------------ */
   const [messages, setMessages] = useState<AgentMessage[]>([
@@ -296,6 +243,29 @@ export function AgentChat() {
     });
   };
   useEffect(scrollToBottom, [messages, pending]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Escalation state machine (UI-driven)                                     */
+  /* - Live agent removed (ticket-only escalation)                            */
+  /* ------------------------------------------------------------------------ */
+
+  type EscalationStage = "none" | "offer_human" | "ticket_compose";
+
+  type EscalationState =
+    | { stage: "none" }
+    | { stage: "offer_human" }
+    | { stage: "ticket_compose" };
+
+  const [escalation, setEscalation] = useState<EscalationState>({
+    stage: "none",
+  });
+
+  // Ticket-from-chat modal state
+  const [escTicketOpen, setEscTicketOpen] = useState(false);
+  const [escTicketTitle, setEscTicketTitle] = useState("");
+  const [escTicketAsk, setEscTicketAsk] = useState("");
+  const [escTicketErr, setEscTicketErr] = useState<string | null>(null);
+  const [escTicketBusy, setEscTicketBusy] = useState(false);
 
   function resetChat() {
     setMessages([
@@ -350,44 +320,6 @@ export function AgentChat() {
     }
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* Escalation state machine (UI-driven, so the LLM cannot refuse)           */
-  /* ------------------------------------------------------------------------ */
-
-  type EscalationStage =
-    | "none"
-    | "offer_human"
-    | "ticket_compose"
-    | "opening_live_chat";
-
-  type EscalationState =
-    | { stage: "none" }
-    | { stage: "offer_human" }
-    | { stage: "ticket_compose" }
-    | {
-        stage: "opening_live_chat";
-        status: "loading" | "ready" | "error";
-        error?: string;
-      };
-
-  const [escalation, setEscalation] = useState<EscalationState>({
-    stage: "none",
-  });
-
-  // Ticket-from-chat modal state
-  const [escTicketOpen, setEscTicketOpen] = useState(false);
-  const [escTicketTitle, setEscTicketTitle] = useState("");
-  const [escTicketAsk, setEscTicketAsk] = useState("");
-  const [escTicketErr, setEscTicketErr] = useState<string | null>(null);
-  const [escTicketBusy, setEscTicketBusy] = useState(false);
-
-  // Zammad live chat modal state (we open widget + show helper UI)
-  const [liveOpen, setLiveOpen] = useState(false);
-  const [liveErr, setLiveErr] = useState<string | null>(null);
-  const [liveBusy, setLiveBusy] = useState(false);
-  const zammadInitRef = useRef(false);
-  const openZammadBtnRef = useRef<HTMLButtonElement | null>(null);
-
   function appendUserMessage(text: string) {
     setMessages((prev) => [...prev, { role: "user", content: text }]);
   }
@@ -395,72 +327,6 @@ export function AgentChat() {
   function appendAssistantMessage(text: string) {
     setMessages((prev) => [...prev, { role: "assistant", content: text }]);
   }
-
-  function handleSend(msg: string) {
-    if (!msg.trim()) return;
-
-    const userText = msg.trim();
-
-    // Always record what the user said
-    const newMessages = [...messages, { role: "user", content: userText }];
-    setMessages(newMessages);
-
-    // If they ask for a human, we intercept and run escalation UI
-    if (isHumanRequest(userText)) {
-      // Persist “pending human” if they are anon — so after login we continue
-      if (typeof window !== "undefined") {
-        localStorage.setItem("ps_support_pending_human", "1");
-      }
-
-      if (!isAuthed) {
-        appendAssistantMessage(
-          "I can get a human to help — you’ll just need to sign in first. Use the Login button in the header, or tap the button below."
-        );
-        setEscalation({ stage: "none" });
-        return;
-      }
-
-      appendAssistantMessage(
-        "Would you like to contact a live agent? If no one is available, I can raise a ticket and an agent will get back to you — with the full transcript."
-      );
-      setEscalation({ stage: "offer_human" });
-      return;
-    }
-
-    // Normal flow: call the AI agent
-    callAgent(newMessages);
-  }
-
-  function handleChoice(choice: AgentChoice) {
-    // SPECIAL CASE: journey buttons with deep-link URLs
-    const action: any = (choice as any).action;
-    if (action && action.type === "openJourney" && action.url) {
-      const url: string = action.url;
-
-      const newMessages: AgentMessage[] = [
-        ...messages,
-        { role: "user", content: choice.label, payload: choice.action },
-        {
-          role: "assistant",
-          content: "Opening that journey in the schedule view for you…",
-        },
-      ];
-      setMessages(newMessages);
-
-      if (typeof window !== "undefined") window.location.href = url;
-      return;
-    }
-
-    const newMessages = [
-      ...messages,
-      { role: "user", content: choice.label, payload: choice.action },
-    ];
-    setMessages(newMessages);
-    callAgent(newMessages);
-  }
-
-  const last = messages[messages.length - 1];
-  const lastChoices = last?.choices ?? [];
 
   /* ------------------------------ Auth state ------------------------------ */
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
@@ -510,13 +376,87 @@ export function AgentChat() {
     localStorage.removeItem("ps_support_pending_human");
 
     appendAssistantMessage(
-      "You’re signed in — would you like to contact a live agent now? If no one is available, I can raise a ticket with the full transcript."
+      "You’re signed in — if you’d like a human to help, I can raise a support ticket now (with the full transcript)."
     );
     setEscalation({ stage: "offer_human" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  /* ------------------------------ Tickets UI ------------------------------ */
+  /* ------------------------------------------------------------------------ */
+  /* Send + choices                                                           */
+  /* ------------------------------------------------------------------------ */
+
+  function handleSend(msg: string) {
+    if (!msg.trim()) return;
+
+    const userText = msg.trim();
+
+    // Always record what the user said
+    const newMessages = [...messages, { role: "user", content: userText }];
+    setMessages(newMessages);
+
+    // If they ask for a human, we intercept and run escalation UI
+    if (isHumanRequest(userText)) {
+      // Persist “pending human” if they are anon — so after login we continue
+      if (typeof window !== "undefined") {
+        localStorage.setItem("ps_support_pending_human", "1");
+      }
+
+      if (!isAuthed) {
+        appendAssistantMessage(
+          "I can get a human to help — you’ll just need to sign in first. Use the Login button in the header, or tap the button below."
+        );
+        // IMPORTANT: show the CTA panel (this was previously stage: "none")
+        setEscalation({ stage: "offer_human" });
+        return;
+      }
+
+      appendAssistantMessage(
+        "Sure — I can raise a support ticket for a human agent, and include the full transcript."
+      );
+      setEscalation({ stage: "offer_human" });
+      return;
+    }
+
+    // Normal flow: call the AI agent
+    callAgent(newMessages);
+  }
+
+  function handleChoice(choice: AgentChoice) {
+    // SPECIAL CASE: journey buttons with deep-link URLs
+    const action: any = (choice as any).action;
+    if (action && action.type === "openJourney" && action.url) {
+      const url: string = action.url;
+
+      const newMessages: AgentMessage[] = [
+        ...messages,
+        { role: "user", content: choice.label, payload: choice.action },
+        {
+          role: "assistant",
+          content: "Opening that journey in the schedule view for you…",
+        },
+      ];
+      setMessages(newMessages);
+
+      if (typeof window !== "undefined") window.location.href = url;
+      return;
+    }
+
+    const newMessages = [
+      ...messages,
+      { role: "user", content: choice.label, payload: choice.action },
+    ];
+    setMessages(newMessages);
+    callAgent(newMessages);
+  }
+
+  const last = messages[messages.length - 1];
+  const lastChoices = last?.choices ?? [];
+
+  /* ------------------------------------------------------------------------ */
+  /* Tickets UI                                                               */
+  /* ------------------------------------------------------------------------ */
+
   const [ticketStatusFilter, setTicketStatusFilter] =
     useState<TicketStatus>("open");
   const [tickets, setTickets] = useState<TicketRow[]>([]);
@@ -709,83 +649,13 @@ export function AgentChat() {
   }
 
   /* ------------------------------------------------------------------------ */
-  /* Escalation actions                                                       */
+  /* Escalation actions (ticket-only)                                          */
   /* ------------------------------------------------------------------------ */
 
   const transcript = useMemo(
     () => buildTranscript(messages, authedEmail),
     [messages, authedEmail]
   );
-
-  async function startLiveAgent() {
-    if (!isAuthed) {
-      appendAssistantMessage(
-        "To contact a human, you’ll need to sign in first. Use the Login button in the header, or tap the button below."
-      );
-      if (typeof window !== "undefined") {
-        localStorage.setItem("ps_support_pending_human", "1");
-      }
-      return;
-    }
-
-    // Record the user's choice in transcript
-    appendUserMessage("Yes — contact a live agent");
-
-    setEscalation({ stage: "opening_live_chat", status: "loading" });
-    setLiveErr(null);
-    setLiveBusy(true);
-    setLiveOpen(true);
-
-    try {
-      await ensureZammadWidgetLoaded();
-
-      // Init widget only once per page load
-      if (
-        !zammadInitRef.current &&
-        typeof window !== "undefined" &&
-        typeof window.ZammadChat === "function"
-      ) {
-        zammadInitRef.current = true;
-
-        /**
-         * Critical hardening:
-         * - host MUST include protocol, otherwise it becomes a path on current origin
-         * - provide cssUrl to avoid "https://undefined/assets/..."
-         * - attempt to force wsPath=/ws (your environment requires it)
-         *
-         * If wsPath is ignored by the library, it is harmless.
-         */
-        new window.ZammadChat({
-          chatId: 1,
-          show: false, // manual open
-          debug: true,
-          host: ZAMMAD_HOST,
-          cssAutoload: true,
-          cssUrl: ZAMMAD_CHAT_CSS_URL,
-          wsPath: "/ws",
-        });
-      }
-
-      // Open it (manual open mode)
-      setTimeout(() => {
-        openZammadBtnRef.current?.click();
-      }, 50);
-
-      setEscalation({ stage: "opening_live_chat", status: "ready" });
-      appendAssistantMessage(
-        "Connecting you to a live agent now (if one is available). If the live chat doesn’t open, I can raise a ticket with the full transcript."
-      );
-    } catch (e: any) {
-      const msg = e?.message ?? "Failed to load live chat";
-      setLiveErr(msg);
-      setEscalation({ stage: "opening_live_chat", status: "error", error: msg });
-      appendAssistantMessage(
-        "I couldn’t open live chat right now. Would you like me to raise a ticket for a human agent instead (with the full transcript)?"
-      );
-    } finally {
-      setLiveBusy(false);
-    }
-  }
 
   function continueChat() {
     appendUserMessage("No — continue chatting");
@@ -803,10 +673,11 @@ export function AgentChat() {
       if (typeof window !== "undefined") {
         localStorage.setItem("ps_support_pending_human", "1");
       }
+      setEscalation({ stage: "offer_human" });
       return;
     }
 
-    appendUserMessage("No — raise a ticket instead");
+    appendUserMessage("Yes — raise a ticket");
     setEscalation({ stage: "ticket_compose" });
 
     // Open compose modal
@@ -898,16 +769,6 @@ export function AgentChat() {
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4">
-      {/* Hidden Zammad open button (manual open mode) */}
-      <button
-        ref={openZammadBtnRef}
-        className="open-zammad-chat"
-        style={{ display: "none" }}
-        type="button"
-      >
-        Open Zammad Chat
-      </button>
-
       {/* Page header */}
       <div className="mt-6 mb-4 flex items-start justify-between gap-3">
         <div>
@@ -992,13 +853,13 @@ export function AgentChat() {
                 </div>
               ))}
 
-              {/* Escalation controls (appear after we offered) */}
+              {/* Escalation controls */}
               {escalation.stage === "offer_human" && (
                 <div className="rounded-2xl ring-1 ring-slate-200 bg-white p-4">
                   {!isAuthed ? (
                     <>
                       <div className="text-sm text-slate-700">
-                        You’ll need to sign in to contact a human agent.
+                        You’ll need to sign in to raise a ticket for a human agent.
                       </div>
                       <div className="mt-3 flex gap-2">
                         <a
@@ -1021,19 +882,11 @@ export function AgentChat() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={startLiveAgent}
-                          className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700"
-                          disabled={pending}
-                        >
-                          Yes — contact a live agent
-                        </button>
-                        <button
-                          type="button"
                           onClick={openTicketCompose}
                           className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700"
                           disabled={pending}
                         >
-                          No — raise a ticket instead
+                          Yes — raise a ticket
                         </button>
                         <button
                           type="button"
@@ -1045,8 +898,7 @@ export function AgentChat() {
                         </button>
                       </div>
                       <div className="mt-2 text-xs text-slate-500">
-                        If live agents aren’t available, raising a ticket includes
-                        the full transcript.
+                        Raising a ticket includes the full transcript.
                       </div>
                     </>
                   )}
@@ -1333,68 +1185,6 @@ export function AgentChat() {
           </div>
         )}
       </div>
-
-      {/* Live agent modal (Zammad widget opens) */}
-      {liveOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => (liveBusy ? null : setLiveOpen(false))}
-          />
-          <div className="relative w-full max-w-xl rounded-2xl bg-white ring-1 ring-slate-200 shadow-xl">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  Live chat with support
-                </div>
-                <div className="text-xs text-slate-500">
-                  If an agent is online, the chat widget will open.
-                </div>
-              </div>
-              <button
-                onClick={() => (liveBusy ? null : setLiveOpen(false))}
-                className="text-slate-500 hover:text-slate-900 text-sm"
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="px-5 py-4 space-y-3">
-              {liveErr ? (
-                <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
-                  {liveErr}
-                </div>
-              ) : (
-                <div className="text-sm text-slate-700">
-                  If the live chat doesn’t appear, it usually means no agents are
-                  online. You can raise a ticket instead and we’ll include the full
-                  transcript.
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={openTicketCompose}
-                  className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 disabled:opacity-60"
-                  disabled={liveBusy}
-                >
-                  Raise a ticket instead
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLiveOpen(false)}
-                  className="rounded-xl ring-1 ring-slate-200 px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
-                  disabled={liveBusy}
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Ticket-from-chat escalation modal */}
       {isAuthed && escTicketOpen && (
