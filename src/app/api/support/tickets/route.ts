@@ -200,6 +200,56 @@ function defaultGroupId(): number {
 }
 
 /**
+ * IMPORTANT:
+ * Ticket creation requires the *token user* to be a member of the target group_id.
+ * Your /users/me showed group_ids: { "1": ["full"] } — so creating into group 2 will 403.
+ *
+ * We therefore:
+ *  - fetch /users/me
+ *  - validate the requested group_id is allowed
+ *  - fall back to an allowed group if not
+ */
+async function fetchMyAllowedGroupIds(): Promise<number[]> {
+  const res = await fetch(`${ZAMMAD_BASE}/users/me`, {
+    headers: zammadHeaders(),
+  });
+  if (!res.ok) return [];
+  const me = (await res.json()) as any;
+
+  // group_ids can be object: { "1": ["full"], "2": ["read"] }
+  const groupIdsObj = me?.group_ids;
+  if (groupIdsObj && typeof groupIdsObj === "object") {
+    const ids = Object.keys(groupIdsObj)
+      .map((k) => Number(k))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    // stable ordering
+    ids.sort((a, b) => a - b);
+    return ids;
+  }
+
+  // Some instances return array, be defensive
+  if (Array.isArray(me?.group_ids)) {
+    const ids = me.group_ids
+      .map((x: any) => Number(x))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    ids.sort((a: number, b: number) => a - b);
+    return ids;
+  }
+
+  return [];
+}
+
+function pickAllowedGroupId(requested: number, allowed: number[]): number {
+  if (Number.isFinite(requested) && requested > 0 && allowed.includes(requested)) {
+    return requested;
+  }
+  // Fall back to first allowed group (usually 1 for your API agent)
+  if (allowed.length > 0) return allowed[0];
+  // Absolute fallback (won't help if token user has no groups, but avoids NaN)
+  return 1;
+}
+
+/**
  * Best-effort: Try creating with optional custom_fields; if Zammad rejects
  * (common if custom fields aren't configured), retry without custom_fields.
  */
@@ -381,12 +431,16 @@ export async function POST(req: Request) {
     );
     const inferredTone = inferTone(`${derivedTitle}\n${message}`);
 
-    // IMPORTANT: default to your real support group (id=2)
+    // Requested group id (UI can send group_id=2)
     const groupIdRaw = body?.group_id;
-    const groupId =
+    const requestedGroupId =
       Number.isFinite(Number(groupIdRaw)) && Number(groupIdRaw) > 0
         ? Number(groupIdRaw)
         : defaultGroupId();
+
+    // ✅ NEW: ensure token user is actually allowed to create into this group
+    const allowedGroups = await fetchMyAllowedGroupIds();
+    const groupId = pickAllowedGroupId(requestedGroupId, allowedGroups);
 
     // Put reference/outcome into the body so we don't rely on custom fields existing
     const bodyParts = [message];
@@ -395,8 +449,7 @@ export async function POST(req: Request) {
     const finalBody = bodyParts.join("\n").trim();
 
     // ✅ Valid Zammad payload
-    // IMPORTANT FIX:
-    // Use article.type="note" (customer-visible) so Zammad does NOT require an email recipient.
+    // IMPORTANT: "note" avoids Zammad requiring a valid email recipient.
     const payload: any = {
       title: derivedTitle,
       group_id: groupId,
@@ -450,6 +503,11 @@ export async function POST(req: Request) {
           error: "ZAMMAD_TICKET_CREATE_FAILED",
           status: create.status,
           details: create.details,
+          debug: {
+            requestedGroupId,
+            usedGroupId: groupId,
+            allowedGroups,
+          },
         },
         { status: 502 }
       );
@@ -464,7 +522,9 @@ export async function POST(req: Request) {
         title: derivedTitle,
         ai_category: inferredCategory,
         ai_tone: inferredTone,
+        requested_group_id: requestedGroupId,
         group_id: groupId,
+        allowed_groups: allowedGroups,
       },
     });
   } catch (err: any) {
