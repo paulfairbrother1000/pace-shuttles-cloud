@@ -386,22 +386,18 @@ export async function POST(req: Request) {
       title: derivedTitle,
       group_id: groupId,
       customer: user.email,
-      article: {
-        subject: derivedTitle,
-        body: finalBody,
-        type: "note",
-        internal: false, // customer-visible
-      },
+     const payload = {
+  title: derivedTitle,
+  group_id: groupId, // should resolve to 2
+  customer: user.email,
+  article: {
+    subject: derivedTitle,
+    body: finalBody,
+    type: "email",     // 🔥 CRITICAL FIX
+    internal: false,
+  },
+};
 
-      // OPTIONAL custom fields / metadata:
-      // These may fail if not defined in Zammad, so we retry without them.
-      ai_category: inferredCategory,
-      ai_tone: inferredTone,
-      ai_escalation_reason:
-        body?.ai_escalation_reason ?? "User created ticket from Support page.",
-      provisional_category_hint: body?.provisional_category_hint,
-      source: body?.source,
-    };
 
     const create = await createTicketWithFallback(payload);
 
