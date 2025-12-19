@@ -395,7 +395,8 @@ export async function POST(req: Request) {
     const finalBody = bodyParts.join("\n").trim();
 
     // ✅ Valid Zammad payload
-    // NOTE: article.type "email" is the safest for customer-visible conversations.
+    // IMPORTANT FIX:
+    // Use article.type="note" (customer-visible) so Zammad does NOT require an email recipient.
     const payload: any = {
       title: derivedTitle,
       group_id: groupId,
@@ -432,7 +433,8 @@ export async function POST(req: Request) {
     // Remove undefined keys inside custom_fields (keeps payload clean)
     if (payload.custom_fields) {
       for (const k of Object.keys(payload.custom_fields)) {
-        if (payload.custom_fields[k] === undefined) delete payload.custom_fields[k];
+        if (payload.custom_fields[k] === undefined)
+          delete payload.custom_fields[k];
       }
       if (Object.keys(payload.custom_fields).length === 0) {
         delete payload.custom_fields;
