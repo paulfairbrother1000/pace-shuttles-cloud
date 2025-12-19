@@ -403,7 +403,7 @@ export async function POST(req: Request) {
       article: {
         subject: derivedTitle,
         body: finalBody,
-        type: "note",
+        type: "email",
         internal: false,
       },
 
