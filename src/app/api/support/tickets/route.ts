@@ -189,8 +189,8 @@ function resolveZammadStateName(
 
 /**
  * Group defaulting:
- * - Your real support group is id=2 ("Pace Shuttles Support")
- * - Allow override by env
+ * - allow override by env
+ * - otherwise default to 2 (your real group: "Pace Shuttles Support")
  */
 function defaultGroupId(): number {
   const raw = process.env.ZAMMAD_DEFAULT_GROUP_ID;
@@ -200,8 +200,8 @@ function defaultGroupId(): number {
 }
 
 /**
- * Best-effort: Try creating with optional custom fields; if Zammad rejects
- * because fields don't exist (common on hosted setups), retry without them.
+ * Best-effort: Try creating with optional custom_fields; if Zammad rejects
+ * (common if custom fields aren't configured), retry without custom_fields.
  */
 async function createTicketWithFallback(payload: any) {
   const first = await fetch(`${ZAMMAD_BASE}/tickets`, {
@@ -214,14 +214,10 @@ async function createTicketWithFallback(payload: any) {
 
   const firstText = await first.text();
 
-  // Retry on common validation/attribute failures
+  // Retry on common validation/attribute failures (400/422).
   if (first.status === 400 || first.status === 422) {
     const stripped = { ...payload };
-    delete stripped.ai_category;
-    delete stripped.ai_tone;
-    delete stripped.ai_escalation_reason;
-    delete stripped.provisional_category_hint;
-    delete stripped.source;
+    delete stripped.custom_fields;
 
     const second = await fetch(`${ZAMMAD_BASE}/tickets`, {
       method: "POST",
@@ -380,7 +376,9 @@ export async function POST(req: Request) {
       message.split("\n").find(Boolean)?.slice(0, 80) ||
       "Support request";
 
-    const inferredCategory = inferCategoryFromText(`${derivedTitle}\n${message}`);
+    const inferredCategory = inferCategoryFromText(
+      `${derivedTitle}\n${message}`
+    );
     const inferredTone = inferTone(`${derivedTitle}\n${message}`);
 
     // IMPORTANT: default to your real support group (id=2)
@@ -396,8 +394,8 @@ export async function POST(req: Request) {
     if (desiredOutcome) bodyParts.push(`\nDesired outcome: ${desiredOutcome}`);
     const finalBody = bodyParts.join("\n").trim();
 
-    // ✅ Correct, single payload definition (fixes your deployment error)
-    // ✅ CRITICAL: use article.type="email" for customer-visible messages
+    // ✅ Valid Zammad payload
+    // NOTE: article.type "email" is the safest for customer-visible conversations.
     const payload: any = {
       title: derivedTitle,
       group_id: groupId,
@@ -409,19 +407,37 @@ export async function POST(req: Request) {
         internal: false,
       },
 
-      // Keep these optional - fallback removes if not supported
-      ai_category: inferredCategory,
-      ai_tone: inferredTone,
-      ai_escalation_reason:
-        typeof body?.ai_escalation_reason === "string"
-          ? body.ai_escalation_reason
-          : "User created ticket from Support page.",
-      provisional_category_hint:
-        typeof body?.provisional_category_hint === "string"
-          ? body.provisional_category_hint
-          : undefined,
-      source: typeof body?.source === "string" ? body.source : undefined,
+      // Optional: only works if these custom fields exist in Zammad
+      // (we fallback if Zammad rejects)
+      custom_fields: {
+        ai_category: inferredCategory,
+        ai_tone: inferredTone,
+        ai_escalation_reason:
+          typeof body?.ai_escalation_reason === "string" &&
+          body.ai_escalation_reason.trim()
+            ? body.ai_escalation_reason.trim()
+            : "User created ticket from Support page.",
+        provisional_category_hint:
+          typeof body?.provisional_category_hint === "string" &&
+          body.provisional_category_hint.trim()
+            ? body.provisional_category_hint.trim()
+            : undefined,
+        source:
+          typeof body?.source === "string" && body.source.trim()
+            ? body.source.trim()
+            : undefined,
+      },
     };
+
+    // Remove undefined keys inside custom_fields (keeps payload clean)
+    if (payload.custom_fields) {
+      for (const k of Object.keys(payload.custom_fields)) {
+        if (payload.custom_fields[k] === undefined) delete payload.custom_fields[k];
+      }
+      if (Object.keys(payload.custom_fields).length === 0) {
+        delete payload.custom_fields;
+      }
+    }
 
     const create = await createTicketWithFallback(payload);
 
