@@ -346,21 +346,6 @@ export default function Page() {
   .tile { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
   .tile-border { box-shadow: 0 0 0 1px var(--border) inset; }
 
-  
-    /* Calendar: show journey names by default, dots only in mobile portrait */
-  .ps-theme .ps-cal-dots { display: none; }
-  .ps-theme .ps-cal-names { display: block; }
-
-  @media (max-width: 767px) and (orientation: portrait) {
-    .ps-theme .ps-cal-names { display: none; }
-    .ps-theme .ps-cal-dots { display: flex; }
-  }
-
-  
-  
-  
-  
-  
   /* Pills & buttons */
   .pill { border-radius: 9999px; padding: .375rem .75rem; font-size: .85rem; border: 1px solid var(--border); background: transparent; color: var(--text); }
   .pill-active { background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
@@ -1358,31 +1343,11 @@ const unitMinor =
                             onClick={() => setFilterDateISO(d.iso)}
                           >
                             <div className="text-xs opacity-70">{d.label}</div>
-<div className="mt-1 space-y-1 ps-cal-names">
-  {names.map((n, idx) => (
-    <div key={idx} className="text-[11px] leading-snug whitespace-normal break-words">{n}</div>
-  ))}
-</div>
-
-<div className="mt-2 ps-cal-dots items-start gap-2">
-  {Array.from({ length: Math.ceil((names.length || 0) / 5) }, (_, colIdx) => {
-    const start = colIdx * 5;
-    const end = start + 5;
-    const colCount = Math.max(0, Math.min(5, (names.length || 0) - start));
-    return (
-      <div key={colIdx} className="flex flex-col gap-1">
-        {Array.from({ length: colCount }, (_, dotIdx) => (
-          <span
-            key={dotIdx}
-            className="inline-block h-2 w-2 rounded-full opacity-70"
-            style={{ background: "currentColor" }}
-          />
-        ))}
-      </div>
-    );
-  })}
-</div>
-
+                            <div className="mt-1 space-y-1">
+                              {names.map((n, idx) => (
+                                <div key={idx} className="text-[11px] leading-snug whitespace-normal break-words">{n}</div>
+                              ))}
+                            </div>
                           </button>
                         );
                       })}
