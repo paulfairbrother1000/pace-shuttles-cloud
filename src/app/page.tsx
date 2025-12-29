@@ -1072,6 +1072,49 @@ const unitMinor =
           [calCursor]
         );
 
+
+                const calendarOccurrences = useMemo(() => {
+          const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
+          const minISO = startOfDay(nowPlus25h).toISOString().slice(0, 10);
+
+          let occ = occurrences.filter((o) => o.dateISO >= minISO);
+
+          if (filterDestinationId) {
+            const keep = new Set(verifiedRoutes.filter((r) => r.destination_id === filterDestinationId).map((r) => r.id));
+            occ = occ.filter((o) => keep.has(o.route_id));
+          }
+
+          if (filterPickupId) {
+            const keep = new Set(verifiedRoutes.filter((r) => r.pickup_id === filterPickupId).map((r) => r.id));
+            occ = occ.filter((o) => keep.has(o.route_id));
+          }
+
+          if (filterTypeName) {
+            const keep = new Set(
+              verifiedRoutes
+                .filter((r) => normType(vehicleTypeNameForRoute(r.id)) === filterTypeName)
+                .map((r) => r.id)
+            );
+            occ = occ.filter((o) => keep.has(o.route_id));
+          }
+
+          occ = occ.filter((o) => !isSoldOut(o.route_id, o.dateISO));
+
+          return occ;
+        }, [
+          occurrences,
+          verifiedRoutes,
+          filterDestinationId,
+          filterPickupId,
+          filterTypeName,
+          remainingByKeyDB,
+          remainingSeatsByKey,
+        ]);
+
+
+
+
+
         const namesByDate = useMemo(() => {
           const m = new Map<string, string[]>();
           const nameOf = (r: RouteRow) => {
@@ -1079,7 +1122,7 @@ const unitMinor =
             const de = destById(r.destination_id)?.name ?? "—";
             return `${pu} → ${de}`;
           };
-          filteredOccurrences.forEach((o) => {
+          calendarOccurrences.forEach((o) => {
             const r = routeMap.get(o.route_id);
             if (!r) return;
             const arr = m.get(o.dateISO) ?? [];
@@ -1087,7 +1130,8 @@ const unitMinor =
             m.set(o.dateISO, arr);
           });
           return m;
-        }, [filteredOccurrences, pickups, destinations, routeMap]);
+        }, [calendarOccurrences, pickups, destinations, routeMap]);
+
 
         const calendarDays = useMemo(() => {
           const first = startOfMonth(calCursor);
@@ -1346,6 +1390,8 @@ const unitMinor =
                       {calendarDays.map((d, i) => {
                         const selected = filterDateISO === d.iso;
                         const names = namesByDate.get(d.iso) || [];
+                        const hasJourneys = names.length > 0;
+
                         return (
                           <button
                             key={d.iso + i}
@@ -1353,7 +1399,8 @@ const unitMinor =
                             style={
                               selected
                                 ? { background: "var(--accent)", color: "var(--accent-contrast)", borderColor: "transparent" }
-                                : { background: d.inMonth ? "var(--card)" : "rgba(255,255,255,0.04)", color: d.inMonth ? "var(--text)" : "var(--muted)" }
+                                : { background: d.inMonth ? (hasJourneys ? "rgba(255,255,255,0.06)" : "var(--card)") : "rgba(255,255,255,0.04)", color: d.inMonth ? "var(--text)" : "var(--muted)" }
+
                             }
                             onClick={() => setFilterDateISO(d.iso)}
                           >
