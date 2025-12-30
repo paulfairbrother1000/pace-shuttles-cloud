@@ -9,6 +9,14 @@ import { publicImage } from "@/lib/publicImage";
 /* Types */
 type UUID = string;
 
+type PsUser = {
+  site_admin?: boolean | null;
+  operator_admin?: boolean | null;
+  operator_id?: string | null;
+};
+
+type Operator = { id: UUID; name: string; country_id: UUID | null };
+
 type RouteRow = {
   id: UUID;
   name: string | null;
@@ -47,6 +55,9 @@ export default function RoutesIndex() {
       : null;
   if (!sb) return null;
 
+  const [psUser, setPsUser] = useState<PsUser | null>(null);
+  const [lockedCountryId, setLockedCountryId] = useState<string>("");
+
   const [countries, setCountries] = useState<Country[]>([]);
   const [types, setTypes] = useState<JourneyType[]>([]);
   const [rows, setRows] = useState<RouteRow[]>([]);
@@ -55,6 +66,45 @@ export default function RoutesIndex() {
   const [typeId, setTypeId] = useState("");
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+
+  /* Load ps_user + lock operator-admin to their operator country */
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        const raw = localStorage.getItem("ps_user");
+        const u = raw ? (JSON.parse(raw) as PsUser) : null;
+        if (off) return;
+        setPsUser(u);
+
+        // Operator admins must only see routes for their country.
+        // Site admins are not locked.
+        if (u?.operator_admin && !u?.site_admin && u.operator_id) {
+          const { data, error } = await sb
+            .from("operators")
+            .select("id,name,country_id")
+            .eq("id", u.operator_id)
+            .maybeSingle();
+
+          if (!off && !error) {
+            const op = (data as Operator | null) || null;
+            const cid = op?.country_id ?? "";
+            setLockedCountryId(cid);
+            setCountryId(cid); // force filter to operator's country
+          }
+        }
+      } catch {
+        if (!off) {
+          setPsUser(null);
+          setLockedCountryId("");
+        }
+      }
+    })();
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let off = false;
@@ -98,11 +148,15 @@ export default function RoutesIndex() {
 
   const filtered = useMemo(() => {
     let base = rows;
-    if (countryId) {
+
+    // HARD LOCK: operator admins only see their country routes.
+    const effectiveCountryId = lockedCountryId || countryId;
+
+    if (effectiveCountryId) {
       base = base.filter((r) => {
         const c1 = r.pickup?.country_id || null;
         const c2 = r.destination?.country_id || null;
-        return c1 === countryId || c2 === countryId;
+        return c1 === effectiveCountryId || c2 === effectiveCountryId;
       });
     }
     if (typeId) base = base.filter((r) => (r.journey_type_id || "") === typeId);
@@ -118,7 +172,7 @@ export default function RoutesIndex() {
         includes(r.pickup?.name) ||
         includes(r.destination?.name)
     );
-  }, [rows, q, countryId, typeId]);
+  }, [rows, q, countryId, typeId, lockedCountryId]);
 
   const countryName = (id?: string | null) =>
     countries.find((c) => c.id === id)?.name || "";
@@ -141,6 +195,7 @@ export default function RoutesIndex() {
           className="border rounded-lg px-3 py-2"
           value={countryId}
           onChange={(e) => setCountryId(e.target.value)}
+          disabled={!!lockedCountryId}
         >
           <option value="">All Countries</option>
           {countries.map((c) => (
@@ -170,12 +225,18 @@ export default function RoutesIndex() {
           onChange={(e) => setQ(e.target.value)}
         />
 
-        <Link
-          href="/operator-admin/routes/edit/new"
-          className="ml-auto inline-flex items-center rounded-full px-4 py-2 bg-black text-white text-sm"
-        >
-          New Route
-        </Link>
+        {psUser?.site_admin ? (
+          <Link
+            href="/operator-admin/routes/edit/new"
+            className="ml-auto inline-flex items-center rounded-full px-4 py-2 bg-black text-white text-sm"
+          >
+            New Route
+          </Link>
+        ) : (
+          <div className="ml-auto text-sm text-neutral-500">
+            Routes are defined by Site Admin.
+          </div>
+        )}
       </div>
 
       {msg && (
