@@ -241,10 +241,11 @@ export default function AdminRouteEditPage() {
           )
           .eq("id", id)
           .single(),
-        sb
-          .from("route_vehicle_assignments")
-          .select("route_id,vehicle_id,is_active,preferred")
-          .eq("is_active", true),
+sb.from("route_vehicle_assignments")
+  .select("route_id,vehicle_id,is_active,preferred")
+  .eq("route_id", id)
+  .eq("is_active", true),
+
       ]);
 
       if (off) return;
@@ -383,9 +384,11 @@ export default function AdminRouteEditPage() {
   async function reloadAssignments() {
     if (isCreate || !looksLikeUuid) return;
     const { data, error } = await sb!
-      .from("route_vehicle_assignments")
-      .select("route_id,vehicle_id,is_active,preferred")
-      .eq("is_active", true);
+.from("route_vehicle_assignments")
+.select("route_id,vehicle_id,is_active,preferred")
+.eq("route_id", id)
+.eq("is_active", true);
+
     if (!error) setAssignments((data as Assignment[]) || []);
   }
 
