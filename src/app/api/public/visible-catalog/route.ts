@@ -589,7 +589,7 @@ export async function GET() {
         },
       });
     }
-
+ 
     const fb = await fallbackPublicCatalog("no_routes");
     return NextResponse.json(fb, {
       headers: {
