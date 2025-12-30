@@ -35,12 +35,7 @@ function normalizeRoute(row: Record<string, any>) {
   const country_id = pick(row, "country_id", "country_uuid", "c_id");
   const country_name = pick(row, "country_name", "country");
 
-  const destination_id = pick(
-    row,
-    "destination_id",
-    "dest_id",
-    "destination_uuid"
-  );
+  const destination_id = pick(row, "destination_id", "dest_id", "destination_uuid");
   const destination_name = pick(row, "destination_name", "destination");
 
   const pickup_id = pick(row, "pickup_id", "pickup_uuid");
@@ -94,9 +89,7 @@ type VehicleRow = {
   preferred: boolean | null;
 };
 
-function chooseAssignment(
-  rows: RouteVehicleAssignmentRow[]
-): RouteVehicleAssignmentRow | null {
+function chooseAssignment(rows: RouteVehicleAssignmentRow[]): RouteVehicleAssignmentRow | null {
   if (!rows.length) return null;
 
   // prefer active=true (or null treated as true), then preferred=true, then newest created_at
@@ -115,147 +108,6 @@ function chooseAssignment(
   });
 
   return sorted[0] ?? null;
-}
-
-/**
- * Backfill route.country_id / route.country_name when the view does not supply them.
- *
- * Why: your BVI routes have routes.country_id = NULL (but pickup_id / destination_id are set),
- * so visible_routes_v returns country_name NULL for those routes.
- *
- * Strategy:
- * - routes(id) -> (country_id, pickup_id, destination_id)
- * - if country_id is null, infer from pickup_points.country_id or destinations.country_id
- * - then resolve countries.name
- */
-async function enrichRoutesWithCountry(
-  supabase: SupabaseClient,
-  routes: VisibleRoute[]
-): Promise<VisibleRoute[]> {
-  const routeIds = routes
-    .map((r) => (r.route_id ?? "").toString())
-    .filter(Boolean);
-
-  if (!routeIds.length) return routes;
-
-  const needsBackfill = routes.some(
-    (r) => !r.country_id || !r.country_name
-  );
-  if (!needsBackfill) return routes;
-
-  // 1) Pull authoritative route row fields (including pickup_id/destination_id)
-  const { data: routeRows, error: rrErr } = await supabase
-    .from("routes")
-    .select("id,country_id,pickup_id,destination_id")
-    .in("id", routeIds);
-
-  if (rrErr) throw rrErr;
-
-  const byRouteId = new Map<
-    string,
-    { country_id: string | null; pickup_id: string | null; destination_id: string | null }
-  >();
-
-  const pickupIds = new Set<string>();
-  const destIds = new Set<string>();
-
-  for (const row of (routeRows ?? []) as any[]) {
-    const id = (row?.id ?? "").toString();
-    if (!id) continue;
-
-    const country_id = row?.country_id ? String(row.country_id) : null;
-    const pickup_id = row?.pickup_id ? String(row.pickup_id) : null;
-    const destination_id = row?.destination_id ? String(row.destination_id) : null;
-
-    byRouteId.set(id, { country_id, pickup_id, destination_id });
-
-    if (pickup_id) pickupIds.add(pickup_id);
-    if (destination_id) destIds.add(destination_id);
-  }
-
-  // 2) Load pickup_points and destinations country_id so we can infer
-  const [puRes, deRes] = await Promise.all([
-    pickupIds.size
-      ? supabase
-          .from("pickup_points")
-          .select("id,country_id")
-          .in("id", Array.from(pickupIds))
-      : Promise.resolve({ data: [], error: null } as any),
-    destIds.size
-      ? supabase
-          .from("destinations")
-          .select("id,country_id")
-          .in("id", Array.from(destIds))
-      : Promise.resolve({ data: [], error: null } as any),
-  ]);
-
-  if (puRes.error) throw puRes.error;
-  if (deRes.error) throw deRes.error;
-
-  const pickupCountryById = new Map<string, string>();
-  for (const p of (puRes.data ?? []) as any[]) {
-    const id = (p?.id ?? "").toString();
-    const cid = (p?.country_id ?? "").toString();
-    if (id && cid) pickupCountryById.set(id, cid);
-  }
-
-  const destCountryById = new Map<string, string>();
-  for (const d of (deRes.data ?? []) as any[]) {
-    const id = (d?.id ?? "").toString();
-    const cid = (d?.country_id ?? "").toString();
-    if (id && cid) destCountryById.set(id, cid);
-  }
-
-  // 3) Determine final country_id per route (route.country_id > pickup.country_id > destination.country_id)
-  const resolvedCountryIds = new Set<string>();
-  const resolvedCountryIdByRoute = new Map<string, string>();
-
-  for (const rid of routeIds) {
-    const meta = byRouteId.get(rid);
-    if (!meta) continue;
-
-    const cid =
-      meta.country_id ||
-      (meta.pickup_id ? pickupCountryById.get(meta.pickup_id) : "") ||
-      (meta.destination_id ? destCountryById.get(meta.destination_id) : "") ||
-      "";
-
-    if (cid) {
-      resolvedCountryIdByRoute.set(rid, cid);
-      resolvedCountryIds.add(cid);
-    }
-  }
-
-  // 4) Load countries.name for resolved ids
-  let countryNameById = new Map<string, string>();
-  if (resolvedCountryIds.size) {
-    const { data: cRows, error: cErr } = await supabase
-      .from("countries")
-      .select("id,name")
-      .in("id", Array.from(resolvedCountryIds));
-    if (cErr) throw cErr;
-
-    countryNameById = new Map(
-      ((cRows ?? []) as any[])
-        .map((c) => [String(c.id), String(c.name)] as const)
-        .filter(([id, name]) => Boolean(id && name))
-    );
-  }
-
-  // 5) Apply backfill to routes (keep existing values where present)
-  const enriched = routes.map((r) => {
-    const rid = (r.route_id ?? "").toString();
-    const resolvedId = resolvedCountryIdByRoute.get(rid) ?? "";
-    const resolvedName = resolvedId ? countryNameById.get(resolvedId) ?? "" : "";
-
-    return {
-      ...r,
-      country_id: r.country_id || (resolvedId ? resolvedId : null),
-      country_name: r.country_name || (resolvedName ? resolvedName : null),
-    };
-  });
-
-  return enriched;
 }
 
 /**
@@ -366,9 +218,7 @@ async function enrichRoutesWithTransportTypes(
   const enriched = routes.map((r) => {
     const rid = (r.route_id ?? "").toString();
     const chosenVehicleId = chosenByRoute.get(rid) ?? "";
-    const typeId = chosenVehicleId
-      ? vehicleTypeIdByVehicle.get(chosenVehicleId) ?? ""
-      : "";
+    const typeId = chosenVehicleId ? vehicleTypeIdByVehicle.get(chosenVehicleId) ?? "" : "";
     const typeName = typeId ? typeNameById.get(typeId) ?? "" : "";
 
     return {
@@ -397,7 +247,9 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  let routes = (rawRoutes ?? []).map(normalizeRoute).filter((r) => r.route_name);
+  let routes = (rawRoutes ?? [])
+    .map(normalizeRoute)
+    .filter((r) => r.route_name);
 
   if (!routes.length) {
     return {
@@ -411,12 +263,7 @@ async function loadVisibleCatalog() {
     };
   }
 
-  // ✅ CRITICAL FIX #1:
-  // Backfill country_id/country_name for routes where routes.country_id is NULL (e.g. BVI),
-  // using routes.pickup_id / routes.destination_id -> their country_id -> countries.name
-  routes = await enrichRoutesWithCountry(supabase, routes);
-
-  // ✅ CRITICAL FIX #2:
+  // ✅ CRITICAL FIX:
   // Replace polluted / null vehicle typing from the view with canonical transport_types
   const typed = await enrichRoutesWithTransportTypes(supabase, routes);
   routes = typed.routes;
@@ -435,21 +282,29 @@ async function loadVisibleCatalog() {
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
     await Promise.all([
-      supabase.from("countries").select("id,name,description,hero_image_url"),
+      supabase.from("countries").select(
+        "id,name,description,hero_image_url"
+      ),
       supabase
         .from("destinations")
         .select(
           "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
         ),
-      supabase.from("pickup_points").select("name,country_name,directions_url"),
+      supabase
+        .from("pickup_points")
+        .select("name,country_name,directions_url"),
     ]);
 
   // Filter to visible-only
   const countries = (countriesAll ?? []).filter((c) =>
     visibleCountryNames.includes(c.name)
   );
-  const destinations = (destAll ?? []).filter((d) => visibleDestLC.has(lc(d.name)));
-  const pickups = (pickupsAll ?? []).filter((p) => visiblePickupLC.has(lc(p.name)));
+  const destinations = (destAll ?? []).filter((d) =>
+    visibleDestLC.has(lc(d.name))
+  );
+  const pickups = (pickupsAll ?? []).filter((p) =>
+    visiblePickupLC.has(lc(p.name))
+  );
 
   // ✅ vehicle_types is now the SAFE canonical list actually used on routes
   const vehicle_types = typed.vehicle_types.map((t) => ({
@@ -538,12 +393,18 @@ async function fallbackPublicCatalog(reason?: string) {
   const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] =
     await Promise.all([
       getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
-      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(() => []),
+      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(
+        () => []
+      ),
       getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
-      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(() => []),
+      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(
+        () => []
+      ),
     ]);
 
-  const activeDestinations = destinationsRaw.filter((d) => d.active !== false);
+  const activeDestinations = destinationsRaw.filter(
+    (d) => d.active !== false
+  );
   const visibleCountryNames = Array.from(
     new Set(
       activeDestinations
@@ -551,7 +412,9 @@ async function fallbackPublicCatalog(reason?: string) {
         .filter(Boolean)
     )
   );
-  const countries = countriesRaw.filter((c) => visibleCountryNames.includes(c.name));
+  const countries = countriesRaw.filter((c) =>
+    visibleCountryNames.includes(c.name)
+  );
 
   return {
     ok: true,
@@ -578,10 +441,7 @@ export async function GET() {
         });
       }
     } catch (e: any) {
-      console.warn(
-        "[visible-catalog] primary failed; using fallback:",
-        e?.message || e
-      );
+      console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
         headers: {
