@@ -29,6 +29,12 @@ type PsUser = {
   operator_name?: string | null;
 };
 
+type Operator = {
+  id: UUID;
+  name: string;
+  country_id: string | null;
+};
+
 type Vehicle = {
   id: UUID;
   name: string;
@@ -106,6 +112,8 @@ export default function AdminRouteEditPage() {
   const [psUser, setPsUser] = useState<PsUser | null>(null);
   const [operatorId, setOperatorId] = useState<string>("");
 
+  const [operators, setOperators] = useState<Operator[]>([]);
+
   const [route, setRoute] = useState<RouteRow | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -121,7 +129,16 @@ export default function AdminRouteEditPage() {
   const [saving, setSaving] = useState(false);
 
   const isSiteAdmin = Boolean(psUser?.site_admin);
-  const isReadOnly = !isSiteAdmin;
+  const isOperatorAdmin = Boolean(psUser?.operator_admin);
+
+  // Site admin can edit route fields; operator admin cannot.
+  const canEditRouteFields = isSiteAdmin;
+
+  // Both site admin and operator admin can assign vehicles.
+  const canAssignVehicles = isSiteAdmin || isOperatorAdmin;
+
+  // Keep the existing pattern for disabling core fields.
+  const isReadOnly = !canEditRouteFields;
 
   /* ps_user + operator lock (from ?op= or operator-admin) */
   useEffect(() => {
@@ -140,6 +157,24 @@ export default function AdminRouteEditPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* Site admin: load operators for dropdown */
+  useEffect(() => {
+    if (!sb || !isSiteAdmin) return;
+    let off = false;
+    (async () => {
+      const { data, error } = await sb
+        .from("operators")
+        .select("id,name,country_id")
+        .order("name");
+      if (off) return;
+      if (error) setMsg(error.message);
+      setOperators((data as Operator[]) || []);
+    })();
+    return () => {
+      off = true;
+    };
+  }, [isSiteAdmin]);
 
   /* Lookups: countries, journey types, operator perms, all active destinations + pickups */
   useEffect(() => {
@@ -294,10 +329,14 @@ export default function AdminRouteEditPage() {
 
   const opAllowedTypes = useMemo(() => {
     if (!operatorId) return new Set<string>();
-    return new Set(rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id));
+    return new Set(
+      rels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)
+    );
   }, [rels, operatorId]);
 
-  const assignmentAllowed = Boolean(route?.journey_type_id && opAllowedTypes.has(route.journey_type_id!));
+  const assignmentAllowed = Boolean(
+    route?.journey_type_id && opAllowedTypes.has(route.journey_type_id!)
+  );
 
   const countryOptions = countries;
 
@@ -319,12 +358,12 @@ export default function AdminRouteEditPage() {
 
   /* Helpers */
   function setField<K extends keyof RouteRow>(key: K, val: RouteRow[K]) {
-    if (isReadOnly) return;
+    if (!canEditRouteFields) return;
     setRoute((r) => (r ? { ...r, [key]: val } : r));
   }
 
   function onChangeCountry(nextCountryId: string) {
-    if (isReadOnly) return;
+    if (!canEditRouteFields) return;
     setSelectedCountryId(nextCountryId);
     setRoute((r) =>
       r
@@ -333,7 +372,9 @@ export default function AdminRouteEditPage() {
             pickup:
               r.pickup && r.pickup.country_id !== nextCountryId ? null : r.pickup,
             destination:
-              r.destination && r.destination.country_id !== nextCountryId ? null : r.destination,
+              r.destination && r.destination.country_id !== nextCountryId
+                ? null
+                : r.destination,
           }
         : r
     );
@@ -349,7 +390,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function toggleAssign(routeId: string, vehicleId: string, currentlyAssigned: boolean) {
-    if (isCreate || !looksLikeUuid || isReadOnly) return;
+    if (isCreate || !looksLikeUuid || !canAssignVehicles) return;
     try {
       if (!currentlyAssigned && !assignmentAllowed) {
         alert("This operator isn’t permitted to run the selected transport type.");
@@ -378,7 +419,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function setPreferred(routeId: string, vehicleId: string) {
-    if (isCreate || !looksLikeUuid || isReadOnly) return;
+    if (isCreate || !looksLikeUuid || !canAssignVehicles) return;
     try {
       if (!assignmentAllowed) {
         alert("Preferred vehicle blocked by transport type policy.");
@@ -406,7 +447,7 @@ export default function AdminRouteEditPage() {
   }
 
   async function saveCore() {
-    if (!sb || !route || isReadOnly) return;
+    if (!sb || !route || !canEditRouteFields) return;
     try {
       setSaving(true);
       const payload: any = {
@@ -462,8 +503,35 @@ export default function AdminRouteEditPage() {
 
       {/* Core editor */}
       <section className="rounded-2xl border bg-white shadow p-4 space-y-3">
-        {!isSiteAdmin && (
+        {!canEditRouteFields && (
           <div className="text-sm text-neutral-600">Read-only (Operator Admin).</div>
+        )}
+
+        {/* Site admin operator context selector */}
+        {isSiteAdmin && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <div className="text-xs text-neutral-600 mb-1">Operator</div>
+              <select
+                className="w-full border rounded px-3 py-2"
+                value={operatorId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setOperatorId(next);
+                  router.replace(
+                    `/operator-admin/routes/edit/${id}${next ? `?op=${encodeURIComponent(next)}` : ""}`
+                  );
+                }}
+              >
+                <option value="">— Select operator —</option>
+                {operators.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -706,23 +774,25 @@ export default function AdminRouteEditPage() {
                       key={v.id}
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
                         assigned ? "bg-black text-white border-black" : "bg-white"
-                      } ${!assignmentAllowed || isReadOnly ? "opacity-50" : ""}`}
+                      } ${!assignmentAllowed || !canAssignVehicles ? "opacity-50" : ""}`}
                       title={!assignmentAllowed ? "Not permitted for this transport type" : ""}
                     >
                       <button
                         className="outline-none disabled:opacity-60"
                         onClick={() => toggleAssign(id, v.id, assigned)}
-                        disabled={!assignmentAllowed || isReadOnly}
+                        disabled={!assignmentAllowed || !canAssignVehicles}
                         title={assigned ? "Unassign" : "Assign to route"}
                       >
                         {v.name} ({v.minseats}–{v.maxseats})
                       </button>
                       <button
                         className={`rounded-full border px-2 py-0.5 text-xs ${
-                          isPref ? "bg-yellow-400 text-black border-yellow-500" : "bg-white text-black border-neutral-300"
+                          isPref
+                            ? "bg-yellow-400 text-black border-yellow-500"
+                            : "bg-white text-black border-neutral-300"
                         }`}
                         onClick={() => setPreferred(id, v.id)}
-                        disabled={!assignmentAllowed || isReadOnly}
+                        disabled={!assignmentAllowed || !canAssignVehicles}
                         title="Mark as preferred"
                       >
                         ★
