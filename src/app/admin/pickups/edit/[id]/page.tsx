@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
-import { publicImage } from "@/lib/publicImage";
 
 /* -------- Supabase (client-side) -------- */
 const sb =
@@ -20,177 +21,524 @@ type Country = { id: string; name: string };
 type TransportType = { id: string; name: string };
 type TransportPlace = { id: string; transport_type_id: string; name: string };
 
-type Row = {
+type PickupPointRow = {
   id: string;
-  name: string;
   country_id: string;
-  picture_url: string | null;
-  description: string | null;
+  name: string;
   address1: string | null;
   address2: string | null;
   town: string | null;
   region: string | null;
   postal_code: string | null;
-  transport_type_id: string | null;
+  picture_url: string | null; // FULL public URL in your current data
+  description: string | null;
+  transport_type_id: string;
   transport_type_place_id: string | null;
+  arrival_notes: string | null;
+  active: boolean;
 };
 
-export default function AdminPickupPointsTilesPage() {
+/* -------- Helpers -------- */
+const isHttp = (s?: string | null) => !!s && /^https?:\/\//i.test(s);
+
+function slugify(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+function extFromFileName(name: string) {
+  const m = name.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m?.[1] ?? "jpg";
+}
+
+export default function AdminPickupPointEditPage() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+
+  const idParam = params?.id;
+  const isNew = idParam === "new";
+
   const [countries, setCountries] = useState<Country[]>([]);
   const [types, setTypes] = useState<TransportType[]>([]);
   const [places, setPlaces] = useState<TransportPlace[]>([]);
-  const [rows, setRows] = useState<Row[]>([]);
+
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  const countryName = (id: string | null) =>
-    countries.find((c) => c.id === id)?.name ?? (id ?? "");
-  const typeName = (id: string | null) =>
-    types.find((t) => t.id === id)?.name ?? (id ?? "");
-  const placeName = (id: string | null) =>
-    places.find((p) => p.id === id)?.name ?? (id ?? "");
+  const [form, setForm] = useState<PickupPointRow>(() => ({
+    id: "",
+    country_id: "",
+    name: "",
+    address1: null,
+    address2: null,
+    town: null,
+    region: null,
+    postal_code: null,
+    picture_url: null,
+    description: null,
+    transport_type_id: "",
+    transport_type_place_id: null,
+    arrival_notes: null,
+    active: true,
+  }));
 
+  // Image state
+  const [imageMode, setImageMode] = useState<"upload" | "url">("upload");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageUrlInput, setImageUrlInput] = useState<string>("");
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+
+  function set<K extends keyof PickupPointRow>(k: K, v: PickupPointRow[K]) {
+    setForm((p) => ({ ...p, [k]: v }));
+  }
+
+  /* Load lookups + row */
   useEffect(() => {
     let off = false;
+
     (async () => {
       if (!sb) {
-        setErr("Supabase client is not configured.");
+        setMsg("Supabase client is not configured.");
         setLoading(false);
         return;
       }
+
       setLoading(true);
-      setErr(null);
+      setMsg(null);
+
       try {
-        const [cQ, tQ, pQ, dQ] = await Promise.all([
+        const [cQ, tQ, pQ] = await Promise.all([
           sb.from("countries").select("id,name").order("name"),
           sb.from("transport_types").select("id,name").order("name"),
           sb.from("transport_type_places").select("id,transport_type_id,name").order("name"),
-          sb.from("pickup_points").select("*").order("name"),
         ]);
         if (cQ.error) throw cQ.error;
         if (tQ.error) throw tQ.error;
         if (pQ.error) throw pQ.error;
-        if (dQ.error) throw dQ.error;
 
         if (off) return;
+
         setCountries((cQ.data || []) as Country[]);
         setTypes((tQ.data || []) as TransportType[]);
         setPlaces((pQ.data || []) as TransportPlace[]);
-        setRows((dQ.data || []) as Row[]);
+
+        if (!isNew) {
+          const { data, error } = await sb
+            .from("pickup_points")
+            .select("*")
+            .eq("id", idParam)
+            .maybeSingle();
+
+          if (error) throw error;
+          if (!data) throw new Error("Pick-up point not found.");
+
+          const r = data as PickupPointRow;
+
+          setForm(r);
+          setImagePreview(r.picture_url);
+          if (isHttp(r.picture_url)) {
+            setImageMode("url");
+            setImageUrlInput(r.picture_url ?? "");
+          } else {
+            setImageMode("upload");
+          }
+        } else {
+          // new: leave form blank
+          setForm((p) => ({ ...p, id: "" }));
+          setImagePreview(null);
+          setImageMode("upload");
+          setImageUrlInput("");
+          setImageFile(null);
+        }
       } catch (e: any) {
-        if (!off) setErr(e?.message ?? String(e));
+        if (!off) setMsg(e?.message ?? String(e));
       } finally {
         if (!off) setLoading(false);
       }
     })();
+
     return () => {
       off = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idParam]);
 
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter(
-      (r) =>
-        r.name?.toLowerCase().includes(s) ||
-        countryName(r.country_id).toLowerCase().includes(s) ||
-        typeName(r.transport_type_id).toLowerCase().includes(s) ||
-        placeName(r.transport_type_place_id).toLowerCase().includes(s)
+  /* Places filtered by selected type */
+  const placesForSelectedType = useMemo(() => {
+    if (!form.transport_type_id) return [];
+    return places.filter((p) => p.transport_type_id === form.transport_type_id);
+  }, [places, form.transport_type_id]);
+
+  /* Local preview for uploaded file */
+  useEffect(() => {
+    if (!imageFile) return;
+    const objUrl = URL.createObjectURL(imageFile);
+    setImagePreview(objUrl);
+    return () => URL.revokeObjectURL(objUrl);
+  }, [imageFile]);
+
+  /* Preview for pasted URL */
+  useEffect(() => {
+    if (imageMode !== "url") return;
+    const v = imageUrlInput.trim();
+    setImagePreview(v && isHttp(v) ? v : null);
+  }, [imageMode, imageUrlInput]);
+
+  async function uploadImageIfNeeded(): Promise<string | null> {
+    if (!sb) throw new Error("Supabase not configured");
+
+    // URL mode: store full URL (your DB already stores full URL)
+    if (imageMode === "url") {
+      const url = imageUrlInput.trim();
+      if (!url) return null;
+      if (!isHttp(url)) throw new Error("Image URL must start with http(s)://");
+      return url;
+    }
+
+    // Upload mode: if no file picked, keep existing picture_url
+    if (!imageFile) return form.picture_url ?? null;
+
+    // Flat path under pickup-points/ using slug(name)
+    const ext = extFromFileName(imageFile.name);
+    const base = slugify(form.name || "pickup-point") || "pickup-point";
+    const objectPath = `pickup-points/${base}.${ext}`; // bucket: images
+
+    const { error } = await sb.storage.from("images").upload(objectPath, imageFile, {
+      upsert: true,
+      contentType: imageFile.type || undefined,
+    });
+    if (error) throw error;
+
+    // Store FULL public URL (matches your existing rows)
+    const pub = sb.storage.from("images").getPublicUrl(objectPath).data.publicUrl;
+    return pub || null;
+  }
+
+  async function onSave() {
+    if (!sb) {
+      setMsg("Supabase client is not configured.");
+      return;
+    }
+    setMsg(null);
+
+    if (!form.name.trim()) return setMsg("Name is required.");
+    if (!form.country_id) return setMsg("Country is required.");
+    if (!form.transport_type_id) return setMsg("Transport type is required.");
+
+    setSaving(true);
+    try {
+      const picture_url = await uploadImageIfNeeded();
+
+      const payload = {
+        country_id: form.country_id,
+        name: form.name.trim(),
+        address1: form.address1?.trim() ? form.address1.trim() : null,
+        address2: form.address2?.trim() ? form.address2.trim() : null,
+        town: form.town?.trim() ? form.town.trim() : null,
+        region: form.region?.trim() ? form.region.trim() : null,
+        postal_code: form.postal_code?.trim() ? form.postal_code.trim() : null,
+        picture_url,
+        description: form.description?.trim() ? form.description.trim() : null,
+        transport_type_id: form.transport_type_id,
+        transport_type_place_id: form.transport_type_place_id || null,
+        arrival_notes: form.arrival_notes?.trim() ? form.arrival_notes.trim() : null,
+        active: !!form.active,
+      };
+
+      if (isNew) {
+        const { error } = await sb.from("pickup_points").insert(payload);
+        if (error) throw error;
+      } else {
+        const { error } = await sb.from("pickup_points").update(payload).eq("id", idParam);
+        if (error) throw error;
+      }
+
+      router.push("/admin/pickups");
+      router.refresh();
+    } catch (e: any) {
+      setMsg(e?.message ?? String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="max-w-[900px] mx-auto px-4 py-6">
+        <div className="rounded-2xl border bg-white p-4">Loading…</div>
+      </div>
     );
-  }, [rows, q, countries, types, places]);
+  }
 
   return (
-    <div className="px-4 py-6 mx-auto max-w-[1200px] space-y-5">
-      <header className="flex flex-wrap items-center gap-3 justify-between">
+    <div className="max-w-[900px] mx-auto px-4 py-6 space-y-5">
+      <header className="flex flex-wrap items-center gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Admin • Pick-up Points</h1>
-          <p className="text-neutral-600 text-sm">
-            Click a tile to edit, or add a new pick-up point.
+          <h1 className="text-2xl font-semibold">
+            Admin • Pick-up Points • {isNew ? "New" : "Edit"}
+          </h1>
+          <p className="text-sm text-neutral-600">
+            {isNew ? "Create a new pick-up point." : "Update this pick-up point."}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            className="border rounded-lg px-3 py-2 text-sm w-64"
-            placeholder="Search pick-up points…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <button
-            className="rounded-full px-4 py-2 text-white text-sm"
-            style={{ backgroundColor: "#2563eb" }}
-            onClick={() => (window.location.href = "/admin/pickups/edit/new")}
+        <div className="ml-auto flex gap-2">
+          <Link
+            href="/admin/pickups"
+            className="rounded-full px-4 py-2 border text-sm hover:bg-neutral-50"
           >
-            New Pick-up Point
+            Cancel
+          </Link>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="rounded-full px-4 py-2 bg-blue-600 text-white text-sm hover:opacity-90 disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </header>
 
-      {err && (
-        <div className="p-3 border rounded-lg bg-rose-50 text-rose-700 text-sm">
-          {err}
+      {msg && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {msg}
         </div>
       )}
 
-      <section>
-        {loading ? (
-          <div className="p-4 border rounded-xl bg-white shadow">Loading…</div>
-        ) : filtered.length === 0 ? (
-          <div className="p-4 border rounded-xl bg-white shadow">
-            No pick-up points found.
-          </div>
-        ) : (
-          <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {/* New tile */}
-            <button
-              onClick={() => (window.location.href = "/admin/pickups/edit/new")}
-              className="h-[260px] rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden flex items-center justify-center"
-              title="Create a new pick-up point"
-            >
-              <span className="text-blue-600 font-medium">+ New Pick-up Point</span>
-            </button>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Left: main fields */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="rounded-2xl border bg-white p-4 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="text-sm font-medium">Name *</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.name}
+                  onChange={(e) => set("name", e.target.value)}
+                />
+              </div>
 
-            {filtered.map((r) => {
-              const imgSrc = publicImage(r.picture_url) || "";
-              const line = `${countryName(r.country_id)} • ${typeName(r.transport_type_id)}${
-                r.transport_type_place_id ? ` — ${placeName(r.transport_type_place_id)}` : ""
-              }`;
-
-              return (
-                <article
-                  key={r.id}
-                  className="rounded-2xl border border-neutral-200 bg-white shadow hover:shadow-md transition overflow-hidden cursor-pointer"
-                  onClick={() => (window.location.href = `/admin/pickups/edit/${r.id}`)}
-                  title="Edit pick-up point"
+              <div>
+                <label className="text-sm font-medium">Country *</label>
+                <select
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.country_id}
+                  onChange={(e) => set("country_id", e.target.value)}
                 >
-                  <div className="relative h-[180px] w-full overflow-hidden">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={imgSrc || "/placeholder.png"}
-                      alt={r.name || "Pick-up point"}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = "/placeholder.png";
-                      }}
-                    />
-                  </div>
+                  <option value="">Select…</option>
+                  {countries.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-                  <div className="p-3">
-                    <div className="font-medium">{r.name}</div>
-                    <div className="text-xs text-neutral-600">{line}</div>
-                    {r.description && (
-                      <p className="text-xs text-neutral-700 mt-1 line-clamp-2">
-                        {r.description}
-                      </p>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
+              <div>
+                <label className="text-sm font-medium">Active</label>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    id="active"
+                    type="checkbox"
+                    checked={!!form.active}
+                    onChange={(e) => set("active", e.target.checked)}
+                  />
+                  <label htmlFor="active" className="text-sm text-neutral-700">
+                    Visible to users
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Transport type *</label>
+                <select
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.transport_type_id}
+                  onChange={(e) => {
+                    set("transport_type_id", e.target.value);
+                    set("transport_type_place_id", null);
+                  }}
+                >
+                  <option value="">Select…</option>
+                  {types.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Transport place</label>
+                <select
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.transport_type_place_id ?? ""}
+                  onChange={(e) => set("transport_type_place_id", e.target.value || null)}
+                  disabled={!form.transport_type_id}
+                >
+                  <option value="">None</option>
+                  {placesForSelectedType.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="text-sm font-medium">Description</label>
+                <textarea
+                  className="mt-1 w-full border rounded-lg px-3 py-2 min-h-[90px]"
+                  value={form.description ?? ""}
+                  onChange={(e) => set("description", e.target.value)}
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="text-sm font-medium">Arrival notes</label>
+                <textarea
+                  className="mt-1 w-full border rounded-lg px-3 py-2 min-h-[90px]"
+                  value={form.arrival_notes ?? ""}
+                  onChange={(e) => set("arrival_notes", e.target.value)}
+                />
+              </div>
+            </div>
           </div>
-        )}
-      </section>
+
+          <div className="rounded-2xl border bg-white p-4 space-y-3">
+            <div className="text-sm font-medium">Address</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="text-sm text-neutral-700">Address line 1</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.address1 ?? ""}
+                  onChange={(e) => set("address1", e.target.value)}
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-sm text-neutral-700">Address line 2</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.address2 ?? ""}
+                  onChange={(e) => set("address2", e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm text-neutral-700">Town</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.town ?? ""}
+                  onChange={(e) => set("town", e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm text-neutral-700">Region</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.region ?? ""}
+                  onChange={(e) => set("region", e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm text-neutral-700">Postal code</label>
+                <input
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  value={form.postal_code ?? ""}
+                  onChange={(e) => set("postal_code", e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: image */}
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-white p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">Image</div>
+              <div className="flex gap-2 text-sm">
+                <button
+                  type="button"
+                  className={`px-3 py-1 rounded-full border ${
+                    imageMode === "upload" ? "bg-neutral-900 text-white" : "bg-white"
+                  }`}
+                  onClick={() => setImageMode("upload")}
+                >
+                  Upload
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-1 rounded-full border ${
+                    imageMode === "url" ? "bg-neutral-900 text-white" : "bg-white"
+                  }`}
+                  onClick={() => setImageMode("url")}
+                >
+                  URL
+                </button>
+              </div>
+            </div>
+
+            <div className="h-44 w-full overflow-hidden rounded-xl bg-neutral-50 border">
+              {imagePreview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={imagePreview}
+                  alt="Preview"
+                  className="h-full w-full object-cover"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = "/placeholder.png";
+                  }}
+                />
+              ) : (
+                <div className="h-full w-full flex items-center justify-center text-sm text-neutral-500">
+                  No image
+                </div>
+              )}
+            </div>
+
+            {imageMode === "upload" ? (
+              <div className="space-y-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+                />
+                <div className="text-xs text-neutral-600">
+                  Uploads to <code>images/pickup-points/</code> and stores the{" "}
+                  <strong>full public URL</strong> in <code>picture_url</code>.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                  placeholder="https://…"
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                />
+                <div className="text-xs text-neutral-600">
+                  Stores the full URL in <code>picture_url</code>.
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border bg-white p-4 space-y-2">
+            <div className="text-sm font-medium">Tip</div>
+            <div className="text-xs text-neutral-600">
+              If you rename the pick-up point, the existing image file name won’t change unless you
+              upload a new one.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
