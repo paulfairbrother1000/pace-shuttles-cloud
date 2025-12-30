@@ -48,8 +48,18 @@ function normalizeRoute(row: Record<string, any>) {
 
   // NOTE:
   // We will override these later with SAFE canonical transport_types values.
-  const vehicle_type_id = pick(row, "vehicle_type_id", "transport_type_id", "vtype_id");
-  const vehicle_type_name = pick(row, "vehicle_type_name", "transport_type_name", "vehicle_type");
+  const vehicle_type_id = pick(
+    row,
+    "vehicle_type_id",
+    "transport_type_id",
+    "vtype_id"
+  );
+  const vehicle_type_name = pick(
+    row,
+    "vehicle_type_name",
+    "transport_type_name",
+    "vehicle_type"
+  );
 
   return {
     route_id: route_id ?? undefined,
@@ -115,147 +125,6 @@ function chooseAssignment(
   });
 
   return sorted[0] ?? null;
-}
-
-/**
- * Backfill route.country_id / route.country_name when the view does not supply them.
- *
- * Why: your BVI routes have routes.country_id = NULL (but pickup_id / destination_id are set),
- * so visible_routes_v returns country_name NULL for those routes.
- *
- * Strategy:
- * - routes(id) -> (country_id, pickup_id, destination_id)
- * - if country_id is null, infer from pickup_points.country_id or destinations.country_id
- * - then resolve countries.name
- */
-async function enrichRoutesWithCountry(
-  supabase: SupabaseClient,
-  routes: VisibleRoute[]
-): Promise<VisibleRoute[]> {
-  const routeIds = routes
-    .map((r) => (r.route_id ?? "").toString())
-    .filter(Boolean);
-
-  if (!routeIds.length) return routes;
-
-  const needsBackfill = routes.some(
-    (r) => !r.country_id || !r.country_name
-  );
-  if (!needsBackfill) return routes;
-
-  // 1) Pull authoritative route row fields (including pickup_id/destination_id)
-  const { data: routeRows, error: rrErr } = await supabase
-    .from("routes")
-    .select("id,country_id,pickup_id,destination_id")
-    .in("id", routeIds);
-
-  if (rrErr) throw rrErr;
-
-  const byRouteId = new Map<
-    string,
-    { country_id: string | null; pickup_id: string | null; destination_id: string | null }
-  >();
-
-  const pickupIds = new Set<string>();
-  const destIds = new Set<string>();
-
-  for (const row of (routeRows ?? []) as any[]) {
-    const id = (row?.id ?? "").toString();
-    if (!id) continue;
-
-    const country_id = row?.country_id ? String(row.country_id) : null;
-    const pickup_id = row?.pickup_id ? String(row.pickup_id) : null;
-    const destination_id = row?.destination_id ? String(row.destination_id) : null;
-
-    byRouteId.set(id, { country_id, pickup_id, destination_id });
-
-    if (pickup_id) pickupIds.add(pickup_id);
-    if (destination_id) destIds.add(destination_id);
-  }
-
-  // 2) Load pickup_points and destinations country_id so we can infer
-  const [puRes, deRes] = await Promise.all([
-    pickupIds.size
-      ? supabase
-          .from("pickup_points")
-          .select("id,country_id")
-          .in("id", Array.from(pickupIds))
-      : Promise.resolve({ data: [], error: null } as any),
-    destIds.size
-      ? supabase
-          .from("destinations")
-          .select("id,country_id")
-          .in("id", Array.from(destIds))
-      : Promise.resolve({ data: [], error: null } as any),
-  ]);
-
-  if (puRes.error) throw puRes.error;
-  if (deRes.error) throw deRes.error;
-
-  const pickupCountryById = new Map<string, string>();
-  for (const p of (puRes.data ?? []) as any[]) {
-    const id = (p?.id ?? "").toString();
-    const cid = (p?.country_id ?? "").toString();
-    if (id && cid) pickupCountryById.set(id, cid);
-  }
-
-  const destCountryById = new Map<string, string>();
-  for (const d of (deRes.data ?? []) as any[]) {
-    const id = (d?.id ?? "").toString();
-    const cid = (d?.country_id ?? "").toString();
-    if (id && cid) destCountryById.set(id, cid);
-  }
-
-  // 3) Determine final country_id per route (route.country_id > pickup.country_id > destination.country_id)
-  const resolvedCountryIds = new Set<string>();
-  const resolvedCountryIdByRoute = new Map<string, string>();
-
-  for (const rid of routeIds) {
-    const meta = byRouteId.get(rid);
-    if (!meta) continue;
-
-    const cid =
-      meta.country_id ||
-      (meta.pickup_id ? pickupCountryById.get(meta.pickup_id) : "") ||
-      (meta.destination_id ? destCountryById.get(meta.destination_id) : "") ||
-      "";
-
-    if (cid) {
-      resolvedCountryIdByRoute.set(rid, cid);
-      resolvedCountryIds.add(cid);
-    }
-  }
-
-  // 4) Load countries.name for resolved ids
-  let countryNameById = new Map<string, string>();
-  if (resolvedCountryIds.size) {
-    const { data: cRows, error: cErr } = await supabase
-      .from("countries")
-      .select("id,name")
-      .in("id", Array.from(resolvedCountryIds));
-    if (cErr) throw cErr;
-
-    countryNameById = new Map(
-      ((cRows ?? []) as any[])
-        .map((c) => [String(c.id), String(c.name)] as const)
-        .filter(([id, name]) => Boolean(id && name))
-    );
-  }
-
-  // 5) Apply backfill to routes (keep existing values where present)
-  const enriched = routes.map((r) => {
-    const rid = (r.route_id ?? "").toString();
-    const resolvedId = resolvedCountryIdByRoute.get(rid) ?? "";
-    const resolvedName = resolvedId ? countryNameById.get(resolvedId) ?? "" : "";
-
-    return {
-      ...r,
-      country_id: r.country_id || (resolvedId ? resolvedId : null),
-      country_name: r.country_name || (resolvedName ? resolvedName : null),
-    };
-  });
-
-  return enriched;
 }
 
 /**
@@ -386,6 +255,132 @@ async function enrichRoutesWithTransportTypes(
   return { routes: enriched, vehicle_types };
 }
 
+/**
+ * Fix NULL country fields coming out of visible_routes_v by deriving:
+ * - pickup_name / destination_name from their tables (if missing)
+ * - country_id from pickup_points.country_id or destinations.country_id (if missing)
+ * - country_name from countries.name using the derived country_id (if missing)
+ *
+ * This makes the catalog resilient to legacy routes where routes.country_id was left NULL.
+ */
+async function enrichRoutesWithCountryDerivation(
+  supabase: SupabaseClient,
+  routes: VisibleRoute[]
+): Promise<VisibleRoute[]> {
+  if (!routes.length) return routes;
+
+  const pickupIds = Array.from(
+    new Set(
+      routes
+        .map((r) => (r.pickup_id ?? "").toString().trim())
+        .filter(Boolean)
+    )
+  );
+  const destinationIds = Array.from(
+    new Set(
+      routes
+        .map((r) => (r.destination_id ?? "").toString().trim())
+        .filter(Boolean)
+    )
+  );
+
+  // Pull minimal lookup rows (ID-based, not name-based)
+  const [{ data: pickupsAll, error: pErr }, { data: destAll, error: dErr }, { data: countriesAll, error: cErr }] =
+    await Promise.all([
+      pickupIds.length
+        ? supabase
+            .from("pickup_points")
+            .select("id,name,country_id")
+            .in("id", pickupIds)
+        : Promise.resolve({ data: [], error: null } as any),
+      destinationIds.length
+        ? supabase
+            .from("destinations")
+            .select("id,name,country_id")
+            .in("id", destinationIds)
+        : Promise.resolve({ data: [], error: null } as any),
+      supabase.from("countries").select("id,name"),
+    ]);
+
+  if (pErr) throw pErr;
+  if (dErr) throw dErr;
+  if (cErr) throw cErr;
+
+  const pickupById = new Map<string, { name: string; country_id: string | null }>();
+  for (const p of (pickupsAll ?? []) as any[]) {
+    if (!p?.id) continue;
+    pickupById.set(String(p.id), {
+      name: String(p.name ?? "").trim(),
+      country_id: p.country_id ? String(p.country_id) : null,
+    });
+  }
+
+  const destById = new Map<string, { name: string; country_id: string | null }>();
+  for (const d of (destAll ?? []) as any[]) {
+    if (!d?.id) continue;
+    destById.set(String(d.id), {
+      name: String(d.name ?? "").trim(),
+      country_id: d.country_id ? String(d.country_id) : null,
+    });
+  }
+
+  const countryNameById = new Map<string, string>();
+  for (const c of (countriesAll ?? []) as any[]) {
+    const id = String(c?.id ?? "").trim();
+    const name = String(c?.name ?? "").trim();
+    if (!id || !name) continue;
+    countryNameById.set(id, name);
+  }
+
+  return routes.map((r) => {
+    const pid = (r.pickup_id ?? "").toString().trim();
+    const did = (r.destination_id ?? "").toString().trim();
+
+    const p = pid ? pickupById.get(pid) : undefined;
+    const d = did ? destById.get(did) : undefined;
+
+    const nextPickupName =
+      r.pickup_name && String(r.pickup_name).trim()
+        ? r.pickup_name
+        : p?.name
+        ? p.name
+        : r.pickup_name;
+
+    const nextDestName =
+      r.destination_name && String(r.destination_name).trim()
+        ? r.destination_name
+        : d?.name
+        ? d.name
+        : r.destination_name;
+
+    const derivedCountryId =
+      (r.country_id && String(r.country_id).trim()) ? r.country_id
+        : (p?.country_id && String(p.country_id).trim()) ? p.country_id
+        : (d?.country_id && String(d.country_id).trim()) ? d.country_id
+        : null;
+
+    const derivedCountryName =
+      (r.country_name && String(r.country_name).trim())
+        ? r.country_name
+        : derivedCountryId
+        ? countryNameById.get(String(derivedCountryId)) ?? null
+        : null;
+
+    return {
+      ...r,
+      pickup_name: nextPickupName ?? null,
+      destination_name: nextDestName ?? null,
+      country_id: derivedCountryId ?? null,
+      country_name: derivedCountryName ?? null,
+      // If the view didn't provide a route_name, ensure we still return something useful
+      route_name:
+        r.route_name && String(r.route_name).trim()
+          ? r.route_name
+          : `${nextPickupName ?? "—"} → ${nextDestName ?? "—"}`,
+    };
+  });
+}
+
 /* ---------- Primary (SSOT via view) ---------- */
 async function loadVisibleCatalog() {
   const supabase = sb();
@@ -411,26 +406,23 @@ async function loadVisibleCatalog() {
     };
   }
 
-  // ✅ CRITICAL FIX #1:
-  // Backfill country_id/country_name for routes where routes.country_id is NULL (e.g. BVI),
-  // using routes.pickup_id / routes.destination_id -> their country_id -> countries.name
-  routes = await enrichRoutesWithCountry(supabase, routes);
-
-  // ✅ CRITICAL FIX #2:
+  // ✅ CRITICAL FIX:
   // Replace polluted / null vehicle typing from the view with canonical transport_types
   const typed = await enrichRoutesWithTransportTypes(supabase, routes);
   routes = typed.routes;
 
-  // Derive visibility strictly from routes
+  // ✅ CRITICAL FIX #2:
+  // Derive missing country_id / country_name (common with legacy routes where routes.country_id is NULL)
+  routes = await enrichRoutesWithCountryDerivation(supabase, routes);
+
+  // Derive visibility strictly from routes (after derivation)
   const visibleCountryNames = Array.from(
     new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
   );
   const visibleDestLC = new Set(
     routes.map((r) => lc(r.destination_name)).filter(Boolean)
   );
-  const visiblePickupLC = new Set(
-    routes.map((r) => lc(r.pickup_name)).filter(Boolean)
-  );
+  const visiblePickupLC = new Set(routes.map((r) => lc(r.pickup_name)).filter(Boolean));
 
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
@@ -538,9 +530,13 @@ async function fallbackPublicCatalog(reason?: string) {
   const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] =
     await Promise.all([
       getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
-      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(() => []),
+      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(
+        () => []
+      ),
       getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
-      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(() => []),
+      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(
+        () => []
+      ),
     ]);
 
   const activeDestinations = destinationsRaw.filter((d) => d.active !== false);
@@ -551,7 +547,9 @@ async function fallbackPublicCatalog(reason?: string) {
         .filter(Boolean)
     )
   );
-  const countries = countriesRaw.filter((c) => visibleCountryNames.includes(c.name));
+  const countries = countriesRaw.filter((c) =>
+    visibleCountryNames.includes(c.name)
+  );
 
   return {
     ok: true,
@@ -573,7 +571,8 @@ export async function GET() {
       if (cat.routes.length > 0) {
         return NextResponse.json(cat, {
           headers: {
-            "Cache-Control": "public, max-age=60, s-maxage=60",
+            // Debug-friendly while you validate BVI propagation
+            "Cache-Control": "no-store",
           },
         });
       }
@@ -585,15 +584,15 @@ export async function GET() {
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
         headers: {
-          "Cache-Control": "public, max-age=60, s-maxage=60",
+          "Cache-Control": "no-store",
         },
       });
     }
- 
+
     const fb = await fallbackPublicCatalog("no_routes");
     return NextResponse.json(fb, {
       headers: {
-        "Cache-Control": "public, max-age=60, s-maxage=60",
+        "Cache-Control": "no-store",
       },
     });
   } catch (err: any) {
