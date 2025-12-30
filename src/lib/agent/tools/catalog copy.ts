@@ -15,7 +15,7 @@ type VisibleRoute = {
   pickup_id: string | null;
   pickup_name: string | null;
   vehicle_type_id: string | null;
-  vehicle_type_name: string | null; // SHOULD be canonical (Speed Boat, Helicopter...) from visible-catalog
+  vehicle_type_name: string | null; // MUST be canonical (Speed Boat, Helicopter...) from visible-catalog
 };
 
 type VisibleVehicleType = {
@@ -62,18 +62,6 @@ type DestinationsResponse = {
   rows: DestinationRow[];
   count: number;
 };
-
-/* -------------------------------------------------------------------------- */
-/*  Types mirroring /api/public/vehicle-types (SSOT for categories)           */
-/* -------------------------------------------------------------------------- */
-
-type VehicleTypesResponse =
-  | {
-      ok?: boolean;
-      rows?: VisibleVehicleType[];
-      vehicle_types?: VisibleVehicleType[];
-    }
-  | VisibleVehicleType[];
 
 /* -------------------------------------------------------------------------- */
 
@@ -181,49 +169,9 @@ async function loadDestinations(baseUrl: string): Promise<DestinationRow[]> {
   return data.rows.filter((d) => d.active);
 }
 
-/**
- * SSOT for vehicle categories:
- * Prefer /api/public/vehicle-types.
- * (visible-catalog may omit vehicle_types depending on backend/view issues)
- */
-async function loadVehicleTypes(baseUrl: string): Promise<VisibleVehicleType[]> {
-  const data = await fetchJSON<VehicleTypesResponse>(`${baseUrl}/api/public/vehicle-types`);
-  if (!data) return [];
-
-  if (Array.isArray(data)) return data;
-
-  // Some endpoints return { ok, rows } or { vehicle_types }
-  if (data && Array.isArray((data as any).rows)) return (data as any).rows as VisibleVehicleType[];
-  if (data && Array.isArray((data as any).vehicle_types)) return (data as any).vehicle_types as VisibleVehicleType[];
-
-  return [];
-}
-
-function hasUsableVehicleTypes(list: VisibleVehicleType[] | null | undefined): boolean {
-  if (!list?.length) return false;
-  return list.some((t) => {
-    const id = (t?.id ?? "").toString().trim();
-    const name = (t?.name ?? "").toString().trim();
-    return Boolean(id && name);
-  });
-}
-
-/**
- * For name/id mapping inside tools:
- * - Prefer visible-catalog.vehicle_types if present AND populated (keeps it consistent with "live" catalog)
- * - Otherwise fall back to /api/public/vehicle-types (SSOT for categories)
- */
-async function getVehicleTypesForAgent(baseUrl: string, cat: VisibleCatalog | null): Promise<VisibleVehicleType[]> {
-  const fromCat = (cat?.vehicle_types ?? []) as VisibleVehicleType[];
-  if (hasUsableVehicleTypes(fromCat)) return fromCat;
-
-  const fromApi = await loadVehicleTypes(baseUrl);
-  return fromApi;
-}
-
-function getVehicleTypeMap(types: VisibleVehicleType[] | null | undefined): Map<string, string> {
+function getVehicleTypeMap(cat: VisibleCatalog | null): Map<string, string> {
   const m = new Map<string, string>();
-  for (const t of types ?? []) {
+  for (const t of cat?.vehicle_types ?? []) {
     const id = (t?.id ?? "").toString().trim();
     const name = (t?.name ?? "").toString().trim();
     if (!id || !name) continue;
@@ -232,12 +180,12 @@ function getVehicleTypeMap(types: VisibleVehicleType[] | null | undefined): Map<
   return m;
 }
 
-function getTypeIdsByName(types: VisibleVehicleType[] | null | undefined, vehicleNorm: string): string[] {
+function getTypeIdsByName(cat: VisibleCatalog | null, vehicleNorm: string): string[] {
   const want = normaliseVehicleTypeName(vehicleNorm);
   if (!want) return [];
 
   const ids: string[] = [];
-  for (const t of types ?? []) {
+  for (const t of cat?.vehicle_types ?? []) {
     const id = (t?.id ?? "").toString().trim();
     const rawName = (t?.name ?? "").toString().trim();
     if (!id || !rawName) continue;
@@ -477,36 +425,34 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5) Transport categories (GLOBAL) — SSOT: /api/public/vehicle-types (+ fallback to visible-catalog) */
+  /* 5) Transport categories (GLOBAL) — SSOT: cat.vehicle_types */
   const listTransportTypes: ToolDefinition = {
     spec: {
       type: "function",
       function: {
         name: "listTransportTypes",
         description:
-          "List the generic categories of transport currently available on Pace Shuttles. Uses /api/public/vehicle-types as SSOT and NEVER reveals operator/vessel names.",
+          "List the generic categories of transport currently used by Pace Shuttles based on the live catalog. Uses the vehicle_types list and NEVER reveals operator/vessel names.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
     run: async (): Promise<ToolExecutionResult> => {
-      // Prefer the dedicated endpoint (SSOT for categories)
-      const typesFromApi = await loadVehicleTypes(baseUrl);
+      const cat = await loadVisibleCatalog(baseUrl);
 
-      // If that fails, fall back to visible-catalog.vehicle_types
-      let types: VisibleVehicleType[] = typesFromApi;
-      if (!hasUsableVehicleTypes(types)) {
-        const cat = await loadVisibleCatalog(baseUrl);
-        types = (await getVehicleTypesForAgent(baseUrl, cat)) || [];
-      }
-
-      if (!hasUsableVehicleTypes(types)) {
+      if (!cat) {
         const content =
-          "I can’t see any transport categories published right now. Please try again shortly.";
+          "We use premium transport categories such as Speed Boat, Helicopter, Bus and Limo. The exact mix depends on the territory and route, but individual vessel or operator names aren’t disclosed in advance of a booking.";
         return { messages: [{ role: "assistant", content }] };
       }
 
-      const typeNames = unique(types.map((t) => (t?.name ?? "").toString()));
+      const typeNames = unique((cat.vehicle_types ?? []).map((t) => (t?.name ?? "").toString()));
       const pretty = unique(typeNames.map((n) => titleCaseVehicleType(n))).filter(Boolean);
+
+      if (!pretty.length) {
+        const content =
+          "I can’t see any transport categories published in the live catalogue right now. Please try again shortly.";
+        return { messages: [{ role: "assistant", content }] };
+      }
 
       const content =
         `We currently use: ${pretty.join(", ")}. ` +
@@ -515,7 +461,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
     },
   };
 
-  /* 5b) Transport categories IN A COUNTRY — live routes + SSOT vehicle-types for id→name */
+  /* 5b) Transport categories IN A COUNTRY — SSOT: routes[].vehicle_type_id ↔ cat.vehicle_types */
   const listTransportTypesInCountry: ToolDefinition = {
     spec: {
       type: "function",
@@ -561,9 +507,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         };
       }
 
-      // Use SSOT for mapping IDs -> names (fallback if visible-catalog.vehicle_types missing)
-      const vehicleTypes = await getVehicleTypesForAgent(baseUrl, cat);
-      const typeMap = getVehicleTypeMap(vehicleTypes);
+      const typeMap = getVehicleTypeMap(cat);
 
       const typeIds = unique(inCountry.map((r) => (r.vehicle_type_id ?? "").toString().trim())).filter(Boolean);
       const names = unique(typeIds.map((id) => prettyTypeNameFromId(id, typeMap))).filter(Boolean);
@@ -637,9 +581,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         ? cat.routes.filter((r) => normaliseCountryName(r.country_name) === countryNorm)
         : cat.routes;
 
-      // Use SSOT vehicle-types to match requested name -> IDs (fallback if visible-catalog.vehicle_types missing)
-      const vehicleTypes = await getVehicleTypesForAgent(baseUrl, cat);
-      const matchingTypeIds = getTypeIdsByName(vehicleTypes, vehicleNorm);
+      const matchingTypeIds = getTypeIdsByName(cat, vehicleNorm);
 
       if (!matchingTypeIds.length) {
         const prettyVehicle = titleCaseVehicleType(vehicleNorm) || vehicleRaw;
@@ -765,10 +707,7 @@ export function catalogTools(ctx: ToolContext): ToolDefinition[] {
         return { messages: [{ role: "assistant", content: `I couldn’t find any live routes to ${destRaw} yet.` }] };
       }
 
-      // Use SSOT for mapping IDs -> names (fallback if visible-catalog.vehicle_types missing)
-      const vehicleTypes = await getVehicleTypesForAgent(baseUrl, cat);
-      const typeMap = getVehicleTypeMap(vehicleTypes);
-
+      const typeMap = getVehicleTypeMap(cat);
       const prettyDest = arriving[0]?.destination_name || destRaw;
 
       const uniq = uniqueByKey(arriving, (r) => {
