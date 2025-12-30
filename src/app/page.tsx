@@ -1218,7 +1218,7 @@ booking, payments, scheduling, and customer care.
 
               <section className="text-center pt-6">
                 <div className="font-semibold">Pace Shuttles is currently operating in the following locations.</div>
-                <div className="text-muted">Select an option below to begin your journey and Book your dream arrival today</div>
+                <div className="text-muted">Select a tile below to begin your journey and book your dream arrival today</div>
               </section>
 
               <section className="mx-auto max-w-5xl">
