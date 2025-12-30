@@ -111,6 +111,46 @@ function chooseAssignment(rows: RouteVehicleAssignmentRow[]): RouteVehicleAssign
 }
 
 /**
+ * Some environments may not yet have transport_types.capacity / transport_types.features.
+ * We must not fail the whole visible-catalog if those columns don't exist.
+ */
+async function fetchTransportTypesByIds(
+  supabase: SupabaseClient,
+  typeIds: string[]
+): Promise<TransportTypeRow[]> {
+  if (!typeIds.length) return [];
+
+  // Try the richest shape first
+  try {
+    const { data, error } = await supabase
+      .from("transport_types")
+      .select("id,name,description,picture_url,is_active,slug,capacity,features")
+      .in("id", typeIds);
+
+    if (error) throw error;
+    return (data ?? []) as TransportTypeRow[];
+  } catch (e: any) {
+    // If the error is "column ... does not exist" (Postgres 42703), retry without those fields
+    const code = e?.code || e?.details?.code;
+    const msg = String(e?.message || e || "");
+    const looksLikeMissingCols =
+      code === "42703" ||
+      /column .*capacity.* does not exist/i.test(msg) ||
+      /column .*features.* does not exist/i.test(msg);
+
+    if (!looksLikeMissingCols) throw e;
+
+    const { data, error } = await supabase
+      .from("transport_types")
+      .select("id,name,description,picture_url,is_active,slug")
+      .in("id", typeIds);
+
+    if (error) throw error;
+    return (data ?? []) as TransportTypeRow[];
+  }
+}
+
+/**
  * Build SAFE transport typing for routes using:
  * route_vehicle_assignments -> vehicles.type_id -> transport_types
  *
@@ -196,12 +236,7 @@ async function enrichRoutesWithTransportTypes(
   }
 
   // 3) transport_types -> id/name (canonical safe names)
-  const { data: typesAll, error: tErr } = await supabase
-    .from("transport_types")
-    .select("id,name,description,picture_url,is_active,slug,capacity,features")
-    .in("id", Array.from(typeIds));
-
-  if (tErr) throw tErr;
+  const typesAll = await fetchTransportTypesByIds(supabase, Array.from(typeIds));
 
   const typeNameById = new Map<string, string>();
   const usedTypes: TransportTypeRow[] = [];
@@ -465,8 +500,8 @@ async function loadVisibleCatalog() {
     name: t.name,
     description: t.description ?? null,
     icon_url: t.picture_url ?? null,
-    capacity: t.capacity ?? null,
-    features: t.features ?? null,
+    capacity: (t as any).capacity ?? null,
+    features: (t as any).features ?? null,
   }));
 
   return {
