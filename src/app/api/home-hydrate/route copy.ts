@@ -38,20 +38,6 @@ export async function GET(req: Request) {
     const countryId = searchParams.get("country_id");
     const supabase = getServerSupabase();
 
-    // Helper: infer a route's country from route.country_id, else pickup.country_id, else destination.country_id
-    const inferRouteCountryId = (
-      r: { country_id?: string | null; pickup_id?: string | null; destination_id?: string | null },
-      pickupCountryById: Map<string, string>,
-      destCountryById: Map<string, string>
-    ): string | null => {
-      if (r.country_id) return r.country_id;
-      const pu = r.pickup_id ? pickupCountryById.get(r.pickup_id) : null;
-      if (pu) return pu;
-      const de = r.destination_id ? destCountryById.get(r.destination_id) : null;
-      if (de) return de;
-      return null;
-    };
-
     if (!countryId) {
       // -------- Global hydrate --------
       // 1) Countries (public info)
@@ -62,78 +48,46 @@ export async function GET(req: Request) {
       if (cErr) throw new Error(cErr.message);
 
       // 2) Determine "verified" routes (active route + active assignment pointing to active vehicle)
-      //    NOTE: we also need pickup_id so we can infer country_id when routes.country_id is null
-      const [
-        { data: assignments, error: aErr },
-        { data: vehicles, error: vErr },
-        { data: routes, error: rErr },
-        { data: pickupPoints, error: puErr },
-        { data: destinations, error: deErr },
-      ] = await Promise.all([
-        supabase
-          .from("route_vehicle_assignments")
-          .select("route_id, vehicle_id, is_active")
-          .eq("is_active", true),
-        supabase
-          .from("vehicles")
-          .select("id, active"),
-        supabase
-          .from("routes")
-          .select("id, country_id, pickup_id, destination_id, is_active"),
-        supabase
-          .from("pickup_points")
-          .select("id, country_id"),
-        supabase
-          .from("destinations")
-          .select("id, country_id"),
-      ]);
+      const [{ data: assignments, error: aErr }, { data: vehicles, error: vErr }, { data: routes, error: rErr }] =
+        await Promise.all([
+          supabase
+            .from("route_vehicle_assignments")
+            .select("route_id, vehicle_id, is_active")
+            .eq("is_active", true),
+          supabase
+            .from("vehicles")
+            .select("id, active"),
+          supabase
+            .from("routes")
+            .select("id, country_id, destination_id, is_active"),
+        ]);
 
       if (aErr) throw new Error(aErr.message);
       if (vErr) throw new Error(vErr.message);
       if (rErr) throw new Error(rErr.message);
-      if (puErr) throw new Error(puErr.message);
-      if (deErr) throw new Error(deErr.message);
-
-      const pickupCountryById = new Map<string, string>();
-      for (const p of pickupPoints ?? []) {
-        if (p?.id && p?.country_id) pickupCountryById.set(String(p.id), String(p.country_id));
-      }
-
-      const destCountryById = new Map<string, string>();
-      for (const d of destinations ?? []) {
-        if (d?.id && d?.country_id) destCountryById.set(String(d.id), String(d.country_id));
-      }
 
       const activeVehicleIds = new Set((vehicles ?? []).filter(v => v.active !== false).map(v => v.id));
       const activeRoutes = (routes ?? []).filter(r => r.is_active !== false);
-
       const assignedRouteIds = new Set(
         (assignments ?? [])
           .filter(a => activeVehicleIds.has(a.vehicle_id))
           .map(a => a.route_id)
       );
-
       const verifiedRoutes = activeRoutes.filter(r => assignedRouteIds.has(r.id));
 
       // Countries that have at least one verified route
-      // IMPORTANT: infer country_id when routes.country_id is null (BVI case)
       const available_country_ids = Array.from(
-        new Set(
-          verifiedRoutes
-            .map(r => inferRouteCountryId(r, pickupCountryById, destCountryById))
-            .filter(Boolean)
-        )
+        new Set(verifiedRoutes.map(r => r.country_id).filter(Boolean))
       ) as string[];
 
       // By-country allowed destinations for filtering on the client
       const available_destinations_by_country: Record<string, string[]> = {};
       for (const r of verifiedRoutes) {
-        const inferredCountryId = inferRouteCountryId(r, pickupCountryById, destCountryById);
-        if (!inferredCountryId || !r.destination_id) continue;
-        if (!available_destinations_by_country[inferredCountryId]) {
-          available_destinations_by_country[inferredCountryId] = [];
+        if (!r.country_id || !r.destination_id) continue;
+        if (!available_destinations_by_country[r.country_id]) {
+          available_destinations_by_country[r.country_id] = [];
         }
-        available_destinations_by_country[inferredCountryId].push(r.destination_id);
+        available_destinations_by_country[r.country_id].push(r.destination_id);
       }
       for (const k of Object.keys(available_destinations_by_country)) {
         available_destinations_by_country[k] = Array.from(new Set(available_destinations_by_country[k]));
@@ -158,16 +112,10 @@ export async function GET(req: Request) {
         .select("id,name,country_id,picture_url,description,url")
         .eq("country_id", countryId)
         .order("name", { ascending: true }),
-      // IMPORTANT: do NOT rely on routes.country_id here (it may be NULL for BVI routes).
-      // Load active routes and infer country_id in code using pickup/destination.
       supabase
         .from("routes")
-        .select(
-          `*, 
-           countries:country_id ( id, name, timezone ),
-           pickup:pickup_id ( id, country_id ),
-           destination:destination_id ( id, country_id )`
-        )
+        .select(`*, countries:country_id ( id, name, timezone )`)
+        .eq("country_id", countryId)
         .eq("is_active", true)
         .order("created_at", { ascending: false }),
       supabase
@@ -180,40 +128,12 @@ export async function GET(req: Request) {
     if (r.error) throw new Error(r.error.message);
     if (tt.error) throw new Error(tt.error.message);
 
-    // Build fast maps for inference
-    const pickupCountryById = new Map<string, string>();
-    for (const p of pu.data ?? []) {
-      if (p?.id && p?.country_id) pickupCountryById.set(String(p.id), String(p.country_id));
-    }
-    // NOTE: destinations list is filtered by countryId already, but we still create the map
-    const destCountryById = new Map<string, string>();
-    for (const d of de.data ?? []) {
-      if (d?.id && d?.country_id) destCountryById.set(String(d.id), String(d.country_id));
-    }
-
-    // Filter routes by inferred country
-    const allRoutes = (r.data ?? []) as Row<{
+    const routes = (r.data ?? []) as Row<{
       id: string;
-      country_id?: string | null;
-      pickup_id?: string | null;
-      destination_id?: string | null;
       season_from?: string | null;
       season_to?: string | null;
       is_active?: boolean | null;
-      pickup?: { id?: string; country_id?: string | null } | null;
-      destination?: { id?: string; country_id?: string | null } | null;
     }>[];
-
-    const routes = allRoutes.filter((rr) => {
-      // Prefer joined pickup/destination country_id if available; otherwise use maps.
-      const inferred =
-        rr.country_id ||
-        (rr.pickup?.country_id ?? (rr.pickup_id ? pickupCountryById.get(rr.pickup_id) : null)) ||
-        (rr.destination?.country_id ?? (rr.destination_id ? destCountryById.get(rr.destination_id) : null)) ||
-        null;
-
-      return inferred === countryId;
-    });
 
     // If no routes, return early with empty dependent arrays
     if (!routes.length) {
