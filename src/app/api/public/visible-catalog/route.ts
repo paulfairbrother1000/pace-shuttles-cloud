@@ -35,12 +35,7 @@ function normalizeRoute(row: Record<string, any>) {
   const country_id = pick(row, "country_id", "country_uuid", "c_id");
   const country_name = pick(row, "country_name", "country");
 
-  const destination_id = pick(
-    row,
-    "destination_id",
-    "dest_id",
-    "destination_uuid"
-  );
+  const destination_id = pick(row, "destination_id", "dest_id", "destination_uuid");
   const destination_name = pick(row, "destination_name", "destination");
 
   const pickup_id = pick(row, "pickup_id", "pickup_uuid");
@@ -48,18 +43,8 @@ function normalizeRoute(row: Record<string, any>) {
 
   // NOTE:
   // We will override these later with SAFE canonical transport_types values.
-  const vehicle_type_id = pick(
-    row,
-    "vehicle_type_id",
-    "transport_type_id",
-    "vtype_id"
-  );
-  const vehicle_type_name = pick(
-    row,
-    "vehicle_type_name",
-    "transport_type_name",
-    "vehicle_type"
-  );
+  const vehicle_type_id = pick(row, "vehicle_type_id", "transport_type_id", "vtype_id");
+  const vehicle_type_name = pick(row, "vehicle_type_name", "transport_type_name", "vehicle_type");
 
   return {
     route_id: route_id ?? undefined,
@@ -104,9 +89,7 @@ type VehicleRow = {
   preferred: boolean | null;
 };
 
-function chooseAssignment(
-  rows: RouteVehicleAssignmentRow[]
-): RouteVehicleAssignmentRow | null {
+function chooseAssignment(rows: RouteVehicleAssignmentRow[]): RouteVehicleAssignmentRow | null {
   if (!rows.length) return null;
 
   // prefer active=true (or null treated as true), then preferred=true, then newest created_at
@@ -215,7 +198,7 @@ async function enrichRoutesWithTransportTypes(
   // 3) transport_types -> id/name (canonical safe names)
   const { data: typesAll, error: tErr } = await supabase
     .from("transport_types")
-    .select("id,name,description,picture_url,is_active,slug")
+    .select("id,name,description,picture_url,is_active,slug,capacity,features")
     .in("id", Array.from(typeIds));
 
   if (tErr) throw tErr;
@@ -235,9 +218,7 @@ async function enrichRoutesWithTransportTypes(
   const enriched = routes.map((r) => {
     const rid = (r.route_id ?? "").toString();
     const chosenVehicleId = chosenByRoute.get(rid) ?? "";
-    const typeId = chosenVehicleId
-      ? vehicleTypeIdByVehicle.get(chosenVehicleId) ?? ""
-      : "";
+    const typeId = chosenVehicleId ? vehicleTypeIdByVehicle.get(chosenVehicleId) ?? "" : "";
     const typeName = typeId ? typeNameById.get(typeId) ?? "" : "";
 
     return {
@@ -256,127 +237,150 @@ async function enrichRoutesWithTransportTypes(
 }
 
 /**
- * Fix NULL country fields coming out of visible_routes_v by deriving:
- * - pickup_name / destination_name from their tables (if missing)
- * - country_id from pickup_points.country_id or destinations.country_id (if missing)
- * - country_name from countries.name using the derived country_id (if missing)
+ * IMPORTANT:
+ * visible_routes_v is currently returning NULL country_name for some routes (e.g. BVI),
+ * even though routes/pickup_points/destinations are correctly populated.
  *
- * This makes the catalog resilient to legacy routes where routes.country_id was left NULL.
+ * So we "repair" country_id + country_name (and pickup/destination names when missing)
+ * by re-hydrating from base tables using route_id -> routes -> pickup_points/destinations -> countries.
  */
-async function enrichRoutesWithCountryDerivation(
+async function repairRouteGeoFields(
   supabase: SupabaseClient,
   routes: VisibleRoute[]
 ): Promise<VisibleRoute[]> {
-  if (!routes.length) return routes;
+  const routeIds = routes
+    .map((r) => (r.route_id ?? "").toString())
+    .filter(Boolean);
 
-  const pickupIds = Array.from(
-    new Set(
-      routes
-        .map((r) => (r.pickup_id ?? "").toString().trim())
-        .filter(Boolean)
-    )
-  );
-  const destinationIds = Array.from(
-    new Set(
-      routes
-        .map((r) => (r.destination_id ?? "").toString().trim())
-        .filter(Boolean)
-    )
-  );
+  if (!routeIds.length) return routes;
 
-  // Pull minimal lookup rows (ID-based, not name-based)
-  const [{ data: pickupsAll, error: pErr }, { data: destAll, error: dErr }, { data: countriesAll, error: cErr }] =
+  // 1) Core route rows (authoritative IDs)
+  const { data: routeCore, error: coreErr } = await supabase
+    .from("routes")
+    .select("id,country_id,pickup_id,destination_id,is_active,route_name,name")
+    .in("id", routeIds)
+    .eq("is_active", true);
+
+  if (coreErr) throw coreErr;
+
+  const coreById = new Map<
+    string,
+    {
+      id: string;
+      country_id: string | null;
+      pickup_id: string | null;
+      destination_id: string | null;
+      route_name: string | null;
+      name: string | null;
+    }
+  >();
+
+  for (const r of (routeCore ?? []) as any[]) {
+    if (r?.id) coreById.set(String(r.id), r);
+  }
+
+  const pickupIds = new Set<string>();
+  const destIds = new Set<string>();
+  const countryIds = new Set<string>();
+
+  for (const c of coreById.values()) {
+    if (c.pickup_id) pickupIds.add(String(c.pickup_id));
+    if (c.destination_id) destIds.add(String(c.destination_id));
+    if (c.country_id) countryIds.add(String(c.country_id));
+  }
+
+  // 2) pickup_points & destinations to back-fill country if route.country_id missing
+  const [{ data: pickupsAll, error: pErr }, { data: destAll, error: dErr }] =
     await Promise.all([
-      pickupIds.length
+      pickupIds.size
         ? supabase
             .from("pickup_points")
             .select("id,name,country_id")
-            .in("id", pickupIds)
+            .in("id", Array.from(pickupIds))
         : Promise.resolve({ data: [], error: null } as any),
-      destinationIds.length
+      destIds.size
         ? supabase
             .from("destinations")
             .select("id,name,country_id")
-            .in("id", destinationIds)
+            .in("id", Array.from(destIds))
         : Promise.resolve({ data: [], error: null } as any),
-      supabase.from("countries").select("id,name"),
     ]);
 
   if (pErr) throw pErr;
   if (dErr) throw dErr;
-  if (cErr) throw cErr;
 
-  const pickupById = new Map<string, { name: string; country_id: string | null }>();
+  const pickupById = new Map<string, { id: string; name: string; country_id: string | null }>();
   for (const p of (pickupsAll ?? []) as any[]) {
-    if (!p?.id) continue;
-    pickupById.set(String(p.id), {
-      name: String(p.name ?? "").trim(),
-      country_id: p.country_id ? String(p.country_id) : null,
-    });
+    if (p?.id) pickupById.set(String(p.id), p);
+    if (p?.country_id) countryIds.add(String(p.country_id));
   }
 
-  const destById = new Map<string, { name: string; country_id: string | null }>();
+  const destById = new Map<string, { id: string; name: string; country_id: string | null }>();
   for (const d of (destAll ?? []) as any[]) {
-    if (!d?.id) continue;
-    destById.set(String(d.id), {
-      name: String(d.name ?? "").trim(),
-      country_id: d.country_id ? String(d.country_id) : null,
-    });
+    if (d?.id) destById.set(String(d.id), d);
+    if (d?.country_id) countryIds.add(String(d.country_id));
   }
+
+  // 3) countries for name lookups
+  const { data: countriesAll, error: cErr } = await supabase
+    .from("countries")
+    .select("id,name")
+    .in("id", Array.from(countryIds));
+
+  if (cErr) throw cErr;
 
   const countryNameById = new Map<string, string>();
   for (const c of (countriesAll ?? []) as any[]) {
-    const id = String(c?.id ?? "").trim();
-    const name = String(c?.name ?? "").trim();
-    if (!id || !name) continue;
-    countryNameById.set(id, name);
+    if (c?.id && c?.name) countryNameById.set(String(c.id), String(c.name));
   }
 
-  return routes.map((r) => {
-    const pid = (r.pickup_id ?? "").toString().trim();
-    const did = (r.destination_id ?? "").toString().trim();
+  // 4) apply repair (only when missing/NULL in the view)
+  return routes.map((row) => {
+    const rid = (row.route_id ?? "").toString();
+    const core = coreById.get(rid);
 
-    const p = pid ? pickupById.get(pid) : undefined;
-    const d = did ? destById.get(did) : undefined;
-
-    const nextPickupName =
-      r.pickup_name && String(r.pickup_name).trim()
-        ? r.pickup_name
-        : p?.name
-        ? p.name
-        : r.pickup_name;
-
-    const nextDestName =
-      r.destination_name && String(r.destination_name).trim()
-        ? r.destination_name
-        : d?.name
-        ? d.name
-        : r.destination_name;
+    const corePickup = core?.pickup_id ? pickupById.get(String(core.pickup_id)) : undefined;
+    const coreDest = core?.destination_id ? destById.get(String(core.destination_id)) : undefined;
 
     const derivedCountryId =
-      (r.country_id && String(r.country_id).trim()) ? r.country_id
-        : (p?.country_id && String(p.country_id).trim()) ? p.country_id
-        : (d?.country_id && String(d.country_id).trim()) ? d.country_id
-        : null;
+      (core?.country_id ? String(core.country_id) : "") ||
+      (corePickup?.country_id ? String(corePickup.country_id) : "") ||
+      (coreDest?.country_id ? String(coreDest.country_id) : "") ||
+      "";
 
-    const derivedCountryName =
-      (r.country_name && String(r.country_name).trim())
-        ? r.country_name
-        : derivedCountryId
-        ? countryNameById.get(String(derivedCountryId)) ?? null
-        : null;
+    const derivedCountryName = derivedCountryId ? countryNameById.get(derivedCountryId) ?? "" : "";
+
+    // Also back-fill pickup/destination IDs + names if the view didn't give them
+    const pickup_id = row.pickup_id ?? (core?.pickup_id ? String(core.pickup_id) : null);
+    const destination_id =
+      row.destination_id ?? (core?.destination_id ? String(core.destination_id) : null);
+
+    const pickup_name =
+      row.pickup_name ??
+      (pickup_id ? pickupById.get(String(pickup_id))?.name ?? null : null);
+
+    const destination_name =
+      row.destination_name ??
+      (destination_id ? destById.get(String(destination_id))?.name ?? null : null);
+
+    // Back-fill route_name if needed (route.route_name preferred, else route.name)
+    const repairedRouteName =
+      row.route_name ||
+      (core?.route_name ? String(core.route_name) : "") ||
+      (core?.name ? String(core.name) : "");
+
+    const country_id = row.country_id ?? (derivedCountryId ? derivedCountryId : null);
+    const country_name = row.country_name ?? (derivedCountryName ? derivedCountryName : null);
 
     return {
-      ...r,
-      pickup_name: nextPickupName ?? null,
-      destination_name: nextDestName ?? null,
-      country_id: derivedCountryId ?? null,
-      country_name: derivedCountryName ?? null,
-      // If the view didn't provide a route_name, ensure we still return something useful
-      route_name:
-        r.route_name && String(r.route_name).trim()
-          ? r.route_name
-          : `${nextPickupName ?? "—"} → ${nextDestName ?? "—"}`,
+      ...row,
+      route_name: repairedRouteName,
+      country_id,
+      country_name,
+      pickup_id,
+      pickup_name,
+      destination_id,
+      destination_name,
     };
   });
 }
@@ -392,7 +396,9 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
-  let routes = (rawRoutes ?? []).map(normalizeRoute).filter((r) => r.route_name);
+  let routes = (rawRoutes ?? [])
+    .map(normalizeRoute)
+    .filter((r) => r.route_name);
 
   if (!routes.length) {
     return {
@@ -406,42 +412,52 @@ async function loadVisibleCatalog() {
     };
   }
 
-  // ✅ CRITICAL FIX:
+  // ✅ CRITICAL FIX #1:
   // Replace polluted / null vehicle typing from the view with canonical transport_types
   const typed = await enrichRoutesWithTransportTypes(supabase, routes);
   routes = typed.routes;
 
   // ✅ CRITICAL FIX #2:
-  // Derive missing country_id / country_name (common with legacy routes where routes.country_id is NULL)
-  routes = await enrichRoutesWithCountryDerivation(supabase, routes);
+  // Repair country_id/country_name (and pickup/destination names) when the view returns NULLs
+  routes = await repairRouteGeoFields(supabase, routes);
 
-  // Derive visibility strictly from routes (after derivation)
+  // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(
     new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
   );
   const visibleDestLC = new Set(
     routes.map((r) => lc(r.destination_name)).filter(Boolean)
   );
-  const visiblePickupLC = new Set(routes.map((r) => lc(r.pickup_name)).filter(Boolean));
+  const visiblePickupLC = new Set(
+    routes.map((r) => lc(r.pickup_name)).filter(Boolean)
+  );
 
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
     await Promise.all([
-      supabase.from("countries").select("id,name,description,hero_image_url"),
+      supabase.from("countries").select(
+        "id,name,description,hero_image_url"
+      ),
       supabase
         .from("destinations")
         .select(
           "name,country_name,description,address1,address2,town,region,postal_code,phone,website_url,image_url,directions_url,type,tags"
         ),
-      supabase.from("pickup_points").select("name,country_name,directions_url"),
+      supabase
+        .from("pickup_points")
+        .select("name,country_name,directions_url"),
     ]);
 
   // Filter to visible-only
   const countries = (countriesAll ?? []).filter((c) =>
     visibleCountryNames.includes(c.name)
   );
-  const destinations = (destAll ?? []).filter((d) => visibleDestLC.has(lc(d.name)));
-  const pickups = (pickupsAll ?? []).filter((p) => visiblePickupLC.has(lc(p.name)));
+  const destinations = (destAll ?? []).filter((d) =>
+    visibleDestLC.has(lc(d.name))
+  );
+  const pickups = (pickupsAll ?? []).filter((p) =>
+    visiblePickupLC.has(lc(p.name))
+  );
 
   // ✅ vehicle_types is now the SAFE canonical list actually used on routes
   const vehicle_types = typed.vehicle_types.map((t) => ({
@@ -539,7 +555,9 @@ async function fallbackPublicCatalog(reason?: string) {
       ),
     ]);
 
-  const activeDestinations = destinationsRaw.filter((d) => d.active !== false);
+  const activeDestinations = destinationsRaw.filter(
+    (d) => d.active !== false
+  );
   const visibleCountryNames = Array.from(
     new Set(
       activeDestinations
@@ -571,20 +589,16 @@ export async function GET() {
       if (cat.routes.length > 0) {
         return NextResponse.json(cat, {
           headers: {
-            // Debug-friendly while you validate BVI propagation
-            "Cache-Control": "no-store",
+            "Cache-Control": "public, max-age=60, s-maxage=60",
           },
         });
       }
     } catch (e: any) {
-      console.warn(
-        "[visible-catalog] primary failed; using fallback:",
-        e?.message || e
-      );
+      console.warn("[visible-catalog] primary failed; using fallback:", e?.message || e);
       const fb = await fallbackPublicCatalog(e?.message || "primary_failed");
       return NextResponse.json(fb, {
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control": "public, max-age=60, s-maxage=60",
         },
       });
     }
@@ -592,7 +606,7 @@ export async function GET() {
     const fb = await fallbackPublicCatalog("no_routes");
     return NextResponse.json(fb, {
       headers: {
-        "Cache-Control": "no-store",
+        "Cache-Control": "public, max-age=60, s-maxage=60",
       },
     });
   } catch (err: any) {
