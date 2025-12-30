@@ -111,46 +111,6 @@ function chooseAssignment(rows: RouteVehicleAssignmentRow[]): RouteVehicleAssign
 }
 
 /**
- * Some environments may not yet have transport_types.capacity / transport_types.features.
- * We must not fail the whole visible-catalog if those columns don't exist.
- */
-async function fetchTransportTypesByIds(
-  supabase: SupabaseClient,
-  typeIds: string[]
-): Promise<TransportTypeRow[]> {
-  if (!typeIds.length) return [];
-
-  // Try the richest shape first
-  try {
-    const { data, error } = await supabase
-      .from("transport_types")
-      .select("id,name,description,picture_url,is_active,slug,capacity,features")
-      .in("id", typeIds);
-
-    if (error) throw error;
-    return (data ?? []) as TransportTypeRow[];
-  } catch (e: any) {
-    // If the error is "column ... does not exist" (Postgres 42703), retry without those fields
-    const code = e?.code || e?.details?.code;
-    const msg = String(e?.message || e || "");
-    const looksLikeMissingCols =
-      code === "42703" ||
-      /column .*capacity.* does not exist/i.test(msg) ||
-      /column .*features.* does not exist/i.test(msg);
-
-    if (!looksLikeMissingCols) throw e;
-
-    const { data, error } = await supabase
-      .from("transport_types")
-      .select("id,name,description,picture_url,is_active,slug")
-      .in("id", typeIds);
-
-    if (error) throw error;
-    return (data ?? []) as TransportTypeRow[];
-  }
-}
-
-/**
  * Build SAFE transport typing for routes using:
  * route_vehicle_assignments -> vehicles.type_id -> transport_types
  *
@@ -236,7 +196,32 @@ async function enrichRoutesWithTransportTypes(
   }
 
   // 3) transport_types -> id/name (canonical safe names)
-  const typesAll = await fetchTransportTypesByIds(supabase, Array.from(typeIds));
+  // Some environments may not have capacity/features columns — try them, then fall back.
+  let typesAll: TransportTypeRow[] = [];
+  {
+    const attempt1 = await supabase
+      .from("transport_types")
+      .select("id,name,description,picture_url,is_active,slug,capacity,features")
+      .in("id", Array.from(typeIds));
+
+    if (!attempt1.error) {
+      typesAll = (attempt1.data ?? []) as TransportTypeRow[];
+    } else {
+      const msg = String((attempt1.error as any)?.message || "");
+      const code = String((attempt1.error as any)?.code || "");
+      const isMissingColumn = code === "42703" || /does not exist/i.test(msg);
+
+      if (!isMissingColumn) throw attempt1.error;
+
+      const attempt2 = await supabase
+        .from("transport_types")
+        .select("id,name,description,picture_url,is_active,slug")
+        .in("id", Array.from(typeIds));
+
+      if (attempt2.error) throw attempt2.error;
+      typesAll = (attempt2.data ?? []) as TransportTypeRow[];
+    }
+  }
 
   const typeNameById = new Map<string, string>();
   const usedTypes: TransportTypeRow[] = [];
@@ -431,9 +416,12 @@ async function loadVisibleCatalog() {
 
   if (rErr) throw rErr;
 
+  // IMPORTANT: do NOT filter out routes by route_name here.
+  // The view can have NULL route_name/name for valid routes (e.g. BVI),
+  // and we repair those fields from base tables later.
   let routes = (rawRoutes ?? [])
     .map(normalizeRoute)
-    .filter((r) => r.route_name);
+    .filter((r) => (r.route_id ?? "").toString().trim().length > 0);
 
   if (!routes.length) {
     return {
@@ -456,6 +444,34 @@ async function loadVisibleCatalog() {
   // Repair country_id/country_name (and pickup/destination names) when the view returns NULLs
   routes = await repairRouteGeoFields(supabase, routes);
 
+  // ✅ CRITICAL FIX #3:
+  // If route_name is still missing, synthesise it from pickup → destination.
+  routes = routes.map((r) => {
+    const rn = (r.route_name ?? "").toString().trim();
+    if (rn) return r;
+
+    const pu = (r.pickup_name ?? "").toString().trim();
+    const de = (r.destination_name ?? "").toString().trim();
+    const synthetic = pu && de ? `${pu} → ${de}` : "";
+
+    return { ...r, route_name: synthetic };
+  });
+
+  // Now we can safely filter out anything that still has no name
+  routes = routes.filter((r) => (r.route_name ?? "").toString().trim().length > 0);
+
+  if (!routes.length) {
+    return {
+      ok: true,
+      fallback: false as const,
+      routes: [],
+      countries: [],
+      destinations: [],
+      pickups: [],
+      vehicle_types: [],
+    };
+  }
+
   // Derive visibility strictly from routes
   const visibleCountryNames = Array.from(
     new Set(routes.map((r) => r.country_name).filter(Boolean) as string[])
@@ -470,9 +486,7 @@ async function loadVisibleCatalog() {
   // Base tables
   const [{ data: countriesAll }, { data: destAll }, { data: pickupsAll }] =
     await Promise.all([
-      supabase.from("countries").select(
-        "id,name,description,hero_image_url"
-      ),
+      supabase.from("countries").select("id,name,description,hero_image_url"),
       supabase
         .from("destinations")
         .select(
@@ -500,8 +514,8 @@ async function loadVisibleCatalog() {
     name: t.name,
     description: t.description ?? null,
     icon_url: t.picture_url ?? null,
-    capacity: (t as any).capacity ?? null,
-    features: (t as any).features ?? null,
+    capacity: t.capacity ?? null,
+    features: t.features ?? null,
   }));
 
   return {
@@ -581,18 +595,12 @@ async function fallbackPublicCatalog(reason?: string) {
   const [countriesRaw, destinationsRaw, pickupsRaw, vehicle_types] =
     await Promise.all([
       getRows<Country>(`${API_BASE}/api/public/countries`).catch(() => []),
-      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(
-        () => []
-      ),
+      getRows<Destination>(`${API_BASE}/api/public/destinations`).catch(() => []),
       getRows<Pickup>(`${API_BASE}/api/public/pickups`).catch(() => []),
-      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(
-        () => []
-      ),
+      getRows<VehicleType>(`${API_BASE}/api/public/vehicle-types`).catch(() => []),
     ]);
 
-  const activeDestinations = destinationsRaw.filter(
-    (d) => d.active !== false
-  );
+  const activeDestinations = destinationsRaw.filter((d) => d.active !== false);
   const visibleCountryNames = Array.from(
     new Set(
       activeDestinations
