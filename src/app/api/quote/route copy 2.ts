@@ -156,7 +156,7 @@ async function loadAssignedVehiclesFlexible(routeId: string) {
 
   const { data: assigns, error: aErr } = await db
     .from("route_vehicle_assignments")
-    .select("vehicle_id, preferred, is_active, minseats_override, maxseats_override, minvalue_override, min_val_threshold_override")
+    .select("vehicle_id, preferred, is_active")
     .eq("route_id", routeId)
     .eq("is_active", true);
   if (aErr) throw new Error(`route_vehicle_assignments: ${aErr.message}`);
@@ -169,90 +169,55 @@ async function loadAssignedVehiclesFlexible(routeId: string) {
   let items: any[] = [];
   let source = "vehicles";
 
-  // Helper: apply per-route overrides (if present) onto a "vehicle-like" record.
-  const applyOverrides = (a: any, base: any) => {
-    const effMinSeats = a?.minseats_override ?? base?.minseats ?? 0;
-    const effMaxSeats = a?.maxseats_override ?? base?.maxseats ?? 0;
-    const effMinValue = a?.minvalue_override ?? base?.minvalue ?? 0;
-
-    // We carry this through (for future logic / UI), but it doesn't change pricing today.
-    const effMinValThreshold =
-      a?.min_val_threshold_override ??
-      base?.min_val_threshold ??
-      null;
-
-    return {
-      ...base,
-      minseats: Number(effMinSeats ?? 0),
-      maxseats: Number(effMaxSeats ?? 0),
-      minvalue: Number(effMinValue ?? 0),
-      min_val_threshold: effMinValThreshold != null ? Number(effMinValThreshold) : null,
-
-      // Optional: keep the raw overrides available for diagnostics (doesn't affect existing logic)
-      _rva_overrides: {
-        minseats_override: a?.minseats_override ?? null,
-        maxseats_override: a?.maxseats_override ?? null,
-        minvalue_override: a?.minvalue_override ?? null,
-        min_val_threshold_override: a?.min_val_threshold_override ?? null,
-      },
-    };
-  };
-
   if (vehicleIds.length) {
     const { data: v1, error: v1Err } = await db
       .from("vehicles")
-      .select("id, name, operator_id, minseats, maxseats, minvalue, min_val_threshold, maxseatdiscount, active")
+      .select("id, name, operator_id, minseats, maxseats, minvalue, maxseatdiscount, active")
       .in("id", vehicleIds);
 
     if (!v1Err && (v1?.length || 0) > 0) {
       items = active
-        .map((a: any) => {
+        .map((a) => {
           const v = v1!.find((vv) => vv.id === a.vehicle_id);
-          if (!v) return null;
-
-          const base = {
-            id: v.id,
-            name: v.name,
-            operator_id: v.operator_id ?? null,
-            minseats: Number(v.minseats ?? 0),
-            maxseats: Number(v.maxseats ?? 0),
-            minvalue: Number(v.minvalue ?? 0),
-            min_val_threshold: (v as any).min_val_threshold != null ? Number((v as any).min_val_threshold) : null,
-            maxseatdiscount: v.maxseatdiscount != null ? Number(v.maxseatdiscount) : null,
-            preferred_route: Boolean(a.preferred),
-            active: Boolean((v as any).active ?? true),
-          };
-
-          return applyOverrides(a, base);
+          return v
+            ? {
+                id: v.id,
+                name: v.name,
+                operator_id: v.operator_id ?? null,
+                minseats: Number(v.minseats ?? 0),
+                maxseats: Number(v.maxseats ?? 0),
+                minvalue: Number(v.minvalue ?? 0),
+                maxseatdiscount: v.maxseatdiscount != null ? Number(v.maxseatdiscount) : null,
+                preferred_route: Boolean(a.preferred),
+                active: Boolean((v as any).active ?? true),
+              }
+            : null;
         })
         .filter(Boolean) as any[];
     } else {
       source = "transport_types";
       const { data: v2, error: v2Err } = await db
         .from("transport_types")
-        .select("id, name, operator_id, minseats, maxseats, minvalue, min_val_threshold, maxseatdiscount")
+        .select("id, name, operator_id, minseats, maxseats, minvalue, maxseatdiscount")
         .in("id", vehicleIds);
       if (v2Err) throw new Error(`transport_types: ${v2Err.message}`);
 
       items = active
-        .map((a: any) => {
+        .map((a) => {
           const v = v2!.find((vv) => vv.id === a.vehicle_id);
-          if (!v) return null;
-
-          const base = {
-            id: v.id,
-            name: v.name,
-            operator_id: v.operator_id ?? null,
-            minseats: Number(v.minseats ?? 0),
-            maxseats: Number(v.maxseats ?? 0),
-            minvalue: Number(v.minvalue ?? 0),
-            min_val_threshold: (v as any).min_val_threshold != null ? Number((v as any).min_val_threshold) : null,
-            maxseatdiscount: v.maxseatdiscount != null ? Number(v.maxseatdiscount) : null,
-            preferred_route: Boolean(a.preferred),
-            active: true,
-          };
-
-          return applyOverrides(a, base);
+          return v
+            ? {
+                id: v.id,
+                name: v.name,
+                operator_id: v.operator_id ?? null,
+                minseats: Number(v.minseats ?? 0),
+                maxseats: Number(v.maxseats ?? 0),
+                minvalue: Number(v.minvalue ?? 0),
+                maxseatdiscount: v.maxseatdiscount != null ? Number(v.maxseatdiscount) : null,
+                preferred_route: Boolean(a.preferred),
+                active: true,
+              }
+            : null;
         })
         .filter(Boolean) as any[];
     }
@@ -282,7 +247,6 @@ async function loadAssignedVehiclesFlexible(routeId: string) {
 
   return { items, source };
 }
-
 
 /** Sort: cheapest base → higher CSAT (if different operator) → preferred → name/id. */
 function decorateAndSort(vehicles: Array<{

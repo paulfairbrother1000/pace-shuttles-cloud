@@ -29,7 +29,7 @@ type VehicleRow = {
   description: string;
   picture_url: string | null;
   min_val_threshold: number | null;
-  type_id: string | null;     // journey_types.id
+  type_id: string | null; // journey_types.id
   operator_id: string | null; // operators.id
 };
 
@@ -54,6 +54,54 @@ type SVA = {
   created_at?: string | null;
 };
 
+/* ───────────────────────── NEW: Routes & Assignments ───────────────────────── */
+type RouteRow = {
+  id: string;
+  name: string | null;
+  route_name: string | null;
+  pickup_id: string | null;
+  destination_id: string | null;
+  country_id: string | null;
+  journey_type_id: string | null;
+  is_active: boolean | null;
+  pickup?: { id?: string; country_id?: string | null; name?: string | null } | null;
+  destination?: { id?: string; country_id?: string | null; name?: string | null } | null;
+};
+
+type RVA = {
+  id: string;
+  route_id: string;
+  vehicle_id: string;
+  preferred: boolean;
+  is_active: boolean;
+  created_at?: string | null;
+
+  // per-route overrides (NOT NULL per your new approach)
+  minseats_override: number;
+  maxseats_override: number;
+  minvalue_override: number;
+  min_val_threshold_override: number | null;
+};
+
+function routeDisplayName(r?: Partial<RouteRow> | null) {
+  if (!r) return "—";
+  return (r.route_name || r.name || "").trim() || (r as any).id || "—";
+}
+
+function inferRouteCountryId(
+  r: RouteRow,
+  pickupCountryById: Map<string, string>,
+  destCountryById: Map<string, string>
+): string | null {
+  if (r.country_id) return r.country_id;
+  const pu = r.pickup?.country_id ?? (r.pickup_id ? pickupCountryById.get(r.pickup_id) : null);
+  if (pu) return pu;
+  const de =
+    r.destination?.country_id ?? (r.destination_id ? destCountryById.get(r.destination_id) : null);
+  if (de) return de;
+  return null;
+}
+
 /* ───────────────────────── Helpers ───────────────────────── */
 const toInt = (v: string) => (v.trim() === "" ? null : Number.parseInt(v, 10));
 const toFloat = (v: string) => (v.trim() === "" ? null : Number.parseFloat(v));
@@ -70,10 +118,13 @@ async function resolveImageUrl(pathOrUrl: string | null): Promise<string | null>
   if (isHttp(pathOrUrl)) return pathOrUrl;
   const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
   if (pub) return pub;
-  const { data } = await sb.storage
-    .from("images")
-    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
   return data?.signedUrl ?? null;
+}
+
+function safeNum(x: any, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /* ───────────────────────── Page ───────────────────────── */
@@ -115,10 +166,9 @@ export default function EditVehiclePage() {
 
   /* Image preview */
   const [storedImageUrl, setStoredImageUrl] = useState<string | null>(null);
-  const livePreviewUrl = useMemo(
-    () => (pictureFile ? URL.createObjectURL(pictureFile) : null),
-    [pictureFile]
-  );
+  const livePreviewUrl = useMemo(() => (pictureFile ? URL.createObjectURL(pictureFile) : null), [
+    pictureFile,
+  ]);
 
   /* UI */
   const [saving, setSaving] = useState(false);
@@ -129,17 +179,13 @@ export default function EditVehiclePage() {
   /* Allowed types for selected operator */
   const allowedTypeIds = useMemo(
     () =>
-      new Set(
-        opTypeRels
-          .filter((r) => r.operator_id === operatorId)
-          .map((r) => r.journey_type_id)
-      ),
+      new Set(opTypeRels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)),
     [opTypeRels, operatorId]
   );
-  const allowedTypes = useMemo(
-    () => journeyTypes.filter((t) => allowedTypeIds.has(t.id)),
-    [journeyTypes, allowedTypeIds]
-  );
+  const allowedTypes = useMemo(() => journeyTypes.filter((t) => allowedTypeIds.has(t.id)), [
+    journeyTypes,
+    allowedTypeIds,
+  ]);
 
   /* Load lookups + row */
   useEffect(() => {
@@ -158,11 +204,7 @@ export default function EditVehiclePage() {
       if (rels.data) setOpTypeRels(rels.data as OperatorTypeRel[]);
 
       if (!isNew && vehicleId) {
-        const { data, error } = await sb
-          .from("vehicles")
-          .select("*")
-          .eq("id", vehicleId)
-          .single();
+        const { data, error } = await sb.from("vehicles").select("*").eq("id", vehicleId).single();
 
         if (error || !data) {
           setMsg(error?.message ?? "Vehicle not found.");
@@ -202,13 +244,11 @@ export default function EditVehiclePage() {
     if (!pictureFile) return null;
     const safe = pictureFile.name.replace(/[^\w.\-]+/g, "_");
     const path = `vehicles/${id}/${Date.now()}-${safe}`;
-    const { error } = await sb.storage
-      .from("images")
-      .upload(path, pictureFile, {
-        cacheControl: "3600",
-        upsert: true,
-        contentType: pictureFile.type || "image/*",
-      });
+    const { error } = await sb.storage.from("images").upload(path, pictureFile, {
+      cacheControl: "3600",
+      upsert: true,
+      contentType: pictureFile.type || "image/*",
+    });
     if (error) {
       setMsg(`Image upload failed: ${error.message}`);
       return null;
@@ -222,17 +262,14 @@ export default function EditVehiclePage() {
     try {
       setMsg(null);
 
-      const effectiveOperatorId = operatorLocked
-        ? psUser?.operator_id || ""
-        : operatorId;
+      const effectiveOperatorId = operatorLocked ? psUser?.operator_id || "" : operatorId;
       if (!effectiveOperatorId) return setMsg("Please choose an Operator.");
       if (!name.trim()) return setMsg("Please enter a Vehicle name.");
       if (!typeId) return setMsg("Please select a Transport Type.");
       const minS = toInt(minSeats),
         maxS = toInt(maxSeats),
         minV = toFloat(minValue);
-      if (minS == null || maxS == null || minV == null)
-        return setMsg("Seats and Min Value are required.");
+      if (minS == null || maxS == null || minV == null) return setMsg("Seats and Min Value are required.");
 
       setSaving(true);
 
@@ -282,10 +319,7 @@ export default function EditVehiclePage() {
 
       const res = await fetch(`/api/admin/vehicles/${vehicleId}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(payload),
       });
 
@@ -334,8 +368,7 @@ export default function EditVehiclePage() {
 
   const operatorName =
     (operatorLocked &&
-      (psUser?.operator_name ||
-        operators.find((o) => o.id === psUser?.operator_id)?.name)) ||
+      (psUser?.operator_name || operators.find((o) => o.id === psUser?.operator_id)?.name)) ||
     "";
 
   /* ───────────────────── Captains & Priority (NEW) ───────────────────── */
@@ -428,17 +461,12 @@ export default function EditVehiclePage() {
       setRelMsg("Priority must be 1–5.");
       return;
     }
-    const { error } = await sb
-      .from("vehicle_staff_prefs")
-      .update({ priority: next })
-      .eq("id", id);
+    const { error } = await sb.from("vehicle_staff_prefs").update({ priority: next }).eq("id", id);
     if (error) {
       setRelMsg(error.message);
       return;
     }
-    setAssignments((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, priority: next } : r))
-    );
+    setAssignments((prev) => prev.map((r) => (r.id === id ? { ...r, priority: next } : r)));
   }
 
   async function toggleEligible(id: string, cur: boolean) {
@@ -450,17 +478,12 @@ export default function EditVehiclePage() {
       setRelMsg(error.message);
       return;
     }
-    setAssignments((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r))
-    );
+    setAssignments((prev) => prev.map((r) => (r.id === id ? { ...r, is_lead_eligible: !cur } : r)));
   }
 
   async function removeRel(id: string) {
     if (!confirm("Remove this captain from this vehicle?")) return;
-    const { error } = await sb
-      .from("vehicle_staff_prefs")
-      .delete()
-      .eq("id", id);
+    const { error } = await sb.from("vehicle_staff_prefs").delete().eq("id", id);
     if (error) {
       setRelMsg(error.message);
       return;
@@ -479,6 +502,280 @@ export default function EditVehiclePage() {
       ),
     [assignments, staffById]
   );
+
+  /* ───────────────────── Journeys / Route Assignments (NEW) ───────────────────── */
+
+  const [operatorCountryId, setOperatorCountryId] = useState<string | null>(null);
+
+  const [routesAll, setRoutesAll] = useState<RouteRow[]>([]);
+  const [routeAssignments, setRouteAssignments] = useState<RVA[]>([]);
+  const [routesMsg, setRoutesMsg] = useState<string | null>(null);
+
+  const [addingRouteId, setAddingRouteId] = useState<string>("");
+  const [addingPreferred, setAddingPreferred] = useState<boolean>(false);
+
+  // in-row edit cache
+  const [editRva, setEditRva] = useState<Record<string, Partial<RVA>>>({});
+
+  async function loadOperatorCountry(opId: string) {
+    // Best-effort: some schemas may not have operators.country_id
+    try {
+      const { data, error } = await sb.from("operators").select("id,country_id").eq("id", opId).maybeSingle();
+      if (error) throw error;
+      const cid = (data as any)?.country_id ?? null;
+      setOperatorCountryId(cid ? String(cid) : null);
+    } catch {
+      setOperatorCountryId(null);
+    }
+  }
+
+  async function loadRoutesAndAssignments(opId: string, vId: string, vTypeId: string) {
+    if (!opId || !vId || !vTypeId || isNew) {
+      setRoutesAll([]);
+      setRouteAssignments([]);
+      return;
+    }
+
+    setRoutesMsg(null);
+
+    await loadOperatorCountry(opId);
+
+    const [routesRes, rvaRes, puRes, deRes] = await Promise.all([
+      sb
+        .from("routes")
+        .select(
+          `
+          id,name,route_name,pickup_id,destination_id,country_id,journey_type_id,is_active,
+          pickup:pickup_id ( id, country_id, name ),
+          destination:destination_id ( id, country_id, name )
+        `
+        )
+        .eq("is_active", true)
+        .eq("journey_type_id", vTypeId)
+        .order("created_at", { ascending: false }),
+
+      sb
+        .from("route_vehicle_assignments")
+        .select(
+          "id,route_id,vehicle_id,preferred,is_active,created_at,minseats_override,maxseats_override,minvalue_override,min_val_threshold_override"
+        )
+        .eq("vehicle_id", vId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false }),
+
+      sb.from("pickup_points").select("id,country_id"),
+      sb.from("destinations").select("id,country_id"),
+    ]);
+
+    if (routesRes.error) setRoutesMsg(routesRes.error.message);
+    if (rvaRes.error) setRoutesMsg((m) => m || rvaRes.error!.message);
+
+    const pickupCountryById = new Map<string, string>();
+    (puRes.data || []).forEach((p: any) => {
+      if (p?.id && p?.country_id) pickupCountryById.set(String(p.id), String(p.country_id));
+    });
+
+    const destCountryById = new Map<string, string>();
+    (deRes.data || []).forEach((d: any) => {
+      if (d?.id && d?.country_id) destCountryById.set(String(d.id), String(d.country_id));
+    });
+
+    const allRoutes = (((routesRes.data as any[]) || []) as RouteRow[]).filter((r) => r.is_active !== false);
+
+    // If we know operator country, apply it; else type-only (still safe)
+    const filteredRoutes = operatorCountryId
+      ? allRoutes.filter((r) => inferRouteCountryId(r, pickupCountryById, destCountryById) === operatorCountryId)
+      : allRoutes;
+
+    setRoutesAll(filteredRoutes);
+
+    const rvas = ((rvaRes.data as any[]) || []) as RVA[];
+    setRouteAssignments(rvas);
+
+    // seed edit cache
+    const seed: Record<string, Partial<RVA>> = {};
+    rvas.forEach((row) => (seed[row.id] = { ...row }));
+    setEditRva(seed);
+  }
+
+  useEffect(() => {
+    if (!isNew && operatorId && vehicleId && typeId) {
+      loadRoutesAndAssignments(operatorId, vehicleId, typeId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNew, operatorId, vehicleId, typeId]);
+
+  const routeById = useMemo(() => {
+    const m = new Map<string, RouteRow>();
+    routesAll.forEach((r) => m.set(r.id, r));
+    return m;
+  }, [routesAll]);
+
+  const assignedRouteIds = useMemo(
+    () => new Set(routeAssignments.map((a) => a.route_id)),
+    [routeAssignments]
+  );
+
+  const addableRoutes = useMemo(() => {
+    return routesAll
+      .filter((r) => !assignedRouteIds.has(r.id))
+      .sort((a, b) => routeDisplayName(a).localeCompare(routeDisplayName(b)));
+  }, [routesAll, assignedRouteIds]);
+
+  async function addRouteAssignment() {
+    if (!vehicleId || !operatorId || !typeId || !addingRouteId || isNew) return;
+    setRoutesMsg(null);
+
+    const { error } = await sb.from("route_vehicle_assignments").insert({
+      route_id: addingRouteId,
+      vehicle_id: vehicleId,
+      is_active: true,
+      preferred: false,
+    });
+
+    if (error) {
+      setRoutesMsg(error.message);
+      return;
+    }
+
+    if (addingPreferred) {
+      await setPreferredForThisVehicleOnRoute(addingRouteId, true);
+    }
+
+    setAddingRouteId("");
+    setAddingPreferred(false);
+    await loadRoutesAndAssignments(operatorId, vehicleId, typeId);
+  }
+
+  async function setPreferredForThisVehicleOnRoute(routeId: string, preferred: boolean) {
+    if (!vehicleId) return;
+    setRoutesMsg(null);
+
+    // Keep uniqueness: clear all preferred on this route first (only if turning on)
+    if (preferred) {
+      const clear = await sb
+        .from("route_vehicle_assignments")
+        .update({ preferred: false })
+        .eq("route_id", routeId)
+        .eq("is_active", true);
+
+      if (clear.error) {
+        setRoutesMsg(clear.error.message);
+        return;
+      }
+    }
+
+    const upd = await sb
+      .from("route_vehicle_assignments")
+      .update({ preferred })
+      .eq("route_id", routeId)
+      .eq("vehicle_id", vehicleId)
+      .eq("is_active", true);
+
+    if (upd.error) {
+      setRoutesMsg(upd.error.message);
+      return;
+    }
+
+    // refresh local list
+    setRouteAssignments((prev) =>
+      prev.map((a) =>
+        a.route_id === routeId
+          ? { ...a, preferred: a.vehicle_id === vehicleId ? preferred : false }
+          : a
+      )
+    );
+  }
+
+  function patchEditRva(id: string, patch: Partial<RVA>) {
+    setEditRva((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+  }
+
+  async function saveOverrides(rvaId: string) {
+    setRoutesMsg(null);
+
+    const next = editRva[rvaId];
+    if (!next) return;
+
+    // Your rule: fields should have meaningful values. 0 makes no sense here.
+    const ms = Number(next.minseats_override);
+    const mx = Number(next.maxseats_override);
+    const mv = Number(next.minvalue_override);
+
+    if (!Number.isFinite(ms) || ms <= 0) return setRoutesMsg("Min seats override must be > 0.");
+    if (!Number.isFinite(mx) || mx <= 0) return setRoutesMsg("Max seats override must be > 0.");
+    if (mx < ms) return setRoutesMsg("Max seats override must be >= min seats override.");
+    if (!Number.isFinite(mv) || mv <= 0) return setRoutesMsg("Min value override must be > 0.");
+
+    const th =
+      next.min_val_threshold_override == null || String(next.min_val_threshold_override).trim() === ""
+        ? null
+        : Number(next.min_val_threshold_override);
+
+    const { error } = await sb
+      .from("route_vehicle_assignments")
+      .update({
+        minseats_override: ms,
+        maxseats_override: mx,
+        minvalue_override: mv,
+        min_val_threshold_override: th,
+      })
+      .eq("id", rvaId);
+
+    if (error) {
+      setRoutesMsg(error.message);
+      return;
+    }
+
+    setRouteAssignments((prev) => prev.map((a) => (a.id === rvaId ? { ...a, ...(next as any) } : a)));
+    setRoutesMsg("Saved ✅");
+  }
+
+  async function resetOverridesToVehicle(rvaId: string) {
+    const ms = toInt(minSeats);
+    const mx = toInt(maxSeats);
+    const mv = toFloat(minValue);
+    const th = toFloat(minValThreshold);
+
+    if (ms == null || mx == null || mv == null) {
+      setRoutesMsg("Vehicle seats/min value must be set before reset.");
+      return;
+    }
+
+    patchEditRva(rvaId, {
+      minseats_override: ms,
+      maxseats_override: mx,
+      minvalue_override: mv,
+      min_val_threshold_override: th,
+    });
+
+    await saveOverrides(rvaId);
+  }
+
+  async function removeRouteAssignment(rvaId: string) {
+    if (!confirm("Remove this route from this vehicle?")) return;
+    setRoutesMsg(null);
+
+    // Soft disable
+    const { error } = await sb
+      .from("route_vehicle_assignments")
+      .update({ is_active: false, preferred: false })
+      .eq("id", rvaId);
+
+    if (error) {
+      setRoutesMsg(error.message);
+      return;
+    }
+
+    setRouteAssignments((prev) => prev.filter((a) => a.id !== rvaId));
+  }
+
+  const basePerSeat = useMemo(() => {
+    const ms = toInt(minSeats);
+    const mv = toFloat(minValue);
+    if (!ms || !mv || ms <= 0 || mv <= 0) return null;
+    return Math.ceil(mv / ms);
+  }, [minSeats, minValue]);
 
   return (
     <div className="space-y-6">
@@ -541,9 +838,7 @@ export default function EditVehiclePage() {
         <form onSubmit={onSave} className="space-y-5">
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="lg:col-span-2">
-              <label className="block text-sm text-neutral-600 mb-1">
-                Operator *
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Operator *</label>
               {operatorLocked ? (
                 <div className="inline-flex rounded-full bg-neutral-100 border px-3 py-2 text-sm">
                   {operatorName || psUser?.operator_id}
@@ -568,9 +863,7 @@ export default function EditVehiclePage() {
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Transport Type *
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Transport Type *</label>
               <select
                 className="w-full border rounded-lg px-3 py-2"
                 value={typeId}
@@ -587,22 +880,14 @@ export default function EditVehiclePage() {
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Vehicle Name *
-              </label>
-              <input
-                className="w-full border rounded-lg px-3 py-2"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
+              <label className="block text-sm text-neutral-600 mb-1">Vehicle Name *</label>
+              <input className="w-full border rounded-lg px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Min Seats *
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Min Seats *</label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -611,9 +896,7 @@ export default function EditVehiclePage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Max Seats *
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Max Seats *</label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -622,9 +905,7 @@ export default function EditVehiclePage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Min Value *
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Min Value *</label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -633,9 +914,7 @@ export default function EditVehiclePage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Min Value Threshold
-              </label>
+              <label className="block text-sm text-neutral-600 mb-1">Min Value Threshold</label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -645,41 +924,30 @@ export default function EditVehiclePage() {
             </div>
           </div>
 
+          {/* quick display of base per seat */}
+          {basePerSeat != null && (
+            <div className="text-sm text-neutral-600">
+              Current vehicle base price: <span className="font-medium">£{basePerSeat}</span> per seat (minvalue/minseats)
+            </div>
+          )}
+
           <div>
-            <label className="block text-sm text-neutral-600 mb-1">
-              Description
-            </label>
-            <textarea
-              className="w-full border rounded-lg px-3 py-2"
-              rows={3}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
+            <label className="block text-sm text-neutral-600 mb-1">Description</label>
+            <textarea className="w-full border rounded-lg px-3 py-2" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">
-                Picture
-              </label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setPictureFile(e.target.files?.[0] || null)}
-              />
+              <label className="block text-sm text-neutral-600 mb-1">Picture</label>
+              <input type="file" accept="image/*" onChange={(e) => setPictureFile(e.target.files?.[0] || null)} />
               <p className="text-xs text-neutral-500 mt-1">
-                Stored in bucket <code>images</code> at{" "}
-                <code>vehicles/&lt;vehicleId&gt;/</code>
+                Stored in bucket <code>images</code> at <code>vehicles/&lt;vehicleId&gt;/</code>
               </p>
             </div>
 
             <div className="flex items-end">
               <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={active}
-                  onChange={(e) => setActive(e.target.checked)}
-                />
+                <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
                 <span className="text-sm">Active</span>
               </label>
             </div>
@@ -701,10 +969,7 @@ export default function EditVehiclePage() {
             >
               {saving ? "Saving…" : isNew ? "Create Vehicle" : "Update Vehicle"}
             </button>
-            <Link
-              href="/operator-admin/vehicles"
-              className="inline-flex rounded-full px-4 py-2 border text-sm"
-            >
+            <Link href="/operator-admin/vehicles" className="inline-flex rounded-full px-4 py-2 border text-sm">
               Cancel
             </Link>
             {msg && <span className="text-sm text-neutral-600">{msg}</span>}
@@ -730,9 +995,11 @@ export default function EditVehiclePage() {
             >
               <option value="">Add captain…</option>
               {staffOptions.map((s) => {
-                const name = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
+                const nm = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
                 return (
-                  <option key={s.id} value={s.id}>{name}</option>
+                  <option key={s.id} value={s.id}>
+                    {nm}
+                  </option>
                 );
               })}
             </select>
@@ -743,7 +1010,11 @@ export default function EditVehiclePage() {
               value={addingPriority}
               onChange={(e) => setAddingPriority(Number(e.target.value))}
             >
-              {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+              {[1, 2, 3, 4, 5].map((n) => (
+                <option key={n} value={n}>
+                  P{n}
+                </option>
+              ))}
             </select>
 
             <button
@@ -770,16 +1041,20 @@ export default function EditVehiclePage() {
               </thead>
               <tbody>
                 {sortedAssignments.length === 0 ? (
-                  <tr><td className="p-3" colSpan={5}>No captains linked to this vehicle yet.</td></tr>
+                  <tr>
+                    <td className="p-3" colSpan={5}>
+                      No captains linked to this vehicle yet.
+                    </td>
+                  </tr>
                 ) : (
                   sortedAssignments.map((r) => {
                     const st = staffById.get(r.staff_id);
-                    const name = st
+                    const nm = st
                       ? `${st.last_name || ""} ${st.first_name || ""}`.trim() || "Unnamed"
-                      : `#${r.staff_id.slice(0,8)}`;
+                      : `#${r.staff_id.slice(0, 8)}`;
                     return (
                       <tr key={r.id} className="border-t">
-                        <td className="p-3">{name}</td>
+                        <td className="p-3">{nm}</td>
                         <td className="p-3">{st?.jobrole || "—"}</td>
                         <td className="p-3">
                           <select
@@ -787,7 +1062,11 @@ export default function EditVehiclePage() {
                             value={r.priority}
                             onChange={(e) => updatePriority(r.id, Number(e.target.value))}
                           >
-                            {[1,2,3,4,5].map(n => <option key={n} value={n}>P{n}</option>)}
+                            {[1, 2, 3, 4, 5].map((n) => (
+                              <option key={n} value={n}>
+                                P{n}
+                              </option>
+                            ))}
                           </select>
                         </td>
                         <td className="p-3">
@@ -801,9 +1080,192 @@ export default function EditVehiclePage() {
                           </label>
                         </td>
                         <td className="p-3 text-right">
+                          <button className="px-3 py-1 rounded border" onClick={() => removeRel(r.id)}>
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* NEW: Journeys (Route assignments + per-route overrides) */}
+      {!isNew && (
+        <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-lg font-semibold">Journeys (Route assignments)</h2>
+            {routesMsg && <span className="text-sm text-neutral-600">{routesMsg}</span>}
+            {!operatorCountryId && (
+              <span className="text-xs text-amber-700">
+                Note: operator country unknown (operators.country_id not available) — filtering by vehicle
+                type only.
+              </span>
+            )}
+          </div>
+
+          {/* Add route */}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="border rounded-lg px-3 py-2"
+              value={addingRouteId}
+              onChange={(e) => setAddingRouteId(e.target.value)}
+              disabled={!operatorId || !typeId}
+            >
+              <option value="">Add route…</option>
+              {addableRoutes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {routeDisplayName(r)}
+                </option>
+              ))}
+            </select>
+
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={addingPreferred}
+                onChange={(e) => setAddingPreferred(e.target.checked)}
+              />
+              Preferred for this route
+            </label>
+
+            <button
+              className="px-3 py-2 rounded border"
+              disabled={!addingRouteId || !vehicleId}
+              onClick={addRouteAssignment}
+              type="button"
+            >
+              Add
+            </button>
+          </div>
+
+          {/* Existing assignments */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr>
+                  <th className="text-left p-3">Route</th>
+                  <th className="text-left p-3">Preferred</th>
+                  <th className="text-left p-3">Min seats</th>
+                  <th className="text-left p-3">Max seats</th>
+                  <th className="text-left p-3">Min value (£)</th>
+                  <th className="text-left p-3">Threshold</th>
+                  <th className="text-left p-3">Base £/seat</th>
+                  <th className="text-right p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {routeAssignments.length === 0 ? (
+                  <tr>
+                    <td className="p-3" colSpan={8}>
+                      No routes assigned to this vehicle yet.
+                    </td>
+                  </tr>
+                ) : (
+                  routeAssignments.map((a) => {
+                    const r = routeById.get(a.route_id);
+                    const e = (editRva[a.id] || a) as any;
+
+                    const ms = safeNum(e.minseats_override ?? a.minseats_override, 0);
+                    const mv = safeNum(e.minvalue_override ?? a.minvalue_override, 0);
+                    const base = ms > 0 && mv > 0 ? Math.ceil(mv / ms) : null;
+
+                    return (
+                      <tr key={a.id} className="border-t">
+                        <td className="p-3">
+                          <div className="font-medium">{routeDisplayName(r)}</div>
+                          {r?.pickup?.name && r?.destination?.name && (
+                            <div className="text-xs text-neutral-500">
+                              {r.pickup.name} → {r.destination.name}
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="p-3">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={!!a.preferred}
+                              onChange={(ev) =>
+                                setPreferredForThisVehicleOnRoute(a.route_id, ev.target.checked)
+                              }
+                            />
+                            <span className="text-sm">{a.preferred ? "Yes" : "No"}</span>
+                          </label>
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            className="w-24 border rounded px-2 py-1"
+                            inputMode="numeric"
+                            value={String(e.minseats_override ?? "")}
+                            onChange={(ev) =>
+                              patchEditRva(a.id, { minseats_override: Number(ev.target.value) })
+                            }
+                          />
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            className="w-24 border rounded px-2 py-1"
+                            inputMode="numeric"
+                            value={String(e.maxseats_override ?? "")}
+                            onChange={(ev) =>
+                              patchEditRva(a.id, { maxseats_override: Number(ev.target.value) })
+                            }
+                          />
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            className="w-28 border rounded px-2 py-1"
+                            inputMode="decimal"
+                            value={String(e.minvalue_override ?? "")}
+                            onChange={(ev) =>
+                              patchEditRva(a.id, { minvalue_override: Number(ev.target.value) })
+                            }
+                          />
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            className="w-24 border rounded px-2 py-1"
+                            inputMode="decimal"
+                            value={String(e.min_val_threshold_override ?? "")}
+                            onChange={(ev) =>
+                              patchEditRva(a.id, {
+                                min_val_threshold_override:
+                                  ev.target.value.trim() === "" ? null : Number(ev.target.value),
+                              })
+                            }
+                          />
+                        </td>
+
+                        <td className="p-3">{base == null ? "—" : `£${base}`}</td>
+
+                        <td className="p-3 text-right whitespace-nowrap">
+                          <button
+                            className="px-3 py-1 rounded border mr-2"
+                            onClick={() => saveOverrides(a.id)}
+                            type="button"
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="px-3 py-1 rounded border mr-2"
+                            onClick={() => resetOverridesToVehicle(a.id)}
+                            type="button"
+                          >
+                            Reset
+                          </button>
                           <button
                             className="px-3 py-1 rounded border"
-                            onClick={() => removeRel(r.id)}
+                            onClick={() => removeRouteAssignment(a.id)}
+                            type="button"
                           >
                             Remove
                           </button>
