@@ -1,3 +1,5 @@
+// src/app/operator-admin/vehicles/edit/[id]/page.tsx
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -94,11 +96,17 @@ function inferRouteCountryId(
   destCountryById: Map<string, string>
 ): string | null {
   if (r.country_id) return r.country_id;
-  const pu = r.pickup?.country_id ?? (r.pickup_id ? pickupCountryById.get(r.pickup_id) : null);
+
+  const pu =
+    r.pickup?.country_id ??
+    (r.pickup_id ? pickupCountryById.get(r.pickup_id) : null);
   if (pu) return pu;
+
   const de =
-    r.destination?.country_id ?? (r.destination_id ? destCountryById.get(r.destination_id) : null);
+    r.destination?.country_id ??
+    (r.destination_id ? destCountryById.get(r.destination_id) : null);
   if (de) return de;
+
   return null;
 }
 
@@ -118,7 +126,9 @@ async function resolveImageUrl(pathOrUrl: string | null): Promise<string | null>
   if (isHttp(pathOrUrl)) return pathOrUrl;
   const pub = sb.storage.from("images").getPublicUrl(pathOrUrl).data.publicUrl;
   if (pub) return pub;
-  const { data } = await sb.storage.from("images").createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
+  const { data } = await sb.storage
+    .from("images")
+    .createSignedUrl(pathOrUrl, 60 * 60 * 24 * 365);
   return data?.signedUrl ?? null;
 }
 
@@ -166,9 +176,10 @@ export default function EditVehiclePage() {
 
   /* Image preview */
   const [storedImageUrl, setStoredImageUrl] = useState<string | null>(null);
-  const livePreviewUrl = useMemo(() => (pictureFile ? URL.createObjectURL(pictureFile) : null), [
-    pictureFile,
-  ]);
+  const livePreviewUrl = useMemo(
+    () => (pictureFile ? URL.createObjectURL(pictureFile) : null),
+    [pictureFile]
+  );
 
   /* UI */
   const [saving, setSaving] = useState(false);
@@ -179,13 +190,18 @@ export default function EditVehiclePage() {
   /* Allowed types for selected operator */
   const allowedTypeIds = useMemo(
     () =>
-      new Set(opTypeRels.filter((r) => r.operator_id === operatorId).map((r) => r.journey_type_id)),
+      new Set(
+        opTypeRels
+          .filter((r) => r.operator_id === operatorId)
+          .map((r) => r.journey_type_id)
+      ),
     [opTypeRels, operatorId]
   );
-  const allowedTypes = useMemo(() => journeyTypes.filter((t) => allowedTypeIds.has(t.id)), [
-    journeyTypes,
-    allowedTypeIds,
-  ]);
+
+  const allowedTypes = useMemo(
+    () => journeyTypes.filter((t) => allowedTypeIds.has(t.id)),
+    [journeyTypes, allowedTypeIds]
+  );
 
   /* Load lookups + row */
   useEffect(() => {
@@ -204,7 +220,11 @@ export default function EditVehiclePage() {
       if (rels.data) setOpTypeRels(rels.data as OperatorTypeRel[]);
 
       if (!isNew && vehicleId) {
-        const { data, error } = await sb.from("vehicles").select("*").eq("id", vehicleId).single();
+        const { data, error } = await sb
+          .from("vehicles")
+          .select("*")
+          .eq("id", vehicleId)
+          .single();
 
         if (error || !data) {
           setMsg(error?.message ?? "Vehicle not found.");
@@ -269,7 +289,8 @@ export default function EditVehiclePage() {
       const minS = toInt(minSeats),
         maxS = toInt(maxSeats),
         minV = toFloat(minValue);
-      if (minS == null || maxS == null || minV == null) return setMsg("Seats and Min Value are required.");
+      if (minS == null || maxS == null || minV == null)
+        return setMsg("Seats and Min Value are required.");
 
       setSaving(true);
 
@@ -507,7 +528,11 @@ export default function EditVehiclePage() {
 
   const [operatorCountryId, setOperatorCountryId] = useState<string | null>(null);
 
+  // IMPORTANT:
+  // - routesAll: unfiltered (type-only) so existing assignments can always display correct names
+  // - routesForAdd: filtered to operator country (so add dropdown doesn't show Antigua/Barbados for BVI boats)
   const [routesAll, setRoutesAll] = useState<RouteRow[]>([]);
+  const [routesForAdd, setRoutesForAdd] = useState<RouteRow[]>([]);
   const [routeAssignments, setRouteAssignments] = useState<RVA[]>([]);
   const [routesMsg, setRoutesMsg] = useState<string | null>(null);
 
@@ -517,28 +542,36 @@ export default function EditVehiclePage() {
   // in-row edit cache
   const [editRva, setEditRva] = useState<Record<string, Partial<RVA>>>({});
 
-  async function loadOperatorCountry(opId: string) {
-    // Best-effort: some schemas may not have operators.country_id
+  async function loadOperatorCountry(opId: string): Promise<string | null> {
     try {
-      const { data, error } = await sb.from("operators").select("id,country_id").eq("id", opId).maybeSingle();
+      const { data, error } = await sb
+        .from("operators")
+        .select("id,country_id")
+        .eq("id", opId)
+        .maybeSingle();
       if (error) throw error;
       const cid = (data as any)?.country_id ?? null;
-      setOperatorCountryId(cid ? String(cid) : null);
+      const out = cid ? String(cid) : null;
+      setOperatorCountryId(out);
+      return out;
     } catch {
       setOperatorCountryId(null);
+      return null;
     }
   }
 
   async function loadRoutesAndAssignments(opId: string, vId: string, vTypeId: string) {
     if (!opId || !vId || !vTypeId || isNew) {
       setRoutesAll([]);
+      setRoutesForAdd([]);
       setRouteAssignments([]);
       return;
     }
 
     setRoutesMsg(null);
 
-    await loadOperatorCountry(opId);
+    // FIX: use opCountry immediately (state updates async)
+    const opCountry = await loadOperatorCountry(opId);
 
     const [routesRes, rvaRes, puRes, deRes] = await Promise.all([
       sb
@@ -580,14 +613,21 @@ export default function EditVehiclePage() {
       if (d?.id && d?.country_id) destCountryById.set(String(d.id), String(d.country_id));
     });
 
-    const allRoutes = (((routesRes.data as any[]) || []) as RouteRow[]).filter((r) => r.is_active !== false);
+    const allRoutes = (((routesRes.data as any[]) || []) as RouteRow[]).filter(
+      (r) => r.is_active !== false
+    );
 
-    // If we know operator country, apply it; else type-only (still safe)
-    const filteredRoutes = operatorCountryId
-      ? allRoutes.filter((r) => inferRouteCountryId(r, pickupCountryById, destCountryById) === operatorCountryId)
+    // Always keep unfiltered for correct display of assigned routes
+    setRoutesAll(allRoutes);
+
+    // Filter ONLY for add dropdown
+    const filteredForAdd = opCountry
+      ? allRoutes.filter(
+          (r) => inferRouteCountryId(r, pickupCountryById, destCountryById) === opCountry
+        )
       : allRoutes;
 
-    setRoutesAll(filteredRoutes);
+    setRoutesForAdd(filteredForAdd);
 
     const rvas = ((rvaRes.data as any[]) || []) as RVA[];
     setRouteAssignments(rvas);
@@ -617,10 +657,10 @@ export default function EditVehiclePage() {
   );
 
   const addableRoutes = useMemo(() => {
-    return routesAll
+    return routesForAdd
       .filter((r) => !assignedRouteIds.has(r.id))
       .sort((a, b) => routeDisplayName(a).localeCompare(routeDisplayName(b)));
-  }, [routesAll, assignedRouteIds]);
+  }, [routesForAdd, assignedRouteIds]);
 
   async function addRouteAssignment() {
     if (!vehicleId || !operatorId || !typeId || !addingRouteId || isNew) return;
@@ -708,7 +748,8 @@ export default function EditVehiclePage() {
     if (!Number.isFinite(mv) || mv <= 0) return setRoutesMsg("Min value override must be > 0.");
 
     const th =
-      next.min_val_threshold_override == null || String(next.min_val_threshold_override).trim() === ""
+      next.min_val_threshold_override == null ||
+      String(next.min_val_threshold_override).trim() === ""
         ? null
         : Number(next.min_val_threshold_override);
 
@@ -727,7 +768,9 @@ export default function EditVehiclePage() {
       return;
     }
 
-    setRouteAssignments((prev) => prev.map((a) => (a.id === rvaId ? { ...a, ...(next as any) } : a)));
+    setRouteAssignments((prev) =>
+      prev.map((a) => (a.id === rvaId ? { ...a, ...(next as any) } : a))
+    );
     setRoutesMsg("Saved ✅");
   }
 
@@ -838,7 +881,9 @@ export default function EditVehiclePage() {
         <form onSubmit={onSave} className="space-y-5">
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="lg:col-span-2">
-              <label className="block text-sm text-neutral-600 mb-1">Operator *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Operator *
+              </label>
               {operatorLocked ? (
                 <div className="inline-flex rounded-full bg-neutral-100 border px-3 py-2 text-sm">
                   {operatorName || psUser?.operator_id}
@@ -863,7 +908,9 @@ export default function EditVehiclePage() {
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Transport Type *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Transport Type *
+              </label>
               <select
                 className="w-full border rounded-lg px-3 py-2"
                 value={typeId}
@@ -880,14 +927,22 @@ export default function EditVehiclePage() {
             </div>
 
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Vehicle Name *</label>
-              <input className="w-full border rounded-lg px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} />
+              <label className="block text-sm text-neutral-600 mb-1">
+                Vehicle Name *
+              </label>
+              <input
+                className="w-full border rounded-lg px-3 py-2"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
             </div>
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Seats *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Seats *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -895,8 +950,11 @@ export default function EditVehiclePage() {
                 onChange={(e) => setMinSeats(e.target.value)}
               />
             </div>
+
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Max Seats *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Max Seats *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="numeric"
@@ -904,8 +962,11 @@ export default function EditVehiclePage() {
                 onChange={(e) => setMaxSeats(e.target.value)}
               />
             </div>
+
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Value *</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Value *
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -913,8 +974,11 @@ export default function EditVehiclePage() {
                 onChange={(e) => setMinValue(e.target.value)}
               />
             </div>
+
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Min Value Threshold</label>
+              <label className="block text-sm text-neutral-600 mb-1">
+                Min Value Threshold
+              </label>
               <input
                 className="w-full border rounded-lg px-3 py-2"
                 inputMode="decimal"
@@ -927,27 +991,47 @@ export default function EditVehiclePage() {
           {/* quick display of base per seat */}
           {basePerSeat != null && (
             <div className="text-sm text-neutral-600">
-              Current vehicle base price: <span className="font-medium">£{basePerSeat}</span> per seat (minvalue/minseats)
+              Current vehicle base price:{" "}
+              <span className="font-medium">£{basePerSeat}</span> per seat
+              (minvalue/minseats)
             </div>
           )}
 
           <div>
-            <label className="block text-sm text-neutral-600 mb-1">Description</label>
-            <textarea className="w-full border rounded-lg px-3 py-2" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+            <label className="block text-sm text-neutral-600 mb-1">
+              Description
+            </label>
+            <textarea
+              className="w-full border rounded-lg px-3 py-2"
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-neutral-600 mb-1">Picture</label>
-              <input type="file" accept="image/*" onChange={(e) => setPictureFile(e.target.files?.[0] || null)} />
+              <label className="block text-sm text-neutral-600 mb-1">
+                Picture
+              </label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setPictureFile(e.target.files?.[0] || null)}
+              />
               <p className="text-xs text-neutral-500 mt-1">
-                Stored in bucket <code>images</code> at <code>vehicles/&lt;vehicleId&gt;/</code>
+                Stored in bucket <code>images</code> at{" "}
+                <code>vehicles/&lt;vehicleId&gt;/</code>
               </p>
             </div>
 
             <div className="flex items-end">
               <label className="inline-flex items-center gap-2">
-                <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={active}
+                  onChange={(e) => setActive(e.target.checked)}
+                />
                 <span className="text-sm">Active</span>
               </label>
             </div>
@@ -969,7 +1053,10 @@ export default function EditVehiclePage() {
             >
               {saving ? "Saving…" : isNew ? "Create Vehicle" : "Update Vehicle"}
             </button>
-            <Link href="/operator-admin/vehicles" className="inline-flex rounded-full px-4 py-2 border text-sm">
+            <Link
+              href="/operator-admin/vehicles"
+              className="inline-flex rounded-full px-4 py-2 border text-sm"
+            >
               Cancel
             </Link>
             {msg && <span className="text-sm text-neutral-600">{msg}</span>}
@@ -995,7 +1082,9 @@ export default function EditVehiclePage() {
             >
               <option value="">Add captain…</option>
               {staffOptions.map((s) => {
-                const nm = `${s.last_name || ""} ${s.first_name || ""}`.trim() || "Unnamed";
+                const nm =
+                  `${s.last_name || ""} ${s.first_name || ""}`.trim() ||
+                  "Unnamed";
                 return (
                   <option key={s.id} value={s.id}>
                     {nm}
@@ -1050,7 +1139,8 @@ export default function EditVehiclePage() {
                   sortedAssignments.map((r) => {
                     const st = staffById.get(r.staff_id);
                     const nm = st
-                      ? `${st.last_name || ""} ${st.first_name || ""}`.trim() || "Unnamed"
+                      ? `${st.last_name || ""} ${st.first_name || ""}`.trim() ||
+                        "Unnamed"
                       : `#${r.staff_id.slice(0, 8)}`;
                     return (
                       <tr key={r.id} className="border-t">
@@ -1060,7 +1150,9 @@ export default function EditVehiclePage() {
                           <select
                             className="border rounded px-2 py-1"
                             value={r.priority}
-                            onChange={(e) => updatePriority(r.id, Number(e.target.value))}
+                            onChange={(e) =>
+                              updatePriority(r.id, Number(e.target.value))
+                            }
                           >
                             {[1, 2, 3, 4, 5].map((n) => (
                               <option key={n} value={n}>
@@ -1074,13 +1166,20 @@ export default function EditVehiclePage() {
                             <input
                               type="checkbox"
                               checked={r.is_lead_eligible}
-                              onChange={() => toggleEligible(r.id, r.is_lead_eligible)}
+                              onChange={() =>
+                                toggleEligible(r.id, r.is_lead_eligible)
+                              }
                             />
-                            <span className="text-sm">{r.is_lead_eligible ? "Yes" : "No"}</span>
+                            <span className="text-sm">
+                              {r.is_lead_eligible ? "Yes" : "No"}
+                            </span>
                           </label>
                         </td>
                         <td className="p-3 text-right">
-                          <button className="px-3 py-1 rounded border" onClick={() => removeRel(r.id)}>
+                          <button
+                            className="px-3 py-1 rounded border"
+                            onClick={() => removeRel(r.id)}
+                          >
                             Remove
                           </button>
                         </td>
@@ -1098,12 +1197,18 @@ export default function EditVehiclePage() {
       {!isNew && (
         <section className="rounded-2xl border bg-white p-5 shadow space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-lg font-semibold">Journeys (Route assignments)</h2>
-            {routesMsg && <span className="text-sm text-neutral-600">{routesMsg}</span>}
+            <h2 className="text-lg font-semibold">
+              Journeys (Route assignments)
+            </h2>
+
+            {routesMsg && (
+              <span className="text-sm text-neutral-600">{routesMsg}</span>
+            )}
+
             {!operatorCountryId && (
               <span className="text-xs text-amber-700">
-                Note: operator country unknown (operators.country_id not available) — filtering by vehicle
-                type only.
+                Note: operator country unknown (operators.country_id not
+                available) — filtering by vehicle type only.
               </span>
             )}
           </div>
@@ -1158,6 +1263,7 @@ export default function EditVehiclePage() {
                   <th className="text-right p-3">Actions</th>
                 </tr>
               </thead>
+
               <tbody>
                 {routeAssignments.length === 0 ? (
                   <tr>
@@ -1170,17 +1276,35 @@ export default function EditVehiclePage() {
                     const r = routeById.get(a.route_id);
                     const e = (editRva[a.id] || a) as any;
 
-                    const ms = safeNum(e.minseats_override ?? a.minseats_override, 0);
-                    const mv = safeNum(e.minvalue_override ?? a.minvalue_override, 0);
-                    const base = ms > 0 && mv > 0 ? Math.ceil(mv / ms) : null;
+                    const ms = safeNum(
+                      e.minseats_override ?? a.minseats_override,
+                      0
+                    );
+                    const mv = safeNum(
+                      e.minvalue_override ?? a.minvalue_override,
+                      0
+                    );
+                    const base =
+                      ms > 0 && mv > 0 ? Math.ceil(mv / ms) : null;
+
+                    // FIX: avoid showing the same route label twice
+                    const topLabel = routeDisplayName(r);
+                    const subLabel =
+                      r?.pickup?.name && r?.destination?.name
+                        ? `${r.pickup.name} → ${r.destination.name}`.trim()
+                        : "";
+                    const showSub =
+                      !!subLabel &&
+                      topLabel !== "—" &&
+                      subLabel.toLowerCase() !== topLabel.toLowerCase();
 
                     return (
                       <tr key={a.id} className="border-t">
                         <td className="p-3">
-                          <div className="font-medium">{routeDisplayName(r)}</div>
-                          {r?.pickup?.name && r?.destination?.name && (
+                          <div className="font-medium">{topLabel}</div>
+                          {showSub && (
                             <div className="text-xs text-neutral-500">
-                              {r.pickup.name} → {r.destination.name}
+                              {subLabel}
                             </div>
                           )}
                         </td>
@@ -1191,10 +1315,15 @@ export default function EditVehiclePage() {
                               type="checkbox"
                               checked={!!a.preferred}
                               onChange={(ev) =>
-                                setPreferredForThisVehicleOnRoute(a.route_id, ev.target.checked)
+                                setPreferredForThisVehicleOnRoute(
+                                  a.route_id,
+                                  ev.target.checked
+                                )
                               }
                             />
-                            <span className="text-sm">{a.preferred ? "Yes" : "No"}</span>
+                            <span className="text-sm">
+                              {a.preferred ? "Yes" : "No"}
+                            </span>
                           </label>
                         </td>
 
@@ -1204,7 +1333,9 @@ export default function EditVehiclePage() {
                             inputMode="numeric"
                             value={String(e.minseats_override ?? "")}
                             onChange={(ev) =>
-                              patchEditRva(a.id, { minseats_override: Number(ev.target.value) })
+                              patchEditRva(a.id, {
+                                minseats_override: Number(ev.target.value),
+                              })
                             }
                           />
                         </td>
@@ -1215,7 +1346,9 @@ export default function EditVehiclePage() {
                             inputMode="numeric"
                             value={String(e.maxseats_override ?? "")}
                             onChange={(ev) =>
-                              patchEditRva(a.id, { maxseats_override: Number(ev.target.value) })
+                              patchEditRva(a.id, {
+                                maxseats_override: Number(ev.target.value),
+                              })
                             }
                           />
                         </td>
@@ -1226,7 +1359,9 @@ export default function EditVehiclePage() {
                             inputMode="decimal"
                             value={String(e.minvalue_override ?? "")}
                             onChange={(ev) =>
-                              patchEditRva(a.id, { minvalue_override: Number(ev.target.value) })
+                              patchEditRva(a.id, {
+                                minvalue_override: Number(ev.target.value),
+                              })
                             }
                           />
                         </td>
@@ -1239,13 +1374,17 @@ export default function EditVehiclePage() {
                             onChange={(ev) =>
                               patchEditRva(a.id, {
                                 min_val_threshold_override:
-                                  ev.target.value.trim() === "" ? null : Number(ev.target.value),
+                                  ev.target.value.trim() === ""
+                                    ? null
+                                    : Number(ev.target.value),
                               })
                             }
                           />
                         </td>
 
-                        <td className="p-3">{base == null ? "—" : `£${base}`}</td>
+                        <td className="p-3">
+                          {base == null ? "—" : `£${base}`}
+                        </td>
 
                         <td className="p-3 text-right whitespace-nowrap">
                           <button
@@ -1255,6 +1394,7 @@ export default function EditVehiclePage() {
                           >
                             Save
                           </button>
+
                           <button
                             className="px-3 py-1 rounded border mr-2"
                             onClick={() => resetOverridesToVehicle(a.id)}
@@ -1262,6 +1402,7 @@ export default function EditVehiclePage() {
                           >
                             Reset
                           </button>
+
                           <button
                             className="px-3 py-1 rounded border"
                             onClick={() => removeRouteAssignment(a.id)}
