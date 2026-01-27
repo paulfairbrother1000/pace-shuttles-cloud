@@ -48,12 +48,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const id = params.id;
 
-    // Try pickups first
-    const { data: pickup } = await supabase
-      .from("pickups")
-      .select("id, name, description, picture_url")
-      .eq("id", id)
-      .maybeSingle();
+const { data: pickup, error: pErr } = await supabase
+  .from("pickup_points")
+  .select("id, name, picture_url")
+  .eq("id", id)
+  .eq("active", true)
+  .maybeSingle();
 
     if (pickup) {
       return NextResponse.json({ kind: "pickup", ...pickup });
@@ -61,7 +61,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const { data: dest } = await supabase
       .from("destinations")
-      .select("id, name, description, picture_url, url")
+      .select("id, name, picture_url")
       .eq("id", id)
       .maybeSingle();
 
