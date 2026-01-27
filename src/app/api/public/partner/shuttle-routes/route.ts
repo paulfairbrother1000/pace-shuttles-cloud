@@ -143,15 +143,18 @@ export async function GET(req: Request) {
 
     // Load assignments + vehicles to implement “journeys only” filter:
     // must have active assignment to an active vehicle with capacity (>0) AND vehicle type matches operatorTypeId
-    const { data: assignments, error: aErr } = await supabase
-      .from("assignments")
-      .select("route_id, vehicle_id, is_active")
-      .in("route_id", routeIds)
-      .neq("is_active", false);
+const { data: assignments, error: aErr } = await supabase
+  .from("route_vehicle_assignments")
+  .select("route_id, vehicle_id, is_active, preferred")
+  .in("route_id", routeIds)
+  .neq("is_active", false);
 
-    if (aErr) throw aErr;
+if (aErr) throw aErr;
 
-    const vehicleIds = Array.from(new Set((assignments ?? []).map(a => a.vehicle_id).filter(Boolean))) as string[];
+const vehicleIds = Array.from(
+  new Set((assignments ?? []).map((a: any) => a.vehicle_id).filter(Boolean))
+) as string[];
+
     if (!vehicleIds.length) return NextResponse.json({ tiles: [] });
 
     const { data: vehicles, error: vErr } = await supabase
