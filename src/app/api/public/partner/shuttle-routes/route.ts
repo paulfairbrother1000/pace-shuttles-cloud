@@ -7,6 +7,9 @@ export const runtime = "nodejs";
 const WINDOW_DAYS = 60;
 const MIN_LEAD_HOURS = 25;
 
+// bump this whenever you deploy, so you can see production is running the right build
+const BUILD_TAG = "partner_shuttle_routes_v4_rva_pickup_points";
+
 function must(name: string) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env var: ${name}`);
@@ -104,10 +107,10 @@ export async function GET(req: Request) {
     const operatorKey = req.headers.get("x-operator-key")?.trim();
 
     if (!operatorId) {
-      return NextResponse.json({ error: "Missing operator_id" }, { status: 400 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Missing operator_id" }, { status: 400 });
     }
     if (!operatorKey) {
-      return NextResponse.json({ error: "Missing x-operator-key" }, { status: 401 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Missing x-operator-key" }, { status: 401 });
     }
 
     // Use service role on server routes (never expose to client)
@@ -125,25 +128,22 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (opErr || !operator) {
-      return NextResponse.json({ error: "Invalid operator_id" }, { status: 401 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Invalid operator_id" }, { status: 401 });
     }
     if (!operator.partner_api_key_hash) {
-      return NextResponse.json({ error: "Operator not enabled for partner API" }, { status: 403 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Operator not enabled for partner API" }, { status: 403 });
     }
 
     const providedHash = sha256Hex(operatorKey);
     if (!safeEqualHex(providedHash, operator.partner_api_key_hash)) {
-      return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Unauthorised" }, { status: 401 });
     }
 
     if (!operator.country_id) {
-      return NextResponse.json({ error: "Operator has no country_id" }, { status: 409 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Operator has no country_id" }, { status: 409 });
     }
 
     // 2) Derive operator vehicle type (must be 1:1)
-    // This assumes you have:
-    // - vehicles table with operator_id, type_id, active, maxseats
-    // - transport_types table with id, name
     const { data: opVehicles, error: vErr } = await supabase
       .from("vehicles")
       .select("id, type_id, active")
@@ -151,11 +151,15 @@ export async function GET(req: Request) {
       .neq("active", false);
 
     if (vErr) throw vErr;
-    const typeIds = Array.from(new Set((opVehicles ?? []).map(v => v.type_id).filter(Boolean))) as string[];
+    const typeIds = Array.from(new Set((opVehicles ?? []).map((v: any) => v.type_id).filter(Boolean))) as string[];
 
     if (typeIds.length !== 1) {
       return NextResponse.json(
-        { error: "Operator vehicle type is not 1:1. Expected exactly one type_id for operator vehicles.", typeIds },
+        {
+          build_tag: BUILD_TAG,
+          error: "Operator vehicle type is not 1:1. Expected exactly one type_id for operator vehicles.",
+          typeIds,
+        },
         { status: 409 }
       );
     }
@@ -168,7 +172,7 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (tErr || !ttype?.name) {
-      return NextResponse.json({ error: "Could not derive operator vehicle type name" }, { status: 500 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Could not derive operator vehicle type name" }, { status: 500 });
     }
     const vehicleTypeName = ttype.name;
 
@@ -180,11 +184,10 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (cErr || !country?.name) {
-      return NextResponse.json({ error: "Could not load operator country" }, { status: 500 });
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Could not load operator country" }, { status: 500 });
     }
 
-    // 4) Identify candidate routes for that country + that transport type
-    // We mirror your homepage’s “verifiedRoutes”: must have active assignment to active vehicle with capacity
+    // 4) Identify candidate routes for that country
     const { data: routes, error: rErr } = await supabase
       .from("routes")
       .select(`
@@ -205,18 +208,26 @@ export async function GET(req: Request) {
 
     if (rErr) throw rErr;
 
-    const routeIds = (routes ?? []).map(r => r.id);
-    if (!routeIds.length) return NextResponse.json({ tiles: [] });
+    const routeIds = (routes ?? []).map((r: any) => r.id);
+    if (!routeIds.length) return NextResponse.json({ build_tag: BUILD_TAG, tiles: [] });
 
+    // IMPORTANT: in this DB the table is route_vehicle_assignments (not assignments)
     const { data: assignments, error: aErr } = await supabase
-      .from("assignments")
-      .select("route_id, vehicle_id, is_active")
+      .from("route_vehicle_assignments")
+      .select("route_id, vehicle_id, is_active, preferred")
       .in("route_id", routeIds)
       .neq("is_active", false);
 
     if (aErr) throw aErr;
 
-    const assignedVehicleIds = Array.from(new Set((assignments ?? []).map(a => a.vehicle_id).filter(Boolean))) as string[];
+    const assignedVehicleIds = Array.from(
+      new Set((assignments ?? []).map((a: any) => a.vehicle_id).filter(Boolean))
+    ) as string[];
+
+    if (!assignedVehicleIds.length) {
+      // no assigned vehicles anywhere => no journeys
+      return NextResponse.json({ build_tag: BUILD_TAG, tiles: [] });
+    }
 
     const { data: assignedVehicles, error: avErr } = await supabase
       .from("vehicles")
@@ -228,38 +239,46 @@ export async function GET(req: Request) {
 
     const activeCapacityVehicleIds = new Set(
       (assignedVehicles ?? [])
-        .filter(v => (v.type_id === operatorTypeId) && Number(v.maxseats ?? 0) > 0)
-        .map(v => v.id)
+        .filter((v: any) => (v.type_id === operatorTypeId) && Number(v.maxseats ?? 0) > 0)
+        .map((v: any) => v.id)
     );
 
     const routesWithActiveVehicle = new Set<string>();
     for (const a of assignments ?? []) {
-      if (activeCapacityVehicleIds.has(a.vehicle_id)) routesWithActiveVehicle.add(a.route_id);
+      if (activeCapacityVehicleIds.has((a as any).vehicle_id)) routesWithActiveVehicle.add((a as any).route_id);
     }
 
-    const candidateRoutes = (routes ?? []).filter(r => routesWithActiveVehicle.has(r.id));
+    const candidateRoutes = (routes ?? []).filter((r: any) => routesWithActiveVehicle.has(r.id));
+
+    if (!candidateRoutes.length) {
+      return NextResponse.json({ build_tag: BUILD_TAG, tiles: [] });
+    }
 
     // 5) Fetch pickups + destinations for those routes
-    const pickupIds = Array.from(new Set(candidateRoutes.map(r => r.pickup_id).filter(Boolean))) as string[];
-    const destIds = Array.from(new Set(candidateRoutes.map(r => r.destination_id).filter(Boolean))) as string[];
+    const pickupIds = Array.from(new Set(candidateRoutes.map((r: any) => r.pickup_id).filter(Boolean))) as string[];
+    const destIds = Array.from(new Set(candidateRoutes.map((r: any) => r.destination_id).filter(Boolean))) as string[];
 
-const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = await Promise.all([
-  supabase.from("pickup_points").select("id, name, picture_url").in("id", pickupIds),
-  supabase.from("destinations").select("id, name, picture_url").in("id", destIds),
-]);
+    // IMPORTANT: in this DB pickups are pickup_points (not pickups)
+    const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = await Promise.all([
+      supabase.from("pickup_points").select("id, name, picture_url").in("id", pickupIds),
+      supabase.from("destinations").select("id, name, picture_url").in("id", destIds),
+    ]);
 
     if (pErr) throw pErr;
     if (dErr) throw dErr;
 
-    const pickupById = new Map((pickups ?? []).map(p => [p.id, p]));
-    const destById = new Map((destinations ?? []).map(d => [d.id, d]));
+    const pickupById = new Map((pickups ?? []).map((p: any) => [p.id, p]));
+    const destById = new Map((destinations ?? []).map((d: any) => [d.id, d]));
 
     // 6) Scan occurrences and find cheapest via /api/quote (qty=1)
     const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
     const minDay = startOfDay(nowPlus25h);
     const maxDay = addDays(minDay, WINDOW_DAYS);
 
-    async function quoteUnitMinor(routeId: string, dateISO: string): Promise<null | { unitMinor: number; currency: string; max_qty_at_price?: number | null }> {
+    async function quoteUnitMinor(
+      routeId: string,
+      dateISO: string
+    ): Promise<null | { unitMinor: number; currency: string; max_qty_at_price?: number | null }> {
       const sp = new URLSearchParams({
         route_id: routeId,
         date: dateISO,
@@ -271,7 +290,7 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
       if (!res.ok) return null;
 
       const json = (await res.json().catch(() => null)) as QuoteOk | null;
-      if (!json || (json.availability !== "available")) return null;
+      if (!json || json.availability !== "available") return null;
 
       const unitMinor =
         (json.unit_cents != null)
@@ -289,11 +308,12 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
 
     // throttle quotes so we don’t hammer /api/quote
     async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
-      const out: R[] = [];
+      const out: R[] = new Array(items.length);
       let i = 0;
       const workers = Array.from({ length: Math.max(1, limit) }, async () => {
-        while (i < items.length) {
+        while (true) {
           const idx = i++;
+          if (idx >= items.length) break;
           out[idx] = await fn(items[idx]);
         }
       });
@@ -307,13 +327,13 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
 
     const tiles: Tile[] = [];
 
-    for (const r of candidateRoutes) {
+    for (const r of candidateRoutes as any[]) {
       const pu = r.pickup_id ? pickupById.get(r.pickup_id) : null;
       const de = r.destination_id ? destById.get(r.destination_id) : null;
 
       const pickupName = pu?.name ?? "—";
       const destName = de?.name ?? "—";
-      const routeName = (r.route_name && r.route_name.trim()) ? r.route_name : `${pickupName} to ${destName}`;
+      const routeName = (r.route_name && String(r.route_name).trim()) ? r.route_name : `${pickupName} to ${destName}`;
 
       // generate dates
       const kind = parseFrequency(r.frequency);
@@ -340,6 +360,8 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
         }
       }
 
+      if (!dates.length) continue;
+
       // Call quote for these dates and take min
       const quotes = await mapWithConcurrency(dates, 6, async (dateISO) => {
         const q = await quoteUnitMinor(r.id, dateISO);
@@ -347,12 +369,20 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
       });
 
       let best: { dateISO: string; unitMinor: number; currency: string; max_qty_at_price?: number | null } | null = null;
-      for (const item of quotes) {
+      for (const item of quotes as any[]) {
         if (!item.q) continue;
         if (!best || item.q.unitMinor < best.unitMinor) {
-          best = { dateISO: item.dateISO, unitMinor: item.q.unitMinor, currency: item.q.currency, max_qty_at_price: item.q.max_qty_at_price };
+          best = {
+            dateISO: item.dateISO,
+            unitMinor: item.q.unitMinor,
+            currency: item.q.currency,
+            max_qty_at_price: item.q.max_qty_at_price,
+          };
         }
       }
+
+      // IMPORTANT: for partner/marketing tiles, only include journeys that have a bookable priced departure in window
+      if (!best) continue;
 
       tiles.push({
         route_id: r.id,
@@ -362,27 +392,21 @@ const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = aw
         pickup: { id: r.pickup_id ?? "", name: pickupName, image_url: pu?.picture_url ?? null },
         destination: { id: r.destination_id ?? "", name: destName, image_url: de?.picture_url ?? null },
         schedule: r.frequency ?? null,
-        cheapest: best
-          ? {
-              unit_minor: best.unitMinor,
-              currency: best.currency,
-              display_major_rounded_up: unitMinorToDisplayMajorCeil(best.unitMinor),
-              applies_to: { date_iso: best.dateISO, pickup_time: r.pickup_time ?? null },
-              max_qty_at_price: best.max_qty_at_price ?? null,
-            }
-          : null,
+        cheapest: {
+          unit_minor: best.unitMinor,
+          currency: best.currency,
+          display_major_rounded_up: unitMinorToDisplayMajorCeil(best.unitMinor),
+          applies_to: { date_iso: best.dateISO, pickup_time: r.pickup_time ?? null },
+          max_qty_at_price: best.max_qty_at_price ?? null,
+        },
       });
     }
 
-    // sort cheapest first (nulls last)
-    tiles.sort((a, b) => {
-      const aa = a.cheapest?.unit_minor ?? Number.POSITIVE_INFINITY;
-      const bb = b.cheapest?.unit_minor ?? Number.POSITIVE_INFINITY;
-      return aa - bb;
-    });
+    // sort cheapest first
+    tiles.sort((a, b) => (a.cheapest?.unit_minor ?? 9e15) - (b.cheapest?.unit_minor ?? 9e15));
 
-    return NextResponse.json({ tiles });
+    return NextResponse.json({ build_tag: BUILD_TAG, tiles });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Unknown error" }, { status: 500 });
+    return NextResponse.json({ build_tag: BUILD_TAG, error: e?.message ?? "Unknown error" }, { status: 500 });
   }
 }
