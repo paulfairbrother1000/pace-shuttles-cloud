@@ -148,9 +148,9 @@ const { data: assignments, error: aErr } = await supabase
   .select("route_id, vehicle_id, is_active, preferred")
   .in("route_id", routeIds)
   .neq("is_active", false);
-
+ 
 if (aErr) throw aErr;
-
+ 
 const vehicleIds = Array.from(
   new Set((assignments ?? []).map((a: any) => a.vehicle_id).filter(Boolean))
 ) as string[];
