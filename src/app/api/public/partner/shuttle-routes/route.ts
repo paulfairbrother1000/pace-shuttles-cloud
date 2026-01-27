@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { requirePartnerOperator } from "@/lib/partnerAuth";
 
 export const runtime = "nodejs";
 
@@ -16,49 +16,20 @@ function must(name: string) {
   return v;
 }
 
-function sha256Hex(s: string) {
-  return crypto.createHash("sha256").update(s).digest("hex");
-}
+function addHours(d: Date, n: number) { const x = new Date(d); x.setHours(x.getHours() + n); return x; }
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(12,0,0,0); return x; }
 
-function safeEqualHex(a: string, b: string) {
-  // constant-time compare
-  const aa = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  if (aa.length !== bb.length) return false;
-  return crypto.timingSafeEqual(aa, bb);
-}
-
-function addHours(d: Date, n: number) {
-  const x = new Date(d);
-  x.setHours(x.getHours() + n);
-  return x;
-}
-function addDays(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(12, 0, 0, 0);
-  return x;
-}
 function withinSeason(day: Date, from?: string | null, to?: string | null): boolean {
   if (!from && !to) return true;
   const t = startOfDay(day).getTime();
-  if (from) {
-    const f = new Date(from + "T12:00:00").getTime();
-    if (t < f) return false;
-  }
-  if (to) {
-    const tt = new Date(to + "T12:00:00").getTime();
-    if (t > tt) return false;
-  }
+  if (from) { const f = new Date(from + "T12:00:00").getTime(); if (t < f) return false; }
+  if (to)   { const tt = new Date(to + "T12:00:00").getTime(); if (t > tt) return false; }
   return true;
 }
 
-type Freq = { type: "WEEKLY"; weekday: number } | { type: "DAILY" } | { type: "ADHOC" };
 const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+type Freq = { type: "WEEKLY"; weekday: number } | { type: "DAILY" } | { type: "ADHOC" };
 function parseFrequency(freq: string | null | undefined): Freq {
   if (!freq) return { type: "ADHOC" };
   const s = (freq || "").toLowerCase().trim();
@@ -68,10 +39,8 @@ function parseFrequency(freq: string | null | undefined): Freq {
   return { type: "ADHOC" };
 }
 
-// Mirrors your homepage rounding behaviour
-function unitMinorToDisplayMajorCeil(unitMinor: number) {
-  return Math.ceil(unitMinor / 100);
-}
+function iso(d: Date) { return d.toISOString().slice(0, 10); }
+function unitMinorToDisplayMajorCeil(unitMinor: number) { return Math.ceil(unitMinor / 100); }
 
 type QuoteOk = {
   availability: "available" | "no_journey" | "no_vehicles" | "sold_out" | "insufficient_capacity_for_party";
@@ -90,7 +59,7 @@ type Tile = {
   pickup: { id: string; name: string; image_url: string | null };
   destination: { id: string; name: string; image_url: string | null };
   schedule: string | null;
-  cheapest: null | {
+  cheapest: {
     unit_minor: number;
     currency: string;
     display_major_rounded_up: number;
@@ -98,6 +67,20 @@ type Tile = {
     max_qty_at_price?: number | null;
   };
 };
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.max(1, limit) }, async () => {
+    while (true) {
+      const idx = i++;
+      if (idx >= items.length) break;
+      out[idx] = await fn(items[idx]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
 
 export async function GET(req: Request) {
   try {
@@ -113,7 +96,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ build_tag: BUILD_TAG, error: "Missing x-operator-key" }, { status: 401 });
     }
 
-    // Use service role on server routes (never expose to client)
+    const origin = new URL(req.url).origin;
+
     const supabase = createClient(
       must("SUPABASE_URL"),
       must("SUPABASE_SERVICE_ROLE_KEY"),
@@ -147,12 +131,13 @@ export async function GET(req: Request) {
     const { data: opVehicles, error: vErr } = await supabase
       .from("vehicles")
       .select("id, type_id, active")
-      .eq("operator_id", operatorId)
+      .eq("operator_id", operator.id)
       .neq("active", false);
 
     if (vErr) throw vErr;
     const typeIds = Array.from(new Set((opVehicles ?? []).map((v: any) => v.type_id).filter(Boolean))) as string[];
 
+    const typeIds = Array.from(new Set((opVehicles ?? []).map(v => v.type_id).filter(Boolean))) as string[];
     if (typeIds.length !== 1) {
       return NextResponse.json(
         {
@@ -165,7 +150,7 @@ export async function GET(req: Request) {
     }
     const operatorTypeId = typeIds[0];
 
-    const { data: ttype, error: tErr } = await supabase
+    const { data: vehicleTypeRow } = await supabase
       .from("transport_types")
       .select("id, name")
       .eq("id", operatorTypeId)
@@ -176,10 +161,10 @@ export async function GET(req: Request) {
     }
     const vehicleTypeName = ttype.name;
 
-    // 3) Fetch country name
-    const { data: country, error: cErr } = await supabase
+    // Country name
+    const { data: countryRow } = await supabase
       .from("countries")
-      .select("id, name, timezone")
+      .select("id, name")
       .eq("id", operator.country_id)
       .maybeSingle();
 
@@ -190,19 +175,7 @@ export async function GET(req: Request) {
     // 4) Identify candidate routes for that country
     const { data: routes, error: rErr } = await supabase
       .from("routes")
-      .select(`
-        id,
-        route_name,
-        country_id,
-        pickup_id,
-        destination_id,
-        pickup_time,
-        frequency,
-        season_from,
-        season_to,
-        is_active,
-        transport_type
-      `)
+      .select("id, route_name, country_id, pickup_id, destination_id, pickup_time, frequency, season_from, season_to, is_active")
       .eq("country_id", operator.country_id)
       .neq("is_active", false);
 
@@ -218,7 +191,7 @@ export async function GET(req: Request) {
       .in("route_id", routeIds)
       .neq("is_active", false);
 
-    if (aErr) throw aErr;
+    if (!vehicleIds.length) return NextResponse.json({ tiles: [] });
 
     const assignedVehicleIds = Array.from(
       new Set((assignments ?? []).map((a: any) => a.vehicle_id).filter(Boolean))
@@ -232,10 +205,10 @@ export async function GET(req: Request) {
     const { data: assignedVehicles, error: avErr } = await supabase
       .from("vehicles")
       .select("id, type_id, active, maxseats")
-      .in("id", assignedVehicleIds)
+      .in("id", vehicleIds)
       .neq("active", false);
 
-    if (avErr) throw avErr;
+    if (vErr) throw vErr;
 
     const activeCapacityVehicleIds = new Set(
       (assignedVehicles ?? [])
@@ -243,7 +216,7 @@ export async function GET(req: Request) {
         .map((v: any) => v.id)
     );
 
-    const routesWithActiveVehicle = new Set<string>();
+    const routesWithEligibleVehicles = new Set<string>();
     for (const a of assignments ?? []) {
       if (activeCapacityVehicleIds.has((a as any).vehicle_id)) routesWithActiveVehicle.add((a as any).route_id);
     }
@@ -288,7 +261,6 @@ export async function GET(req: Request) {
 
       const res = await fetch(`${origin}/api/quote?${sp.toString()}`, { cache: "no-store" });
       if (!res.ok) return null;
-
       const json = (await res.json().catch(() => null)) as QuoteOk | null;
       if (!json || json.availability !== "available") return null;
 
@@ -335,29 +307,25 @@ export async function GET(req: Request) {
       const destName = de?.name ?? "—";
       const routeName = (r.route_name && String(r.route_name).trim()) ? r.route_name : `${pickupName} to ${destName}`;
 
-      // generate dates
+      // Build occurrence dates
       const kind = parseFrequency(r.frequency);
       const dates: string[] = [];
 
       if (kind.type === "DAILY") {
         for (let d = new Date(minDay); d <= maxDay; d = addDays(d, 1)) {
           if (!withinSeason(d, r.season_from, r.season_to)) continue;
-          dates.push(toISO(d));
+          dates.push(iso(d));
         }
       } else if (kind.type === "WEEKLY") {
-        // next matching weekday from minDay
         const start = new Date(minDay);
         const diff = (kind.weekday - start.getDay() + 7) % 7;
         start.setDate(start.getDate() + diff);
         for (let d = new Date(start); d <= maxDay; d = addDays(d, 7)) {
           if (!withinSeason(d, r.season_from, r.season_to)) continue;
-          dates.push(toISO(d));
+          dates.push(iso(d));
         }
       } else {
-        // ADHOC: only consider first bookable day (minDay) if in season
-        if (withinSeason(minDay, r.season_from, r.season_to)) {
-          dates.push(toISO(minDay));
-        }
+        if (withinSeason(minDay, r.season_from, r.season_to)) dates.push(iso(minDay));
       }
 
       if (!dates.length) continue;
@@ -386,7 +354,7 @@ export async function GET(req: Request) {
 
       tiles.push({
         route_id: r.id,
-        country: country.name,
+        country: countryName,
         vehicle_type: vehicleTypeName,
         route_name: routeName,
         pickup: { id: r.pickup_id ?? "", name: pickupName, image_url: pu?.picture_url ?? null },

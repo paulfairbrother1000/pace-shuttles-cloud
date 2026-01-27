@@ -64,7 +64,7 @@ const { data: pickup, error: pErr } = await supabase
       .select("id, name, picture_url")
       .eq("id", id)
       .maybeSingle();
-
+  
     if (dest) {
       return NextResponse.json({ kind: "destination", ...dest });
     }
