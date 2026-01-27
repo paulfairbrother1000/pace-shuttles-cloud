@@ -243,10 +243,11 @@ export async function GET(req: Request) {
     const pickupIds = Array.from(new Set(candidateRoutes.map(r => r.pickup_id).filter(Boolean))) as string[];
     const destIds = Array.from(new Set(candidateRoutes.map(r => r.destination_id).filter(Boolean))) as string[];
 
-    const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = await Promise.all([
-      supabase.from("pickups").select("id, name, picture_url").in("id", pickupIds),
-      supabase.from("destinations").select("id, name, picture_url").in("id", destIds),
-    ]);
+const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = await Promise.all([
+  supabase.from("pickup_points").select("id, name, picture_url").in("id", pickupIds),
+  supabase.from("destinations").select("id, name, picture_url").in("id", destIds),
+]);
+
     if (pErr) throw pErr;
     if (dErr) throw dErr;
 
