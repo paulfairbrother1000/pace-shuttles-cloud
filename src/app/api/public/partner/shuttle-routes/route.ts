@@ -1,15 +1,15 @@
 // src/app/api/public/partner/shuttle-routes/route.ts
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { requirePartnerOperator } from "@/lib/partnerAuth";
 
 export const runtime = "nodejs";
 
 const WINDOW_DAYS = 60;
 const MIN_LEAD_HOURS = 25;
 
-// bump this whenever you deploy, so you can see production is running the right build
-const BUILD_TAG = "partner_shuttle_routes_v5_fix_origin_dupes";
+// bump this when deploying so you can confirm prod is running the right build
+const BUILD_TAG = "partner_shuttle_routes_v6_vehicle_type_from_vehicles_type_id";
 
 function must(name: string) {
   const v = process.env[name];
@@ -17,38 +17,32 @@ function must(name: string) {
   return v;
 }
 
-function addHours(d: Date, n: number) {
-  const x = new Date(d);
-  x.setHours(x.getHours() + n);
-  return x;
+function sha256Hex(s: string) {
+  return crypto.createHash("sha256").update(s).digest("hex");
 }
-function addDays(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
+
+function safeEqualHex(a: string, b: string) {
+  const aa = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
 }
-function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(12, 0, 0, 0);
-  return x;
-}
+
+function addHours(d: Date, n: number) { const x = new Date(d); x.setHours(x.getHours() + n); return x; }
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(12, 0, 0, 0); return x; }
 
 function withinSeason(day: Date, from?: string | null, to?: string | null): boolean {
   if (!from && !to) return true;
   const t = startOfDay(day).getTime();
-  if (from) {
-    const f = new Date(from + "T12:00:00").getTime();
-    if (t < f) return false;
-  }
-  if (to) {
-    const tt = new Date(to + "T12:00:00").getTime();
-    if (t > tt) return false;
-  }
+  if (from) { const f = new Date(from + "T12:00:00").getTime(); if (t < f) return false; }
+  if (to)   { const tt = new Date(to + "T12:00:00").getTime(); if (t > tt) return false; }
   return true;
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 type Freq = { type: "WEEKLY"; weekday: number } | { type: "DAILY" } | { type: "ADHOC" };
+
 function parseFrequency(freq: string | null | undefined): Freq {
   if (!freq) return { type: "ADHOC" };
   const s = (freq || "").toLowerCase().trim();
@@ -58,12 +52,8 @@ function parseFrequency(freq: string | null | undefined): Freq {
   return { type: "ADHOC" };
 }
 
-function iso(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-function unitMinorToDisplayMajorCeil(unitMinor: number) {
-  return Math.ceil(unitMinor / 100);
-}
+function iso(d: Date) { return d.toISOString().slice(0, 10); }
+function unitMinorToDisplayMajorCeil(unitMinor: number) { return Math.ceil(unitMinor / 100); }
 
 type QuoteOk = {
   availability: "available" | "no_journey" | "no_vehicles" | "sold_out" | "insufficient_capacity_for_party";
@@ -112,10 +102,8 @@ async function mapWithConcurrency<T, R>(
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const searchParams = url.searchParams;
-    const reqOrigin = url.origin;
 
-    const operatorId = searchParams.get("operator_id")?.trim();
+    const operatorId = url.searchParams.get("operator_id")?.trim();
     const operatorKey = req.headers.get("x-operator-key")?.trim();
 
     if (!operatorId) {
@@ -125,15 +113,15 @@ export async function GET(req: Request) {
       return NextResponse.json({ build_tag: BUILD_TAG, error: "Missing x-operator-key" }, { status: 401 });
     }
 
-    // If you later decide to move auth into lib/partnerAuth, keep this call.
-    // For now, we don't rely on it to avoid double-auth logic.
-    // await requirePartnerOperator(req);
+    const origin = url.origin;
 
-    const supabase = createClient(must("SUPABASE_URL"), must("SUPABASE_SERVICE_ROLE_KEY"), {
-      auth: { persistSession: false },
-    });
+    const supabase = createClient(
+      must("SUPABASE_URL"),
+      must("SUPABASE_SERVICE_ROLE_KEY"),
+      { auth: { persistSession: false } }
+    );
 
-    // 1) Fetch operator and validate key hash
+    // 1) Validate operator key hash
     const { data: operator, error: opErr } = await supabase
       .from("operators")
       .select("id, country_id, partner_api_key_hash")
@@ -144,91 +132,57 @@ export async function GET(req: Request) {
       return NextResponse.json({ build_tag: BUILD_TAG, error: "Invalid operator_id" }, { status: 401 });
     }
     if (!operator.partner_api_key_hash) {
-      return NextResponse.json(
-        { build_tag: BUILD_TAG, error: "Operator not enabled for partner API" },
-        { status: 403 }
-      );
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Operator not enabled for partner API" }, { status: 403 });
     }
 
-    // Use shared helper to validate key (consistent across partner endpoints)
-    const auth = requirePartnerOperator
-      ? await requirePartnerOperator({
-          operatorId,
-          operatorKey,
-          supabase,
-          expectedHash: operator.partner_api_key_hash,
-        } as any).catch(() => null)
-      : null;
-
-    // If requirePartnerOperator isn't implemented in that shape, fall back to inline compare
-    if (!auth) {
-      // Inline fallback (sha256Hex + timing-safe compare) without importing crypto here.
-      // We store hash as hex in DB, so compare using SubtleCrypto if available (node 20+).
-      const enc = new TextEncoder();
-      const data = enc.encode(operatorKey);
-      const hashBuf = await crypto.subtle.digest("SHA-256", data);
-      const hashHex = Array.from(new Uint8Array(hashBuf))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-
-      if (hashHex !== operator.partner_api_key_hash) {
-        return NextResponse.json({ build_tag: BUILD_TAG, error: "Unauthorised" }, { status: 401 });
-      }
+    const providedHash = sha256Hex(operatorKey);
+    if (!safeEqualHex(providedHash, operator.partner_api_key_hash)) {
+      return NextResponse.json({ build_tag: BUILD_TAG, error: "Unauthorised" }, { status: 401 });
     }
 
     if (!operator.country_id) {
       return NextResponse.json({ build_tag: BUILD_TAG, error: "Operator has no country_id" }, { status: 409 });
     }
 
-    // 2) Derive operator vehicle type (must be 1:1)
+    // 2) Derive operator vehicle type from vehicles.type_id (string, human-readable)
     const { data: opVehicles, error: vErr } = await supabase
       .from("vehicles")
-      .select("id, type_id, active")
+      .select("id, active, maxseats, type_id")
       .eq("operator_id", operator.id)
       .neq("active", false);
 
     if (vErr) throw vErr;
 
-    const typeIds = Array.from(new Set((opVehicles ?? []).map((v: any) => v.type_id).filter(Boolean))) as string[];
-    if (typeIds.length !== 1) {
+    const vehicleTypeValues = Array.from(
+      new Set((opVehicles ?? []).map((v: any) => v?.type_id).filter(Boolean))
+    ) as string[];
+
+    if (vehicleTypeValues.length !== 1) {
       return NextResponse.json(
         {
           build_tag: BUILD_TAG,
-          error: "Operator vehicle type is not 1:1. Expected exactly one type_id for operator vehicles.",
-          typeIds,
+          error: "Operator vehicle type is not 1:1. Expected exactly one vehicles.type_id across operator vehicles.",
+          vehicle_types: vehicleTypeValues,
         },
         { status: 409 }
       );
     }
-    const operatorTypeId = typeIds[0];
 
-    const { data: ttype, error: tErr } = await supabase
-      .from("transport_types")
-      .select("id, name")
-      .eq("id", operatorTypeId)
-      .maybeSingle();
-
-    if (tErr || !ttype?.name) {
-      return NextResponse.json(
-        { build_tag: BUILD_TAG, error: "Could not derive operator vehicle type name" },
-        { status: 500 }
-      );
-    }
-    const vehicleTypeName = ttype.name;
+    const vehicleTypeName = vehicleTypeValues[0];
 
     // 3) Country name
-    const { data: country, error: cErr } = await supabase
+    const { data: countryRow, error: cErr } = await supabase
       .from("countries")
       .select("id, name")
       .eq("id", operator.country_id)
       .maybeSingle();
 
-    if (cErr || !country?.name) {
+    if (cErr || !countryRow?.name) {
       return NextResponse.json({ build_tag: BUILD_TAG, error: "Could not load operator country" }, { status: 500 });
     }
-    const countryName = country.name;
+    const countryName = countryRow.name;
 
-    // 4) Candidate routes for that country (we will later filter to those with eligible vehicles)
+    // 4) Routes in operator’s country
     const { data: routes, error: rErr } = await supabase
       .from("routes")
       .select("id, route_name, country_id, pickup_id, destination_id, pickup_time, frequency, season_from, season_to, is_active")
@@ -240,12 +194,12 @@ export async function GET(req: Request) {
     const routeIds = (routes ?? []).map((r: any) => r.id);
     if (!routeIds.length) return NextResponse.json({ build_tag: BUILD_TAG, tiles: [] });
 
-    // IMPORTANT: in this DB the table is route_vehicle_assignments (not assignments)
+    // 5) Only include routes that have active vehicle assignments (journeys)
     const { data: rva, error: aErr } = await supabase
       .from("route_vehicle_assignments")
       .select("route_id, vehicle_id, is_active")
       .in("route_id", routeIds)
-      .neq("is_active", false);
+      .eq("is_active", true);
 
     if (aErr) throw aErr;
 
@@ -254,40 +208,38 @@ export async function GET(req: Request) {
 
     const { data: assignedVehicles, error: avErr } = await supabase
       .from("vehicles")
-      .select("id, type_id, active, maxseats")
+      .select("id, active, maxseats, type_id")
       .in("id", assignedVehicleIds)
       .neq("active", false);
 
     if (avErr) throw avErr;
 
+    // Eligible vehicles: active, cap>0, and match operator's vehicle type_id string
     const eligibleVehicleIds = new Set(
       (assignedVehicles ?? [])
-        .filter((v: any) => v.type_id === operatorTypeId && Number(v.maxseats ?? 0) > 0)
+        .filter((v: any) => {
+          const cap = Number(v?.maxseats ?? 0);
+          const t = (v?.type_id ?? null) as string | null;
+          return t === vehicleTypeName && Number.isFinite(cap) && cap > 0;
+        })
         .map((v: any) => v.id)
     );
 
     const routesWithEligibleVehicles = new Set<string>();
     for (const a of rva ?? []) {
-      const vid = (a as any).vehicle_id;
-      const rid = (a as any).route_id;
-      if (eligibleVehicleIds.has(vid)) routesWithEligibleVehicles.add(rid);
+      if (eligibleVehicleIds.has((a as any).vehicle_id)) routesWithEligibleVehicles.add((a as any).route_id);
     }
 
     const candidateRoutes = (routes ?? []).filter((r: any) => routesWithEligibleVehicles.has(r.id));
     if (!candidateRoutes.length) return NextResponse.json({ build_tag: BUILD_TAG, tiles: [] });
 
-    // 5) Fetch pickups + destinations for those routes
+    // 6) Pickups + destinations (minimal fields for tiles + drilldown IDs)
     const pickupIds = Array.from(new Set(candidateRoutes.map((r: any) => r.pickup_id).filter(Boolean))) as string[];
     const destIds = Array.from(new Set(candidateRoutes.map((r: any) => r.destination_id).filter(Boolean))) as string[];
 
-    // IMPORTANT: pickups are pickup_points (not pickups)
     const [{ data: pickups, error: pErr }, { data: destinations, error: dErr }] = await Promise.all([
-      pickupIds.length
-        ? supabase.from("pickup_points").select("id, name, picture_url").in("id", pickupIds).eq("active", true)
-        : Promise.resolve({ data: [], error: null } as any),
-      destIds.length
-        ? supabase.from("destinations").select("id, name, picture_url").in("id", destIds)
-        : Promise.resolve({ data: [], error: null } as any),
+      supabase.from("pickup_points").select("id, name, picture_url").in("id", pickupIds).eq("active", true),
+      supabase.from("destinations").select("id, name, picture_url").in("id", destIds),
     ]);
 
     if (pErr) throw pErr;
@@ -296,15 +248,12 @@ export async function GET(req: Request) {
     const pickupById = new Map((pickups ?? []).map((p: any) => [p.id, p]));
     const destById = new Map((destinations ?? []).map((d: any) => [d.id, d]));
 
-    // 6) Scan occurrences and find cheapest via /api/quote (qty=1)
+    // 7) Find cheapest bookable seat price over the next WINDOW_DAYS (qty=1)
     const nowPlus25h = addHours(new Date(), MIN_LEAD_HOURS);
     const minDay = startOfDay(nowPlus25h);
     const maxDay = addDays(minDay, WINDOW_DAYS);
 
-    async function quoteUnitMinor(
-      routeId: string,
-      dateISO: string
-    ): Promise<null | { unitMinor: number; currency: string; max_qty_at_price?: number | null }> {
+    async function quoteUnitMinor(routeId: string, dateISO: string) {
       const sp = new URLSearchParams({
         route_id: routeId,
         date: dateISO,
@@ -312,14 +261,14 @@ export async function GET(req: Request) {
         diag: "0",
       });
 
-      const res = await fetch(`${reqOrigin}/api/quote?${sp.toString()}`, { cache: "no-store" });
+      const res = await fetch(`${origin}/api/quote?${sp.toString()}`, { cache: "no-store" });
       if (!res.ok) return null;
 
       const json = (await res.json().catch(() => null)) as QuoteOk | null;
       if (!json || json.availability !== "available") return null;
 
       const unitMinor =
-        json.unit_cents != null
+        (json.unit_cents != null)
           ? Number(json.unit_cents)
           : Math.round(Number(json.total_cents ?? 0) / Math.max(1, Number(json.qty ?? 1)));
 
@@ -341,9 +290,10 @@ export async function GET(req: Request) {
       const pickupName = pu?.name ?? "—";
       const destName = de?.name ?? "—";
       const routeName =
-        r.route_name && String(r.route_name).trim() ? String(r.route_name) : `${pickupName} to ${destName}`;
+        (r.route_name && String(r.route_name).trim())
+          ? String(r.route_name)
+          : `${pickupName} to ${destName}`;
 
-      // Build occurrence dates
       const kind = parseFrequency(r.frequency);
       const dates: string[] = [];
 
@@ -371,7 +321,10 @@ export async function GET(req: Request) {
         return { dateISO, q };
       });
 
-      let best: { dateISO: string; unitMinor: number; currency: string; max_qty_at_price?: number | null } | null = null;
+      let best:
+        | { dateISO: string; unitMinor: number; currency: string; max_qty_at_price?: number | null }
+        | null = null;
+
       for (const item of quotes as any[]) {
         if (!item.q) continue;
         if (!best || item.q.unitMinor < best.unitMinor) {
@@ -384,7 +337,7 @@ export async function GET(req: Request) {
         }
       }
 
-      // Only include routes that have at least one bookable priced departure in window
+      // Only include routes that have at least one bookable priced departure
       if (!best) continue;
 
       tiles.push({
@@ -405,6 +358,7 @@ export async function GET(req: Request) {
       });
     }
 
+    // Cheapest first
     tiles.sort((a, b) => (a.cheapest?.unit_minor ?? 9e15) - (b.cheapest?.unit_minor ?? 9e15));
 
     return NextResponse.json({ build_tag: BUILD_TAG, tiles });
